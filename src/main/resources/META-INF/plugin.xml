@@ -1,6 +1,6 @@
 <idea-plugin>
     <!-- Permanent Marketplace ID: never change it after publishing. (The Java package name is separate.) -->
-    <id>io.github.rameshnr.traceweave</id>
+    <id>io.github.rameshnr.flowtracker</id>
     <name>TraceWeave - Code Flow Tracker</name>
     <vendor url="https://github.com/RameshNR/traceweave">RameshNR</vendor>
     <!-- <version> and <idea-version since-build> are filled in by Gradle (build.gradle.kts). -->
@@ -8,11 +8,16 @@
     <!-- <description> comes from src/main/plugin-description.html (see build.gradle.kts). -->
 
     <change-notes><![CDATA[
+<h3>1.3.1</h3>
+<ul>
+  <li>The plugin ID is <code>io.github.rameshnr.flowtracker</code> again (1.3.0 had a new one), so TraceWeave
+      updates Flow Tracker like any update. If you installed 1.3.0 from GitHub, uninstall it first (Settings →
+      Plugins): your flows, settings and saved debug values are kept.</li>
+</ul>
 <h3>1.3.0</h3>
 <ul>
-  <li>New name: TraceWeave - Code Flow Tracker (was Flow Tracker), with a new plugin ID
-      (<code>io.github.rameshnr.traceweave</code>). Uninstall Flow Tracker first (Settings → Plugins), then install
-      TraceWeave: your flows, settings, saved debug values and shortcuts are kept.</li>
+  <li>New name: TraceWeave - Code Flow Tracker (was Flow Tracker). Your flows, settings, saved debug values and
+      shortcuts are kept.</li>
   <li>Works in IntelliJ IDEA 2023.1 and every later version (1.2.1 needed 2026.2 or later). Checked with the
       Plugin Verifier against 2023.1, 2023.3, 2024.2, 2025.1, 2025.2, 2026.2 and 2026.3.</li>
   <li>Debug Data: right-click a variable in the debugger's Variables view → Save to TraceWeave. Compare it with

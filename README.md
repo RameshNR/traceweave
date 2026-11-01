@@ -40,7 +40,7 @@ Make sure you have the following installed:
 | Gradle | 9.6.0 | `gradle/wrapper/gradle-wrapper.properties` |
 | IntelliJ Platform Gradle Plugin | 2.19.0 | `build.gradle.kts` → `plugins` |
 | Plugin version | 1.3.0 | `build.gradle.kts` → `version` |
-| Plugin ID | `io.github.rameshnr.traceweave` (since 1.3.0; was `io.github.rameshnr.flowtracker`) | `plugin.xml` → `<id>` |
+| Plugin ID | `io.github.rameshnr.flowtracker` (kept from Flow Tracker; never change it once published) | `plugin.xml` → `<id>` |
 
 
 
@@ -128,13 +128,13 @@ Check the folder: it must contain `product-info.json`. Write the path in `build.
 The installable plugin is written to:
 
 ```
-build\distributions\traceweave-code-flow-tracker-1.3.0.zip
+build\distributions\traceweave-code-flow-tracker-1.3.1.zip
 ```
 
 Install it in IntelliJ IDEA:
 
 - **Settings** → **Plugins** → ⚙️ → **Install Plugin from Disk…**
-- Select `build\distributions\traceweave-code-flow-tracker-1.3.0.zip`
+- Select `build\distributions\traceweave-code-flow-tracker-1.3.1.zip`
 - Restart the IDE when asked
 
 To release a new version, change `version = "1.3.0"` in `build.gradle.kts`, add its change notes in `plugin.xml`, and build again.
@@ -559,7 +559,7 @@ To add a screenshot, put the file in `src/main/resources/images/` and add it to 
 
 
 
-The plugin passes the IntelliJ Platform Gradle plugin's checks for Marketplace (`.\gradlew.bat verifyPluginProjectConfiguration verifyPluginStructure`). Its ID is `io.github.rameshnr.traceweave` (since 1.3.0, with the new name; before it was `io.github.rameshnr.flowtracker`): Marketplace doesn't accept `com.example` IDs, and Marketplace treats a new ID as a new plugin, so TraceWeave is uploaded as a new plugin and Flow Tracker users switch by uninstalling Flow Tracker and installing TraceWeave (their flows and settings are kept).
+The plugin passes the IntelliJ Platform Gradle plugin's checks for Marketplace (`.\gradlew.bat verifyPluginProjectConfiguration verifyPluginStructure`). Its ID is `io.github.rameshnr.flowtracker` (kept from Flow Tracker when it became TraceWeave): Marketplace doesn't accept `com.example` IDs, and an ID can't change after the first upload (Marketplace matches updates to a plugin by its ID).
 
 **First version (by hand, once).** JetBrains requires the first upload of a new plugin through the website:
 
