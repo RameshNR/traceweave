@@ -3,19 +3,20 @@ package com.example.flowtracker.diagram;
 import com.example.flowtracker.code.FlowCodeSearch;
 import com.example.flowtracker.code.FlowLang;
 import com.example.flowtracker.code.FlowSync;
+import com.example.flowtracker.compat.FlowCompat;
 import com.example.flowtracker.copy.FlowCopy;
 import com.example.flowtracker.model.FlowEntry;
 import com.example.flowtracker.model.FlowLook;
 import com.example.flowtracker.model.FlowStore;
+import com.example.flowtracker.model.FlowTag;
 import com.example.flowtracker.ui.FlowButton;
 import com.example.flowtracker.ui.FlowSettingsPopup;
 import com.example.flowtracker.ui.FlowTheme;
 import com.example.flowtracker.ui.FlowToolbar;
 import com.intellij.notification.NotificationType;
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.ide.CopyPasteManager;
+import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.InputValidatorEx;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.util.Disposer;
@@ -79,7 +80,7 @@ import java.util.Set;
 /**
  * "Flow Diagram": the flow's classes and calls as an editable diagram.
  * <ul>
- *   <li><b>Add File / Class</b> and <b>Add Method / Function</b> pick classes (or JSP, JavaScript, TLD... files) and
+ *   <li><b>Add File</b> and <b>Add Function</b> pick classes (or JSP, JavaScript, TLD... files) and
  *       their methods (or functions, blocks) from the project's code (searched by name or by a
  *       pattern such as {@code *Cruise*.java}); a method's lines can be picked from its code.</li>
  *   <li><b>Custom Class / File</b> and <b>Custom Method / Function</b> add ones that aren't in the code yet (amber).</li>
@@ -90,16 +91,106 @@ import java.util.Set;
  * Every change is listed in the History (kept while the IDE runs, also after Apply). Apply writes the diagram to
  * the flow as one undoable step; Cancel leaves the flow (and the History) as they were.
  */
-public final class FlowDiagramDialog extends DialogWrapper {
+public final class FlowDiagramDialog {
 
-    /** Opens the window for the active flow, once its calls have been analysed. */
+    /**
+     * Opens the window for the active flow, once its calls have been analysed. One window per project: when it is
+     * open (or minimized) already, it comes to the front instead, with its unsaved changes.
+     */
     public static void open(Project project) {
+        FlowDiagramDialog open = OPEN.get(project);
+        if (open != null && !open.isDisposed()) {
+            open.bringBack();
+            return;
+        }
+        // Clicks while it opens do nothing.
+        Long since = OPENING.get(project);
+        if (since != null && System.currentTimeMillis() - since < OPENING_TIMEOUT_MS) return;
+        OPENING.put(project, System.currentTimeMillis());
         FlowStore store = FlowStore.get(project);
         List<FlowEntry> entries = store.getEntries();
+        FlowSync.Calls known = store.getCalls();
+        if (!known.links().isEmpty() || entries.size() < 2) {
+            show(project, store, entries, known); // the calls the panel found for these lines: no waiting
+            return;
+        }
         FlowSync.callsFor(project, List.of(entries), calls -> {
-            if (project.isDisposed() || !store.getEntries().equals(entries)) return; // changed meanwhile
-            new FlowDiagramDialog(project, store, entries, FlowSync.withManual(calls.get(0), entries)).show();
+            if (project.isDisposed() || !store.getEntries().equals(entries)) { // changed meanwhile
+                OPENING.remove(project);
+                return;
+            }
+            show(project, store, entries, FlowSync.withManual(calls.get(0), entries));
         });
+    }
+
+    /** Projects whose Flow Diagram is open or opening, since when (a stuck analysis frees it after a while). */
+    private static final java.util.Map<Project, Long> OPENING = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long OPENING_TIMEOUT_MS = 60_000;
+
+    /** The open Flow Diagram of each project (it doesn't block the IDE, so it can stay open while you work). */
+    private static final java.util.Map<Project, FlowDiagramDialog> OPEN = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static void show(Project project, FlowStore store, List<FlowEntry> entries, FlowSync.Calls calls) {
+        try {
+            FlowDiagramDialog d = new FlowDiagramDialog(project, store, entries, calls);
+            OPEN.put(project, d);
+            Disposer.register(d.getDisposable(), () -> OPEN.remove(project, d));
+            d.show();
+        } finally {
+            OPENING.remove(project);
+        }
+    }
+
+    // ---------- the window ----------
+
+    /**
+     * A window in the IDE's style (IntelliJ's own title bar, with Minimize, Maximize and Close) that doesn't block the
+     * IDE. Close asks like Cancel when there are changes.
+     */
+    private @Nullable com.example.flowtracker.ui.FlowWindow window;
+    private final JPanel root = new JPanel(new BorderLayout());
+    private final com.intellij.openapi.Disposable disposable = Disposer.newDisposable("TraceWeave Flow Diagram");
+    private boolean disposed;
+
+    com.intellij.openapi.Disposable getDisposable() {
+        return disposable;
+    }
+
+    boolean isDisposed() {
+        return disposed;
+    }
+
+    /** Lays the window out and shows it: the diagram, and Apply / Cancel at the bottom right. */
+    private void show() {
+        javax.swing.JButton apply = new javax.swing.JButton("Apply");
+        javax.swing.JButton cancel = new javax.swing.JButton("Cancel");
+        apply.addActionListener(e -> doOKAction());
+        cancel.addActionListener(e -> doCancelAction());
+        JPanel buttons = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, JBUI.scale(8), 0));
+        buttons.add(apply);
+        buttons.add(cancel);
+        buttons.setBorder(JBUI.Borders.emptyTop(8));
+        root.add(createCenterPanel(), BorderLayout.CENTER);
+        root.add(buttons, BorderLayout.SOUTH);
+        root.setBorder(JBUI.Borders.empty(10, 12, 10, 12));
+        window = new com.example.flowtracker.ui.FlowWindow(project, "TraceWeave.FlowDiagram", "Flow Diagram – " + flowName, root,
+                this::mayClose);
+        window.whenClosed(() -> {
+            disposed = true;
+            Disposer.dispose(disposable);
+        });
+        window.show();
+        canvas.requestFocusInWindow();
+        refresh();
+    }
+
+    /** Shows the window again (also when it is minimized) and puts it in front. */
+    private void bringBack() {
+        if (window != null) window.bringBack();
+    }
+
+    private void close() {
+        if (window != null) window.close();
     }
 
     private enum Tool { SELECT, CONNECT }
@@ -127,7 +218,7 @@ public final class FlowDiagramDialog extends DialogWrapper {
     private final JBList<FlowDiagram.History.Step> historyList = new JBList<>(historyModel);
     private final JBLabel status = new JBLabel();
     private final JBLabel historyTitle = new JBLabel();
-    private FlowButton selectTool, connectTool, addMethod, unknownMethod, rename, delete, undo, redo, settings, format;
+    private FlowButton selectTool, connectTool, addMethod, rename, delete, undo, redo, settings, format;
     private final FlowLook look = FlowLook.get();
     private Runnable lookChanged = () -> {};
     /** Light / dark switch in the top right corner of the drawing area. */
@@ -141,7 +232,6 @@ public final class FlowDiagramDialog extends DialogWrapper {
     private static final double BOX_GAP = 24;
 
     private FlowDiagramDialog(Project project, FlowStore store, List<FlowEntry> entries, FlowSync.Calls calls) {
-        super(project, true);
         this.project = project;
         this.store = store;
         this.entriesAtOpen = entries;
@@ -167,34 +257,26 @@ public final class FlowDiagramDialog extends DialogWrapper {
         openSignature = diagram.signature();
         openDiagram = diagram.copy();
 
-        setTitle("Flow Diagram – " + flowName);
         backgroundToggle.addActionListener(e -> toggleBackground());
         Disposer.register(getDisposable(), () -> look.removeListener(lookChanged));
-        setOKButtonText("Apply");
-        setCancelButtonText("Cancel");
-        init();
-        refresh();
     }
 
     // ---------- layout ----------
 
-    @Override
-    protected @Nullable JComponent createCenterPanel() {
+    private JComponent createCenterPanel() {
         selectTool = button("Select", FlowTheme.ICON_SELECT, FlowButton.Style.SEGMENT,
                 "Select and move classes, methods and calls. Double-click a class name to change its class, its methods to add a method.",
                 () -> setTool(Tool.SELECT));
         connectTool = button("Connect", FlowTheme.ICON_CONNECT, FlowButton.Style.SEGMENT,
                 "Drag from a method to the method it calls", () -> setTool(Tool.CONNECT));
-        FlowButton addClass = button("Add File / Class", FlowTheme.ICON_CLASS, FlowButton.Style.OUTLINE,
-                "Add a class or a file (JSP, JavaScript, TLD, XML…) from the project: search by name, pattern "
-                        + "(*Cruise*.java) or /regex/", () -> addKnownClass(null));
-        addMethod = button("Add Method / Function", FlowTheme.ICON_METHOD, FlowButton.Style.OUTLINE,
-                "Add a method, function or block (scriptlet, tag, element) of the selected class or file from its code, "
-                        + "and pick the lines to add", this::addKnownMethod);
-        FlowButton unknownClass = button("Custom Class / File", FlowTheme.ICON_CLASS_UNKNOWN, FlowButton.Style.OUTLINE,
-                "Add a custom class or file: one that isn't in the code (yet)", () -> addUnknownClass(null));
-        unknownMethod = button("Custom Method / Function", FlowTheme.ICON_METHOD_UNKNOWN, FlowButton.Style.OUTLINE,
-                "Add a custom method or function (not in the code) to the selected class or file", this::addUnknownMethod);
+        FlowButton addClass = button("Add File", FlowTheme.ICON_CLASS, FlowButton.Style.OUTLINE,
+                "Add a file of the project (Java, Kotlin, C#, Go, Python, JavaScript, JSP, XML…) or a library's .class, then "
+                        + "pick its class when it has several. Search by name, pattern (*Cruise*.java) or /regex/. A file "
+                        + "that isn't in the project becomes a custom class.",
+                () -> addKnownClass(null));
+        addMethod = button("Add Function", FlowTheme.ICON_METHOD, FlowButton.Style.OUTLINE,
+                "Add a method, function or block of the selected class or file and pick its lines; a name it doesn't have "
+                        + "becomes a custom method", this::addKnownMethod);
         format = button("Format", FlowTheme.ICON_FORMAT, FlowButton.Style.OUTLINE,
                 "Format the selection: a box's colors, bold / italic / colored names, the notes under class and "
                         + "method names, or a call's line", this::formatSelection);
@@ -217,13 +299,12 @@ public final class FlowDiagramDialog extends DialogWrapper {
         updateCopyTips(copyPng, copySequence);
         look.addListener(lookChanged = () -> {
             updateCopyTips(copyPng, copySequence);
-            getContentPane().repaint();
+            root.repaint();
         });
 
         FlowToolbar toolbar = new FlowToolbar();
         toolbar.addGroup(true, 2, selectTool, connectTool);
         toolbar.addGroup(false, 2, addClass, addMethod);
-        toolbar.addGroup(false, 1, unknownClass, unknownMethod);
         toolbar.addGroup(false, 1, rename, delete);
         FlowButton resetTheme = button("Reset Theme", FlowTheme.ICON_THEME, FlowButton.Style.OUTLINE,
                 "Give every class, method and line the default look again (notes, calls and positions stay)", this::resetTheme);
@@ -339,11 +420,6 @@ public final class FlowDiagramDialog extends DialogWrapper {
         });
     }
 
-    @Override
-    public @Nullable JComponent getPreferredFocusedComponent() {
-        return canvas;
-    }
-
     // ---------- history ----------
 
     /**
@@ -382,8 +458,7 @@ public final class FlowDiagramDialog extends DialogWrapper {
         selectTool.setSelected(tool == Tool.SELECT);
         connectTool.setSelected(tool == Tool.CONNECT);
         FlowDiagram.Box box = selectedBox();
-        addMethod.setEnabled(box != null && !box.isUnknown());
-        unknownMethod.setEnabled(box != null);
+        addMethod.setEnabled(box != null);
         rename.setEnabled(box != null);
         delete.setEnabled(box != null || selection.link() != null && selection.link().manual());
         format.setEnabled(box != null || selection.link() != null);
@@ -532,21 +607,21 @@ public final class FlowDiagramDialog extends DialogWrapper {
      * project has is added as a custom class.
      */
     private void addKnownClass(@Nullable Point2D at) {
-        FlowCodePicker.ClassChoice choice = FlowCodePicker.pickClass(project, canvas, "Add File / Class", "",
+        FlowCodePicker.ClassChoice choice = FlowCodePicker.pickClass(project, canvas, "Add File", "",
                 n -> diagram.checkClassName(null, n));
         if (choice == null) return;
         if (choice.isCustom()) {
-            addUnknownClass(choice.customName(), at);
+            addUnknownClass(choice.customName(), choice.customFile(), at);
             return;
         }
         FlowCodeSearch.ClassHit hit = choice.hit();
-        FlowEntry header = ReadAction.computeBlocking(() -> FlowCodeSearch.entry(project, hit.url(), hit.declLine()));
+        FlowEntry header = FlowCompat.read(() -> FlowCodeSearch.entry(project, hit.url(), hit.declLine()));
         // A file's lines name their class themselves (e.g. a TLD's short name): use what its first line says.
         String cls = hit.isFile() && header != null ? header.className : hit.className();
         FlowDiagram.Box existing = diagram.knownBox(hit.url(), cls);
         if (existing != null) {
             select(existing, null, null);
-            say(existing.name + " is in the diagram already. Use Add Method / Function to add its methods.");
+            say(existing.name + " is in the diagram already. Use Add Function to add its methods.");
             return;
         }
         Point2D p = at != null ? at : freeSpot();
@@ -554,23 +629,33 @@ public final class FlowDiagramDialog extends DialogWrapper {
                 Math.max(0, p.getX()), Math.max(0, p.getY()));
         select(b, null, null);
         changed("Add class " + b.name);
-        say("Added " + b.name + " (" + hit.path() + "). Use Add Method / Function to pick its methods and lines.");
+        say("Added " + b.name + " (" + hit.path() + "). Use Add Function to pick its methods and lines.");
     }
 
-    /** Add Method: a method of the selected (known) class, with the lines picked from its code. */
+    /**
+     * Add Method: a method of the selected class, with the lines picked from its code. A name the class doesn't
+     * have (and any method of a custom class) is added as a custom method.
+     */
     private void addKnownMethod() {
         FlowDiagram.Box b = selectedBox();
         if (b == null) return;
         if (b.isUnknown()) {
-            say(b.name + " is a custom class (not in the code): use Custom Method / Function to add a method to it.");
+            addUnknownMethod(b);
             return;
         }
         FlowCodeSearch.ClassHit cls = new FlowCodeSearch.ClassHit(b.fileUrl, b.fileName, "", javaClass(b), b.projectName, 0);
-        FlowCodeSearch.MethodHit method = FlowCodePicker.pickMethod(project, canvas, cls);
-        if (method == null) return;
+        FlowCodePicker.MethodChoice choice = FlowCodePicker.pickMethod(project, canvas, cls, n -> diagram.checkMethodName(b, null, n));
+        if (choice == null) return;
+        if (choice.isCustom()) {
+            FlowDiagram.Method m = diagram.addUnknownMethod(b, choice.customName());
+            select(b, m, null);
+            changed("Add custom method " + b.name + "." + m.name);
+            return;
+        }
+        FlowCodeSearch.MethodHit method = choice.hit();
         List<Integer> lines = FlowCodePicker.pickLines(project, canvas, cls, method, savedLines(b.fileUrl));
         if (lines == null) return;
-        List<FlowEntry> entries = ReadAction.computeBlocking(() -> {
+        List<FlowEntry> entries = FlowCompat.read(() -> {
             List<FlowEntry> out = new ArrayList<>();
             for (int line : lines) {
                 FlowEntry e = FlowCodeSearch.entry(project, b.fileUrl, line);
@@ -604,23 +689,18 @@ public final class FlowDiagramDialog extends DialogWrapper {
         return out;
     }
 
-    private void addUnknownClass(@Nullable Point2D at) {
-        String name = ask("Name of the custom class (one that isn't in the code yet):", "Custom Class / File", "", n -> diagram.checkClassName(null, n));
-        if (name != null) addUnknownClass(name, at);
-    }
-
-    private void addUnknownClass(String name, @Nullable Point2D at) {
+    private void addUnknownClass(String name, String fileName, @Nullable Point2D at) {
         Point2D p = at != null ? at : freeSpot();
-        FlowDiagram.Box b = diagram.addUnknownClass(name, Math.max(0, p.getX()), Math.max(0, p.getY()));
+        FlowDiagram.Box b = diagram.addUnknownClass(name, fileName, Math.max(0, p.getX()), Math.max(0, p.getY()));
         select(b, null, null);
         changed("Add custom class " + b.name);
-        say("Added " + b.name + ". Add methods to it with Custom Method / Function, or double-click its name to pick a class of the project instead.");
+        say("Added custom class " + b.name + " (" + b.fileName + "). Add methods with Add Function; right-click to "
+                + "rename it or change its file, or double-click its name to pick a class of the project instead.");
     }
 
-    private void addUnknownMethod() {
-        FlowDiagram.Box b = selectedBox();
-        if (b == null) return;
-        String name = ask("Name of the custom method (one that isn't in the code yet) in " + b.name + ":", "Custom Method / Function", "",
+    /** A custom method (not in the code), asked by name. */
+    private void addUnknownMethod(FlowDiagram.Box b) {
+        String name = ask("Name of the method (" + b.name + " is a custom class, so it is a custom method):", "Add Function", "",
                 n -> diagram.checkMethodName(b, null, n));
         if (name == null) return;
         FlowDiagram.Method m = diagram.addUnknownMethod(b, name);
@@ -639,7 +719,7 @@ public final class FlowDiagramDialog extends DialogWrapper {
             String old = m.name;
             diagram.renameMethod(m, name);
             changed("Rename " + b.name + "." + old + " to " + m.name);
-            if (!b.isUnknown()) say("Renamed in Flow Tracker only: your source code doesn't change.");
+            if (!b.isUnknown()) say("Renamed in TraceWeave only: your source code doesn't change.");
         } else {
             // The classes of the project matching the new name are listed as it is typed; a name none has
             // makes the box a custom class.
@@ -657,12 +737,12 @@ public final class FlowDiagramDialog extends DialogWrapper {
                 n -> n.strip().equals(b.name) && b.isUnknown() ? null : diagram.checkClassName(b, n));
         FlowDiagram.Box box = diagram.box(boxId);
         if (choice == null || box == null) return;
-        if (choice.isCustom()) renamedToCustom(box, choice.customName().strip());
+        if (choice.isCustom()) renamedToCustom(box, choice.customName().strip(), choice.customFile());
         else replaceBox(box, choice.hit(), labelPrefix);
     }
 
     /** A class renamed to a name no class of the project has: the box becomes (or stays) a custom class. */
-    private void renamedToCustom(FlowDiagram.Box b, String name) {
+    private void renamedToCustom(FlowDiagram.Box b, String name, @Nullable String fileName) {
         String old = b.name;
         if (b.isUnknown() && name.equals(old)) return;
         String error = diagram.checkClassName(b, name);
@@ -676,21 +756,59 @@ public final class FlowDiagramDialog extends DialogWrapper {
             say("Renamed. There is no class " + name + " in the project, so it stays a custom class.");
             return;
         }
-        FlowDiagram.Box custom = diagram.replaceWithCustomClass(b, name);
+        FlowDiagram.Box custom = diagram.replaceWithCustomClass(b, name, fileName == null ? name : fileName);
         select(custom, null, null);
         changed("Rename class " + old + " to " + name + " (custom)");
         say("There is no class " + name + " in the project: it is a custom class now (not in the code). "
                 + "Its methods are custom methods; their code lines leave the flow on Apply.");
     }
 
+    /** Tags a method in the diagram; its lines get the tag on Apply (one undoable History step). */
+    private void tagMethod(FlowDiagram.Method m, String tagId) {
+        FlowDiagram.Box b = diagram.boxOf(m.id);
+        diagram.setMethodTag(m, tagId);
+        FlowTag t = FlowTag.byId(tagId);
+        changed((t == null ? "No tag on " : "Tag " + t.label + ": ") + (b == null ? "" : b.name + ".") + m.name);
+        say(t == null ? "The tag is removed from the method's lines on Apply."
+                : "On Apply, every line of " + m.name + " is tagged " + t.label + " in the TraceWeave window.");
+    }
+
+    /** Change File Name (custom classes): the file the custom class will be in. */
+    private void changeCustomFile(FlowDiagram.Box b) {
+        javax.swing.JTextField file = new javax.swing.JTextField(b.fileName, 30);
+        java.util.Set<String> projects = new java.util.TreeSet<>();
+        projects.add(project.getName());
+        for (FlowDiagram.Box x : diagram.boxes) if (x.projectName != null && !x.projectName.isBlank()) projects.add(x.projectName);
+        com.intellij.openapi.ui.ComboBox<String> projectBox = new com.intellij.openapi.ui.ComboBox<>(projects.toArray(new String[0]));
+        projectBox.setEditable(true);
+        projectBox.setSelectedItem(b.projectName == null ? "" : b.projectName);
+        JPanel form = com.intellij.util.ui.FormBuilder.createFormBuilder()
+                .addLabeledComponent("File name:", file)
+                .addLabeledComponent("Project:", projectBox)
+                .addComponentToRightColumn(new com.intellij.ui.components.JBLabel(
+                        "<html><small>The project (or module) the custom class is meant for, shown in its box. Leave it empty for none.</small></html>"))
+                .getPanel();
+        com.intellij.openapi.ui.DialogBuilder dialog = new com.intellij.openapi.ui.DialogBuilder(canvas);
+        dialog.setTitle("File and Project of " + b.name);
+        dialog.setCenterPanel(form);
+        dialog.setPreferredFocusComponent(file);
+        if (!dialog.showAndGet()) return;
+        String newFile = file.getText().isBlank() ? b.name : file.getText().strip();
+        Object p = projectBox.getEditor().getItem();
+        String newProject = p == null ? "" : p.toString().strip();
+        if (newFile.equals(b.fileName) && newProject.equals(b.projectName == null ? "" : b.projectName)) return;
+        diagram.setCustomFile(b, newFile, newProject);
+        changed("File of " + b.name + ": " + b.fileName + (newProject.isEmpty() ? "" : " (" + newProject + ")"));
+    }
+
     /** Change Class (double-click a class name): another class of the project (or a custom one) takes the box's place. */
     private void changeClass(FlowDiagram.Box b) {
-        pickClassFor(b, "Change Class / File", b.isUnknown() ? b.name : "", "Change class " + b.name + " to ");
+        pickClassFor(b, "Change File", b.isUnknown() ? b.name : "", "Change class " + b.name + " to ");
     }
 
     /** Puts a class of the project in a box's place; its methods become custom methods of that class. */
     private void replaceBox(FlowDiagram.Box b, FlowCodeSearch.ClassHit hit, String labelPrefix) {
-        FlowEntry header = ReadAction.computeBlocking(() -> FlowCodeSearch.entry(project, hit.url(), hit.declLine()));
+        FlowEntry header = FlowCompat.read(() -> FlowCodeSearch.entry(project, hit.url(), hit.declLine()));
         String cls = hit.isFile() && header != null ? header.className : hit.className();
         if (!b.isUnknown() && b.fileUrl.equals(hit.url()) && b.origClass.equals(cls)) {
             say("That is the class this box shows already.");
@@ -744,8 +862,11 @@ public final class FlowDiagramDialog extends DialogWrapper {
         FlowDiagram.Link link = selection.link();
         if (link != null) {
             String text = label(diagram.method(link.from())) + " → " + label(diagram.method(link.to()));
-            FlowDiagramFormat.LineChoice choice = FlowDiagramFormat.editLine(project, canvas, text, diagram.line(link), link.manual(), canvasPalette());
+            FlowDiagramFormat.LineChoice choice = FlowDiagramFormat.editLine(project, canvas, text, diagram.line(link), link.manual(),
+                    diagram.callNote(link), diagram.noteStyle(link), canvasPalette());
             if (choice == null) return;
+            diagram.setCallNote(link, choice.note()); // the note is this call's only, even with "every call"
+            diagram.setNoteStyle(link, choice.noteStyle());
             if (choice.everyLine()) {
                 for (FlowDiagram.Link l : diagram.links) diagram.setLine(l, choice.line());
                 changed("Line of every call");
@@ -844,7 +965,7 @@ public final class FlowDiagramDialog extends DialogWrapper {
                 new FlowSettingsPopup.Choice(FlowTheme.ICON_DARK, "Dark Background", "Dark images.",
                         () -> look.getImageBackground() == FlowLook.Background.DARK, () -> look.setImageBackground(FlowLook.Background.DARK))));
         sections.put("DIAGRAM WINDOW", List.of(
-                new FlowSettingsPopup.Choice(FlowTheme.ICON_THEME, look.isUseIdeTheme() ? "Same as IntelliJ Theme" : "Same as Flow Tracker",
+                new FlowSettingsPopup.Choice(FlowTheme.ICON_THEME, look.isUseIdeTheme() ? "Same as IntelliJ Theme" : "Same as TraceWeave",
                         "Follows the light or dark theme.",
                         () -> look.getDiagramBackground() == FlowLook.Background.THEME, () -> look.setDiagramBackground(FlowLook.Background.THEME)),
                 new FlowSettingsPopup.Choice(FlowTheme.ICON_LIGHT, "Light Background", null,
@@ -952,8 +1073,7 @@ public final class FlowDiagramDialog extends DialogWrapper {
 
     // ---------- apply / cancel ----------
 
-    @Override
-    protected void doOKAction() {
+    private void doOKAction() {
         List<FlowEntry> now = store.getEntries();
         if (!now.equals(entriesAtOpen)) {
             Messages.showWarningDialog(canvas, "The flow changed while the diagram was open. Close the diagram and open it again.",
@@ -971,6 +1091,12 @@ public final class FlowDiagramDialog extends DialogWrapper {
         boolean edited = history.position != openPosition || !diagram.sameAs(openDiagram);
         if (linesChanged || looksChanged && edited) {
             String label = applyLabel();
+            String what = linesChanged ? "Apply the changes to " + flowName + "? Its lines are updated"
+                    + (result.removed().isEmpty() ? "" : " (" + result.removed().size()
+                    + (result.removed().size() == 1 ? " line goes" : " lines go") + " to the Recycle Bin)") + "; Undo in the flow takes it back."
+                    : "Apply the new look of the diagram to " + flowName + "?";
+            if (Messages.showDialog(canvas, what + "\n\n" + label, "Apply Changes", new String[]{"Apply", "Keep Editing"}, 0,
+                    Messages.getQuestionIcon()) != 0) return;
             store.applyDiagram(result.entries(), result.removed(), label, looks);
             history.markApplied(store.getEntries());
             FlowCopy.notify(project, label + " applied" + (result.removed().isEmpty() ? ""
@@ -980,8 +1106,12 @@ public final class FlowDiagramDialog extends DialogWrapper {
             store.setDiagramLooks(looks); // e.g. the first layout of the diagram: nothing to undo
         }
         store.setDiagramHistory(history);
-        super.doOKAction();
+        applied = true; // closing after Apply: nothing to discard
+        close();
     }
+
+    /** True once Apply saved the diagram (or Cancel was confirmed): closing then doesn't ask again. */
+    private boolean applied;
 
     private String applyLabel() {
         int n = history.position - openPosition;
@@ -990,15 +1120,21 @@ public final class FlowDiagramDialog extends DialogWrapper {
         return "Flow Diagram: back to “" + history.current().label() + "”";
     }
 
-    @Override
-    public void doCancelAction() {
-        if (!Objects.equals(diagram.signature(), openSignature) || history.position != openPosition || !diagram.sameAs(openDiagram)) {
-            if (Messages.showYesNoDialog(project, "Discard the changes made in the diagram? The flow stays as it was.",
-                    "Flow Diagram", "Discard", "Keep Editing", null) != Messages.YES) {
-                return;
-            }
+    private void doCancelAction() {
+        if (mayClose()) {
+            applied = true; // already asked: closing doesn't ask again
+            close();
         }
-        super.doCancelAction();
+    }
+
+    /** True when there is nothing to lose, or the user chose to discard the changes. */
+    private boolean mayClose() {
+        if (applied) return true;
+        if (!Objects.equals(diagram.signature(), openSignature) || history.position != openPosition || !diagram.sameAs(openDiagram)) {
+            return Messages.showDialog(canvas, "Discard the changes made in the diagram? The flow stays as it was.",
+                    "Flow Diagram", new String[]{"Discard", "Keep Editing"}, 1, null) == 0;
+        }
+        return true;
     }
 
     // ---------- canvas ----------
@@ -1058,8 +1194,7 @@ public final class FlowDiagramDialog extends DialogWrapper {
                     changeClass(box);
                 } else if (box != null) {                               // methods area: add a method
                     select(box, hit.method(), null);
-                    if (box.isUnknown()) addUnknownMethod();
-                    else addKnownMethod();
+                    addKnownMethod();
                 } else if (hit.link() == null) {
                     addKnownClass(p);
                 }
@@ -1162,6 +1297,7 @@ public final class FlowDiagramDialog extends DialogWrapper {
                 if (hit.method() != null) {
                     item(menu, "Format Method (and Note)…", FlowTheme.ICON_FORMAT, FlowDiagramDialog.this::formatSelection);
                     item(menu, "Rename Method…", FlowTheme.ICON_NOTE, FlowDiagramDialog.this::renameSelection);
+                    menu.add(tagMenu(hit.method()));
                     item(menu, "Delete Method", FlowTheme.ICON_DELETE, FlowDiagramDialog.this::deleteSelection);
                     item(menu, "Connect From Here…", FlowTheme.ICON_CONNECT, () -> {
                         setTool(Tool.CONNECT);
@@ -1174,10 +1310,9 @@ public final class FlowDiagramDialog extends DialogWrapper {
                     formatSelection();
                 });
                 menu.addSeparator();
-                JMenuItem known = item(menu, "Add Method / Function…", FlowTheme.ICON_METHOD, FlowDiagramDialog.this::addKnownMethod);
-                known.setEnabled(!box.isUnknown());
-                item(menu, "Add Custom Method / Function…", FlowTheme.ICON_METHOD_UNKNOWN, FlowDiagramDialog.this::addUnknownMethod);
-                item(menu, "Change Class / File…", FlowTheme.ICON_CLASS, () -> changeClass(box));
+                item(menu, "Add Function…", FlowTheme.ICON_METHOD, FlowDiagramDialog.this::addKnownMethod);
+                item(menu, "Change File…", FlowTheme.ICON_CLASS, () -> changeClass(box));
+                if (box.isUnknown()) item(menu, "File and Project…", FlowTheme.ICON_NOTE, () -> changeCustomFile(box));
                 item(menu, "Rename Class…", FlowTheme.ICON_NOTE, () -> {
                     select(box, null, null);
                     renameSelection();
@@ -1188,11 +1323,27 @@ public final class FlowDiagramDialog extends DialogWrapper {
                 });
             } else {
                 select(null, null, null);
-                item(menu, "Add File / Class Here…", FlowTheme.ICON_CLASS, () -> addKnownClass(p));
-                item(menu, "Add Custom Class / File Here…", FlowTheme.ICON_CLASS_UNKNOWN, () -> addUnknownClass(p));
+                item(menu, "Add File Here…", FlowTheme.ICON_CLASS, () -> addKnownClass(p));
                 item(menu, "Auto Layout", FlowTheme.ICON_LAYOUT, FlowDiagramDialog.this::autoLayout);
             }
             menu.show(this, e.getX(), e.getY());
+        }
+
+        /** Tag ▸ Bug / Important / Question / No Tag: given to all the method's lines on Apply. */
+        private javax.swing.JMenu tagMenu(FlowDiagram.Method m) {
+            javax.swing.JMenu tags = new javax.swing.JMenu("Tag");
+            tags.setIcon(FlowTheme.ICON_TAG);
+            for (FlowTag t : FlowTag.values()) {
+                JMenuItem it = new javax.swing.JCheckBoxMenuItem(t.emoji + "  " + t.label, t.id.equals(m.tag));
+                it.addActionListener(ev -> tagMethod(m, t.id));
+                tags.add(it);
+            }
+            tags.addSeparator();
+            JMenuItem none = new JMenuItem("No Tag");
+            none.setEnabled(!m.tag.isEmpty());
+            none.addActionListener(ev -> tagMethod(m, ""));
+            tags.add(none);
+            return tags;
         }
 
         private JMenuItem item(JPopupMenu menu, String text, Icon icon, Runnable action) {
@@ -1231,7 +1382,7 @@ public final class FlowDiagramDialog extends DialogWrapper {
                 if (diagram.boxes.isEmpty()) {
                     g.setFont(JBUI.Fonts.label().deriveFont(13f));
                     g.setColor(palette.muted());
-                    g.drawString("This flow has no classes yet. Click Add File / Class to pick one from the project.", 40, 60);
+                    g.drawString("This flow has no classes yet. Click Add File to pick one from the project.", 40, 60);
                 }
             } finally {
                 g.dispose();

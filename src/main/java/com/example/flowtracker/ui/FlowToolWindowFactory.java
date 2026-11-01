@@ -2,6 +2,7 @@ package com.example.flowtracker.ui;
 
 import com.example.flowtracker.code.FlowLang;
 import com.example.flowtracker.code.FlowSync;
+import com.example.flowtracker.compat.FlowCompat;
 import com.example.flowtracker.copy.CodeHighlighter;
 import com.example.flowtracker.copy.FlowCopy;
 import com.example.flowtracker.copy.FlowFormat;
@@ -25,10 +26,9 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DataContext;
-import com.intellij.openapi.actionSystem.DataSink;
+import com.intellij.openapi.actionSystem.DataProvider;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.actionSystem.PlatformDataKeys;
-import com.intellij.openapi.actionSystem.UiDataProvider;
 import com.intellij.openapi.editor.EditorFactory;
 import com.intellij.openapi.editor.event.DocumentEvent;
 import com.intellij.openapi.editor.event.DocumentListener;
@@ -107,6 +107,7 @@ import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -232,9 +233,23 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
 
         FlowButton copy = new FlowButton("Copy", FlowTheme.ICON_COPY, FlowButton.Style.OUTLINE);
         copy.setToolTipText("Copy everything (Ctrl+C copies the selected lines)");
-        copy.addActionListener(e -> {
+        Runnable copyAll = () -> {
             if (store.isCopyAllFlows()) FlowCopy.copyAllFlows(project);
             else copyToClipboard(textFor(store, visible(store, filter[0])));
+        };
+        copy.addActionListener(e -> copyAll.run());
+        copy.setDropDown("More ways to copy: the Original Log only", () -> {
+            Map<String, List<FlowSettingsPopup.Choice>> sections = new LinkedHashMap<>();
+            sections.put("", List.of(
+                    new FlowSettingsPopup.Choice(FlowTheme.ICON_COPY, "Copy",
+                            store.isCopyMarkdown() ? "The Markdown document (Settings: Copy as Markdown)." : "The plain text of this view.",
+                            () -> false, copyAll),
+                    new FlowSettingsPopup.Choice(FlowTheme.ICON_LIST, "Copy Original Log",
+                            (store.isNestedCallLog() ? "Each call nested under the line that makes it" : "The plain list of this view")
+                                    + " (what the Markdown copy ends with), as plain text.",
+                            () -> false, () -> FlowCopy.copyOriginalLog(project, visible(store, filter[0])))));
+            FlowSettingsPopup.showChoices(copy, "Copy", sections,
+                    store.isCopyAllFlows() ? "Copy All Flows is on: every flow is copied." : null, true);
         });
 
         // Open the flow as a Markdown file with the preview (all flows when Copy All Flows is on).
@@ -267,7 +282,7 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
             if (!(uo instanceof FlowEntry entry)) return;
             String input = Messages.showInputDialog(project,
                     "Short note for this line (leave empty to remove it):",
-                    "Flow Tracker Note", null, entry.note == null ? "" : entry.note, null);
+                    "TraceWeave Note", null, entry.note == null ? "" : entry.note, null);
             if (input != null) {
                 reselect.set(entry);
                 store.setNote(entry, input.trim());
@@ -694,8 +709,14 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         FlowLook.get().addListener(repaint);
         Disposer.register(toolWindow.getDisposable(), () -> FlowLook.get().removeListener(repaint));
 
-        Content content = ContentFactory.getInstance().createContent(rootPanel, "", false);
+        Content content = ContentFactory.getInstance().createContent(rootPanel, "Flow", false);
         toolWindow.getContentManager().addContent(content);
+
+        // Debug values saved from the debugger (Variables view → Save to TraceWeave): find, compare, edit.
+        FlowDebugPanel debugData = new FlowDebugPanel(project);
+        Content debugContent = ContentFactory.getInstance().createContent(debugData, FlowDebugPanel.TAB, false);
+        debugContent.setDisposer(debugData);
+        toolWindow.getContentManager().addContent(debugContent);
     }
 
     // ================= tree look =================
@@ -1410,6 +1431,11 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
             // Line number (grouped) or step number (flat), right-aligned in the gutter.
             String number = flat ? String.valueOf(step) : FlowFormat.lineNumber(e);
             FlowCheck.Problem problem = problems.get(e);
+            FlowTag tag = FlowTag.of(e);
+            if (tag != null) { // a bar in the tag's color at the row's start: visible without scrolling
+                g.setColor(tag.fg);
+                g.fillRoundRect(0, y0 + JBUI.scale(2), JBUI.scale(3), h0 - JBUI.scale(4), JBUI.scale(3), JBUI.scale(3));
+            }
             g.setFont(codeFont);
             g.setColor(problem != null ? FlowTheme.WARNING : FlowTheme.LINE_NO);
             g.drawString(number, gutter - JBUI.scale(10) - code.stringWidth(number), baseline(code, y0, h0));
@@ -1425,6 +1451,9 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
                 if (showProjectInFlat) x = paintTag(g, e.projectName, x - JBUI.scale(10), y0, h0) + JBUI.scale(10);
             }
 
+            // The tag comes first, before the code, so a long line doesn't push it out of sight.
+            if (tag != null) x = paintPill(g, tag.label, tag.bg, tag.fg, x - JBUI.scale(10), y0, h0) + JBUI.scale(6);
+
             g.setFont(codeFont);
             int by = baseline(code, y0, h0);
             for (CodeHighlighter.Span span : CodeHighlighter.highlight(e.text.strip(), FlowLang.kind(e.fileName))) {
@@ -1433,8 +1462,6 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
                 x += code.stringWidth(span.text());
             }
 
-            FlowTag tag = FlowTag.of(e);
-            if (tag != null) x = paintPill(g, tag.label, tag.bg, tag.fg, x, y0, h0);
             if (problem != null) x = paintProblem(g, problem, x, y0, h0);
             for (String c : connections(e)) x = paintPill(g, c, FlowTheme.TAG_BG, FlowTheme.ACCENT, x, y0, h0);
 
@@ -1619,7 +1646,7 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
 
     /** Saves the active flow as a .flow.json file (paths relative to the project, so teammates can open it). */
     private static void exportFlow(Project project, FlowStore store) {
-        FileSaverDescriptor descriptor = new FileSaverDescriptor("Export Flow",
+        FileSaverDescriptor descriptor = FlowCompat.saverDescriptor("Export Flow",
                 "Save this flow as a file you can commit or send to a teammate", "json");
         VirtualFileWrapper target = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project)
                 .save(projectDir(project), FlowTransfer.fileNameFor(store.getActiveFlowName()));
@@ -1640,7 +1667,7 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
     private static void importFlow(Project project, FlowStore store) {
         VirtualFile file = FileChooser.chooseFile(
                 FileChooserDescriptorFactory.createSingleFileDescriptor("json")
-                        .withTitle("Import Flow").withDescription("Choose a .flow.json file exported from Flow Tracker"),
+                        .withTitle("Import Flow").withDescription("Choose a .flow.json file exported from TraceWeave"),
                 project, projectDir(project));
         if (file == null) return;
         try {
@@ -1710,8 +1737,11 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         FlowCopy.toClipboard(text);
     }
 
-    /** Panel that tells the IDE which Copy / Delete handlers to use when the tree has focus. */
-    private static final class RootPanel extends JPanel implements UiDataProvider {
+    /**
+     * Panel that tells the IDE which Copy / Delete handlers to use when the tree has focus. DataProvider works in every
+     * supported IDE (2023.1 and later); newer IDEs also have UiDataProvider, but still support this one.
+     */
+    private static final class RootPanel extends JPanel implements DataProvider {
         private final CopyProvider copyProvider;
         private final DeleteProvider deleteProvider;
 
@@ -1722,9 +1752,10 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         }
 
         @Override
-        public void uiDataSnapshot(@NotNull DataSink sink) {
-            sink.set(PlatformDataKeys.COPY_PROVIDER, copyProvider);
-            sink.set(PlatformDataKeys.DELETE_ELEMENT_PROVIDER, deleteProvider);
+        public @Nullable Object getData(@NotNull String dataId) {
+            if (PlatformDataKeys.COPY_PROVIDER.is(dataId)) return copyProvider;
+            if (PlatformDataKeys.DELETE_ELEMENT_PROVIDER.is(dataId)) return deleteProvider;
+            return null;
         }
     }
 }

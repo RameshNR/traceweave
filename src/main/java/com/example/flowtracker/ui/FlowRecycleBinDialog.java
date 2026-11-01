@@ -54,7 +54,7 @@ final class FlowRecycleBinDialog extends DialogWrapper {
         super(project);
         this.project = project;
         this.store = FlowStore.get(project);
-        setTitle("Flow Tracker Recycle Bin");
+        setTitle("TraceWeave Recycle Bin");
         setOKButtonText("Restore");
 
         deleteAction = new DialogWrapperAction("Delete Permanently") {
@@ -166,12 +166,14 @@ final class FlowRecycleBinDialog extends DialogWrapper {
     }
 
     @Override
-    protected Action @NotNull [] createActions() {
+    @NotNull
+    protected Action[] createActions() {
         return new Action[]{getOKAction(), deleteAction, getCancelAction()};
     }
 
     @Override
-    protected Action @NotNull [] createLeftSideActions() {
+    @NotNull
+    protected Action[] createLeftSideActions() {
         return new Action[]{emptyAction};
     }
 

@@ -235,7 +235,7 @@ final class LineHoverHandler implements EditorMouseMotionListener, EditorMouseLi
 
         @Override public @NotNull Icon getIcon() { return AllIcons.General.Add; }
         @Override public @NotNull Alignment getAlignment() { return Alignment.LEFT; }
-        @Override public String getTooltipText() { return "Add this line to Flow Tracker"; }
+        @Override public String getTooltipText() { return "Add this line to TraceWeave"; }
         @Override public boolean isNavigateAction() { return true; }
 
         @Override
@@ -252,7 +252,7 @@ final class LineHoverHandler implements EditorMouseMotionListener, EditorMouseLi
         @Override public int hashCode() { return System.identityHashCode(this); }
     }
 
-    /** Green badge with the step number: the line is already in Flow Tracker. Click removes it. */
+    /** Green badge with the step number: the line is already in TraceWeave. Click removes it. */
     private final class AddedRenderer extends GutterIconRenderer {
         private final FlowEntry entry;
         private final int step;
@@ -271,7 +271,7 @@ final class LineHoverHandler implements EditorMouseMotionListener, EditorMouseLi
 
         @Override
         public String getTooltipText() {
-            StringBuilder html = new StringBuilder("<html><b>Flow Tracker");
+            StringBuilder html = new StringBuilder("<html><b>TraceWeave");
             if (step > 0) html.append(": step ").append(step).append(" of ").append(steps);
             html.append("</b><br>").append(StringUtil.escapeXmlEntities(FlowFormat.flatLabel(entry)));
             FlowTag tag = FlowTag.of(entry);

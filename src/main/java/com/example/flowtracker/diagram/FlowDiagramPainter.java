@@ -1,5 +1,6 @@
 package com.example.flowtracker.diagram;
 
+import com.example.flowtracker.model.FlowTag;
 import org.jetbrains.annotations.Nullable;
 
 import java.awt.BasicStroke;
@@ -161,13 +162,20 @@ public final class FlowDiagramPainter {
 
     /** The class name and file name part, without the note. */
     private static double titleHeight(FlowDiagram.Box b) {
-        return b.subtitle().isEmpty() ? HEADER_NEW : HEADER;
+        return b.fileLine().isEmpty() ? HEADER_NEW : HEADER;
+    }
+
+    /** The band above the class name with the box's project (0 without a project). */
+    static final double PROJECT_BAND = 22;
+
+    private static double band(FlowDiagram.Box b) {
+        return b.project().isEmpty() ? 0 : PROJECT_BAND;
     }
 
     /** The class name, file name and the note under them. */
     double headerHeight(FlowDiagram.Box b) {
         int notes = boxNote(b).size();
-        return titleHeight(b) + (notes == 0 ? 0 : notes * NOTE_LINE + 4);
+        return band(b) + titleHeight(b) + (notes == 0 ? 0 : notes * NOTE_LINE + 4);
     }
 
     /** A method's row: its name, and its note under it. */
@@ -179,12 +187,13 @@ public final class FlowDiagramPainter {
     double width(FlowDiagram.Box b) {
         String tag = boxTag(b);
         double title = metrics(titleFont(b)).stringWidth(b.name) + (tag.isEmpty() ? 0 : 16 + smallFm.stringWidth(tag));
-        double w = Math.max(title, metrics(fileFont(b)).stringWidth(b.subtitle())) + 28;
+        double w = Math.max(title, metrics(fileFont(b)).stringWidth(b.fileLine())) + 28;
+        if (!b.project().isEmpty()) w = Math.max(w, metrics(projectFont(b)).stringWidth(b.project()) + 28 + 14);
         FontMetrics bn = metrics(noteFont(b.noteFormat));
         for (String line : boxNote(b)) w = Math.max(w, bn.stringWidth(line) + 28);
         // row: dot and name from x+24, a gap, the badge, 12 to the edge; the note from x+24
         for (FlowDiagram.Method m : b.methods) {
-            w = Math.max(w, 24 + metrics(methodFont(b, m)).stringWidth(m.name) + 16 + smallFm.stringWidth(badge(m)) + 12);
+            w = Math.max(w, 24 + metrics(methodFont(b, m)).stringWidth(m.name) + tagWidth(m) + 16 + smallFm.stringWidth(badge(m)) + 12);
             FontMetrics mn = metrics(noteFont(m.noteFormat));
             for (String line : methodNote(m)) w = Math.max(w, 24 + mn.stringWidth(line) + 12);
         }
@@ -250,6 +259,43 @@ public final class FlowDiagramPainter {
         return new Point2D.Double(right ? r.getMaxX() : r.getX(), r.getCenterY());
     }
 
+    /** Which side of the caller's row a call leaves (true: the right) and of the callee's row it enters (true: the left). */
+    private boolean[] sides(FlowDiagram d, FlowDiagram.Link l) {
+        Rectangle2D fb = bounds(d.boxOf(l.from())), tb = bounds(d.boxOf(l.to()));
+        if (tb.getX() >= fb.getMaxX()) return new boolean[]{true, true};
+        if (tb.getMaxX() <= fb.getX()) return new boolean[]{false, false};
+        return new boolean[]{true, false};
+    }
+
+    /** The largest distance between the ends of two calls on the same side of a row. */
+    private static final double FAN_STEP = 8;
+
+    /**
+     * Where on its row's edge a call starts (or ends), up or down from the middle: when a method calls several
+     * methods (or is called by several), each call gets its own spot, in the order of the rows at the other end, so
+     * the lines run apart and two separate calls never look like one call that branches.
+     */
+    private double fan(FlowDiagram d, FlowDiagram.Link l, boolean atStart) {
+        boolean side = sides(d, l)[atStart ? 0 : 1];
+        List<FlowDiagram.Link> same = new ArrayList<>();
+        for (FlowDiagram.Link o : d.links) {
+            if (!(atStart ? o.from().equals(l.from()) : o.to().equals(l.to()))) continue;
+            if (sides(d, o)[atStart ? 0 : 1] == side) same.add(o);
+        }
+        if (same.size() < 2) return 0;
+        same.sort(java.util.Comparator.comparingDouble((FlowDiagram.Link o) -> {
+            String other = atStart ? o.to() : o.from();
+            return anchor(d, other, true).getY();
+        }).thenComparing(o -> atStart ? o.to() : o.from()));
+        int k = same.indexOf(l), n = same.size();
+        double step = Math.min(FAN_STEP, (ROW - 8) / (n - 1.0));
+        return (k - (n - 1) / 2.0) * step;
+    }
+
+    private static Point2D shifted(Point2D p, double dy) {
+        return new Point2D.Double(p.getX(), p.getY() + dy);
+    }
+
     /** A call's line: its path, its end, and a point just before the end (the arrow head points from it). */
     private record Route(Shape path, Point2D tip, Point2D before) {}
 
@@ -273,18 +319,87 @@ public final class FlowDiagramPainter {
         Route direct = direct(d, l);
         FlowDiagram.Box from = d.boxOf(l.from()), to = d.boxOf(l.to());
         List<Rectangle2D> others = new ArrayList<>();
-        StringBuilder key = new StringBuilder(l.from()).append('>').append(l.to()).append('|').append(d.line(l).shape());
+        StringBuilder key = new StringBuilder(l.from()).append('>').append(l.to()).append('|').append(d.line(l).shape())
+                .append('|').append(direct.tip()).append('|').append(fan(d, l, true));
         for (FlowDiagram.Box b : d.boxes) {
             Rectangle2D r = bounds(b);
             key.append('|').append(Math.round(r.getX())).append(',').append(Math.round(r.getY())).append(',')
                     .append(Math.round(r.getWidth())).append(',').append(Math.round(r.getHeight()));
             if (b != from && b != to) others.add(r);
         }
-        if (!crosses(direct.path(), others)) return direct;
+        List<java.awt.geom.Line2D> along = siblingSegments(d, l, direct);
+        if (!crosses(direct.path(), others) && !runsAlong(direct.path(), along)) return direct;
+        key.append("|s").append(along.size());
         return detours.computeIfAbsent(key.toString(), k -> {
-            Route around = detour(d, l, direct);
+            Route around = detour(d, l, direct, along);
             return around != null ? around : direct;
         });
+    }
+
+    /** How close two lines may run side by side before they read as one. */
+    private static final double APART = 24;
+
+    /**
+     * The straight pieces of the lines this call should keep away from: the other calls from the same method (or to
+     * the same method) that go less far up or down than this one, so the call that goes further away is the one that
+     * leaves the shared way early, and two separate calls don't look like one call that branches.
+     */
+    private List<java.awt.geom.Line2D> siblingSegments(FlowDiagram d, FlowDiagram.Link l, Route direct) {
+        List<java.awt.geom.Line2D> out = new ArrayList<>();
+        double span = span(direct);
+        for (FlowDiagram.Link o : d.links) {
+            if (o.equals(l) || !(o.from().equals(l.from()) || o.to().equals(l.to()))) continue;
+            Route od = direct(d, o);
+            double os = span(od);
+            boolean defer = span > os + 0.5 || Math.abs(span - os) <= 0.5 && (l.to() + l.from()).compareTo(o.to() + o.from()) > 0;
+            if (defer) out.addAll(segments(od.path()));
+        }
+        return out;
+    }
+
+    private static double span(Route r) {
+        double[] c = new double[6];
+        r.path().getPathIterator(null).currentSegment(c);
+        return Math.abs(r.tip().getY() - c[1]);
+    }
+
+    /** A shape as straight pieces (curves flattened). */
+    private static List<java.awt.geom.Line2D> segments(Shape path) {
+        List<java.awt.geom.Line2D> out = new ArrayList<>();
+        double[] c = new double[6];
+        double lx = 0, ly = 0;
+        for (PathIterator it = path.getPathIterator(null, 1.0); !it.isDone(); it.next()) {
+            int type = it.currentSegment(c);
+            if (type == PathIterator.SEG_LINETO) out.add(new java.awt.geom.Line2D.Double(lx, ly, c[0], c[1]));
+            lx = c[0];
+            ly = c[1];
+        }
+        return out;
+    }
+
+    /** True when an elbow line runs within {@link #APART} of one of the lines for a good part of its way. */
+    private static boolean runsAlong(Shape path, List<java.awt.geom.Line2D> lines) {
+        if (lines.isEmpty() || !(path instanceof Path2D)) return false; // curves and straight lines part by themselves
+        double together = 0;
+        for (java.awt.geom.Line2D s : segments(path)) together += alongside(s, lines);
+        return together > 30;
+    }
+
+    /** How long a horizontal or vertical piece runs within {@link #APART} of parallel pieces of the lines. */
+    private static double alongside(java.awt.geom.Line2D s, List<java.awt.geom.Line2D> lines) {
+        boolean horizontal = Math.abs(s.getY1() - s.getY2()) < 0.5, vertical = Math.abs(s.getX1() - s.getX2()) < 0.5;
+        if (!horizontal && !vertical) return 0;
+        double total = 0;
+        for (java.awt.geom.Line2D o : lines) {
+            if (horizontal && Math.abs(o.getY1() - o.getY2()) < 2 && Math.abs(o.getY1() - s.getY1()) < APART) {
+                total += Math.max(0, Math.min(Math.max(s.getX1(), s.getX2()), Math.max(o.getX1(), o.getX2()))
+                        - Math.max(Math.min(s.getX1(), s.getX2()), Math.min(o.getX1(), o.getX2())));
+            } else if (vertical && Math.abs(o.getX1() - o.getX2()) < 2 && Math.abs(o.getX1() - s.getX1()) < APART) {
+                total += Math.max(0, Math.min(Math.max(s.getY1(), s.getY2()), Math.max(o.getY1(), o.getY2()))
+                        - Math.max(Math.min(s.getY1(), s.getY2()), Math.min(o.getY1(), o.getY2())));
+            }
+        }
+        return total;
     }
 
     /** True when the line runs through one of the boxes. */
@@ -311,7 +426,7 @@ public final class FlowDiagramPainter {
      * A line around the boxes, from the same ends as the direct line: the shortest path with the fewest turns along
      * the lanes next to the boxes (a grid made of the boxes' edges, {@link #CLEARANCE} away from them).
      */
-    private @Nullable Route detour(FlowDiagram d, FlowDiagram.Link l, Route direct) {
+    private @Nullable Route detour(FlowDiagram d, FlowDiagram.Link l, Route direct, List<java.awt.geom.Line2D> along) {
         FlowDiagram.Box from = d.boxOf(l.from()), to = d.boxOf(l.to());
         Rectangle2D fb = bounds(from), tb = bounds(to);
         double[] start = new double[2];
@@ -367,7 +482,9 @@ public final class FlowDiagramPainter {
                 if (ni < 0 || nj < 0 || ni >= nx || nj >= ny) continue;
                 if (blocked(walls, xs[i], ys[j], xs[ni], ys[nj])) continue;
                 double c = top[0] + Math.abs(xs[ni] - xs[i]) * yCost[j] + Math.abs(ys[nj] - ys[j]) * xCost[i]
-                        + (nd == dir ? 0 : turn);
+                        + (nd == dir ? 0 : turn)
+                        // running right next to a related call costs a lot more, so it takes its own way
+                        + (along.isEmpty() ? 0 : 4 * alongside(new java.awt.geom.Line2D.Double(xs[i], ys[j], xs[ni], ys[nj]), along));
                 int ns = (nj * nx + ni) * 4 + nd;
                 if (c < cost[ns]) {
                     cost[ns] = c;
@@ -473,21 +590,22 @@ public final class FlowDiagramPainter {
         Point2D a, b;
         double c1, c2;
         boolean loop = false;
+        double fromDy = fan(d, l, true), toDy = fan(d, l, false);
         if (tb.getX() >= fb.getMaxX()) {          // callee to the right
-            a = anchor(d, l.from(), true);
-            b = anchor(d, l.to(), false);
+            a = shifted(anchor(d, l.from(), true), fromDy);
+            b = shifted(anchor(d, l.to(), false), toDy);
             double dx = Math.max(40, (b.getX() - a.getX()) / 2);
             c1 = a.getX() + dx;
             c2 = b.getX() - dx;
         } else if (tb.getMaxX() <= fb.getX()) {   // callee to the left
-            a = anchor(d, l.from(), false);
-            b = anchor(d, l.to(), true);
+            a = shifted(anchor(d, l.from(), false), fromDy);
+            b = shifted(anchor(d, l.to(), true), toDy);
             double dx = Math.max(40, (a.getX() - b.getX()) / 2);
             c1 = a.getX() - dx;
             c2 = b.getX() + dx;
         } else {                                  // same column (or the same box): loop around the right side
-            a = anchor(d, l.from(), true);
-            b = anchor(d, l.to(), true);
+            a = shifted(anchor(d, l.from(), true), fromDy);
+            b = shifted(anchor(d, l.to(), true), toDy);
             double out = Math.max(a.getX(), b.getX()) + 50;
             c1 = out;
             c2 = out;
@@ -519,6 +637,9 @@ public final class FlowDiagramPainter {
     }
 
     Hit hit(FlowDiagram d, Point2D p) {
+        for (Map.Entry<FlowDiagram.Link, Rectangle2D> note : callNoteLayout(d).entrySet()) { // notes are drawn on top
+            if (note.getValue().contains(p)) return new Hit(null, null, note.getKey());
+        }
         for (int i = d.boxes.size() - 1; i >= 0; i--) { // topmost (last drawn) first
             FlowDiagram.Box b = d.boxes.get(i);
             if (!bounds(b).contains(p)) continue;
@@ -559,6 +680,193 @@ public final class FlowDiagramPainter {
         hints(g);
         for (FlowDiagram.Link l : d.links) paintLink(g, d, l, p, l.equals(sel.link()));
         for (FlowDiagram.Box b : d.boxes) paintBox(g, b, p, sel);
+        Map<FlowDiagram.Link, Rectangle2D> notes = callNoteLayout(d);
+        for (FlowDiagram.Link l : d.links) paintCallNote(g, d, l, notes.get(l), p, l.equals(sel.link())); // on top of everything
+    }
+
+    // ---------- notes on calls ----------
+
+    /** The widest a call's note gets before it wraps. */
+    private static final double CALL_NOTE_WIDTH = 200;
+
+    /**
+     * Where a call's note is drawn: a small card on its arrow (null without a note). Notes are placed one after the
+     * other, each at the first free spot along its own arrow (the middle, then a little before or after it), so
+     * notes of calls that share part of their way (e.g. two calls from the same method) don't cover each other or
+     * the boxes.
+     */
+    @Nullable Rectangle2D callNoteBounds(FlowDiagram d, FlowDiagram.Link l) {
+        return callNoteLayout(d).get(l);
+    }
+
+    /** Spots along an arrow to try, as fractions of its length: the middle first. */
+    private static final double[] NOTE_SPOTS = {0.5, 0.38, 0.62, 0.28, 0.72, 0.18, 0.82, 0.1, 0.9};
+    /** Widths a note is wrapped at, widest first: a narrower note fits in the gap between two boxes. */
+    private static final double[] NOTE_WIDTHS = {CALL_NOTE_WIDTH, 140, 100, 70};
+
+    /**
+     * Every call note's card. Each note takes the first free spot along its own arrow (on it, then just above or
+     * below it), wrapped narrower when it doesn't fit between the boxes; with no free spot at all, the spot where it
+     * covers the least.
+     */
+    Map<FlowDiagram.Link, Rectangle2D> callNoteLayout(FlowDiagram d) {
+        Map<FlowDiagram.Link, Rectangle2D> out = new LinkedHashMap<>();
+        List<Rectangle2D> taken = new ArrayList<>();
+        for (FlowDiagram.Box b : d.boxes) taken.add(bounds(b));
+        Map<FlowDiagram.Link, List<java.awt.geom.Line2D>> pieces = new LinkedHashMap<>();
+        for (FlowDiagram.Link l : d.links) pieces.put(l, segments(linkPath(d, l)));
+        for (FlowDiagram.Link l : d.links) {
+            String note = d.callNote(l);
+            if (note.isBlank()) continue;
+            Shape path = linkPath(d, l);
+            List<java.awt.geom.Line2D> otherLines = new ArrayList<>();
+            pieces.forEach((o, segs) -> { if (!o.equals(l)) otherLines.addAll(segs); });
+            Rectangle2D found = null, least = null;
+            double leastCover = Double.MAX_VALUE;
+            search:
+            for (double width : NOTE_WIDTHS) {
+                List<String> lines = callNoteLines(note, width);
+                double w = 0;
+                for (String s : lines) w = Math.max(w, smallFm.stringWidth(s));
+                w += 12;
+                double h = lines.size() * NOTE_LINE + 6;
+                for (double t : NOTE_SPOTS) {
+                    Point2D at = pointAlong(path, t);
+                    for (double dy : new double[]{0, -(h / 2 + 8), h / 2 + 8}) {
+                        Rectangle2D r = new Rectangle2D.Double(at.getX() - w / 2, at.getY() + dy - h / 2, w, h);
+                        double cover = covered(r, taken) + 600 * crossings(r, otherLines);
+                        if (cover == 0) {
+                            found = r;
+                            break search;
+                        }
+                        if (cover < leastCover) {
+                            leastCover = cover;
+                            least = r;
+                        }
+                    }
+                }
+            }
+            Rectangle2D r = found != null ? found : least;
+            out.put(l, r);
+            taken.add(r);
+        }
+        return out;
+    }
+
+    /** How many of the other calls' line pieces run through a note (with a small margin): a note doesn't hide them. */
+    private static int crossings(Rectangle2D r, List<java.awt.geom.Line2D> lines) {
+        Rectangle2D g = new Rectangle2D.Double(r.getX() - 3, r.getY() - 3, r.getWidth() + 6, r.getHeight() + 6);
+        int n = 0;
+        for (java.awt.geom.Line2D s : lines) if (s.intersects(g)) n++;
+        return n;
+    }
+
+    /** How much of a note (with a small margin) other notes and boxes cover. */
+    private static double covered(Rectangle2D r, List<Rectangle2D> taken) {
+        Rectangle2D g = new Rectangle2D.Double(r.getX() - 3, r.getY() - 3, r.getWidth() + 6, r.getHeight() + 6);
+        double area = 0;
+        for (Rectangle2D t : taken) {
+            Rectangle2D x = g.createIntersection(t);
+            if (x.getWidth() > 0 && x.getHeight() > 0) area += x.getWidth() * x.getHeight();
+        }
+        return area;
+    }
+
+    /** A note's lines, wrapped at a width. */
+    private List<String> callNoteLines(String note, double maxWidth) {
+        List<String> out = new ArrayList<>();
+        if (note == null || note.isBlank()) return out;
+        for (String para : note.strip().split("\\R")) {
+            StringBuilder line = new StringBuilder();
+            for (String word : para.split(" ")) {
+                String next = line.length() == 0 ? word : line + " " + word;
+                if (line.length() > 0 && smallFm.stringWidth(next) > maxWidth) {
+                    out.add(line.toString());
+                    line = new StringBuilder(word);
+                } else {
+                    line = new StringBuilder(next);
+                }
+            }
+            out.add(line.toString());
+        }
+        return out;
+    }
+
+    /** A note's lines at the usual width (the sequence diagram). */
+    private List<String> callNoteLines(String note) {
+        return callNoteLines(note, CALL_NOTE_WIDTH);
+    }
+
+    private void paintCallNote(Graphics2D g, FlowDiagram d, FlowDiagram.Link l, @Nullable Rectangle2D r, Palette p, boolean selected) {
+        if (r == null) return;
+        FlowDiagram.NoteStyle style = d.noteStyle(l);
+        noteCard(g, r, style, p, selected);
+        g.setFont(small.deriveFont(Font.ITALIC));
+        g.setColor(noteText(style, p));
+        List<String> lines = callNoteLines(d.callNote(l), r.getWidth() - 12); // wrapped as the layout did
+        for (int i = 0; i < lines.size(); i++) {
+            g.drawString(lines.get(i), (float) (r.getX() + 6), (float) (r.getY() + 3 + i * NOTE_LINE + smallFm.getAscent()));
+        }
+    }
+
+    /** A note's card in its style: shape, background and border (a selected call's note gets the selection color). */
+    private static void noteCard(Graphics2D g, Rectangle2D r, FlowDiagram.NoteStyle style, Palette p, boolean selected) {
+        double arc = switch (style.shape()) {
+            case RECTANGLE -> 0;
+            case PILL -> r.getHeight();
+            default -> 8;
+        };
+        Shape card = new RoundRectangle2D.Double(r.getX(), r.getY(), r.getWidth(), r.getHeight(), arc, arc);
+        if (style.shape() == FlowDiagram.NoteShape.PLAIN) {
+            // Text only: no card, but the line doesn't run through the text (it shows on both sides of it).
+            g.setColor(p.background());
+            g.fill(new RoundRectangle2D.Double(r.getX(), r.getY(), r.getWidth(), r.getHeight(), 6, 6));
+        }
+        if (style.shape() != FlowDiagram.NoteShape.PLAIN || selected) {
+            if (style.shape() != FlowDiagram.NoteShape.PLAIN) {
+                g.setColor(style.background() != null ? style.background() : p.noteBg());
+                g.fill(card);
+            }
+            g.setColor(selected ? p.selection() : style.border() != null ? style.border() : p.noteBorder());
+            g.setStroke(new BasicStroke(selected ? 1.6f : 1f));
+            g.draw(card);
+            g.setStroke(new BasicStroke(1f));
+        }
+    }
+
+    /** A note's text color: its own, else readable on its background. */
+    private static Color noteText(FlowDiagram.NoteStyle style, Palette p) {
+        if (style.text() != null) return style.text();
+        if (style.background() != null && style.shape() != FlowDiagram.NoteShape.PLAIN) {
+            return FlowDiagram.isDark(style.background()) ? new Color(0xF2F4F7) : new Color(0x1E1F22);
+        }
+        return p.title();
+    }
+
+    /** The point at a fraction (0 to 1) of a path's length. */
+    private static Point2D pointAlong(Shape path, double fraction) {
+        List<double[]> segments = new ArrayList<>();
+        double total = 0, lx = 0, ly = 0;
+        double[] c = new double[6];
+        for (PathIterator it = path.getPathIterator(null, 1.0); !it.isDone(); it.next()) {
+            int type = it.currentSegment(c);
+            if (type == PathIterator.SEG_LINETO) {
+                double len = Math.hypot(c[0] - lx, c[1] - ly);
+                segments.add(new double[]{lx, ly, c[0], c[1], len});
+                total += len;
+            }
+            lx = c[0];
+            ly = c[1];
+        }
+        double half = total * fraction;
+        for (double[] s : segments) {
+            if (half <= s[4] && s[4] > 0) {
+                double t = half / s[4];
+                return new Point2D.Double(s[0] + (s[2] - s[0]) * t, s[1] + (s[3] - s[1]) * t);
+            }
+            half -= s[4];
+        }
+        return new Point2D.Double(lx, ly);
     }
 
     private void paintBox(Graphics2D g, FlowDiagram.Box b, Palette palette, Selection sel) {
@@ -590,8 +898,9 @@ public final class FlowDiagramPainter {
         FontMetrics tm = metrics(tf);
         g.setFont(tf);
         g.setColor(colored(b.title, hp.title()));
-        double titleY = b.subtitle().isEmpty() ? r.getY() + (titleHeight(b) + tm.getAscent() - tm.getDescent()) / 2
-                : r.getY() + 8 + tm.getAscent();
+        double top = r.getY() + band(b);
+        double titleY = b.fileLine().isEmpty() ? top + (titleHeight(b) + tm.getAscent() - tm.getDescent()) / 2
+                : top + 8 + tm.getAscent();
         g.drawString(b.name, (float) (r.getX() + 14), (float) titleY);
         String tag = boxTag(b);
         if (!tag.isEmpty()) {
@@ -599,12 +908,14 @@ public final class FlowDiagramPainter {
             g.setColor(b.isUnknown() ? hp.custom() : hp.added());
             g.drawString(tag, (float) (r.getMaxX() - 12 - smallFm.stringWidth(tag)), (float) titleY);
         }
-        if (!b.subtitle().isEmpty()) {
+        if (!b.fileLine().isEmpty()) {
             g.setFont(fileFont(b));
             g.setColor(colored(b.fileFormat, hp.muted()));
-            g.drawString(b.subtitle(), (float) (r.getX() + 14), (float) (titleY + 4 + smallFm.getAscent()));
+            g.drawString(b.fileLine(), (float) (r.getX() + 14), (float) (titleY + 4 + smallFm.getAscent()));
         }
-        paintNote(g, boxNote(b), b.noteFormat, r.getX() + 14, r.getY() + titleHeight(b) - 4, hp);
+        paintNote(g, boxNote(b), b.noteFormat, r.getX() + 14, top + titleHeight(b) - 4, hp);
+        paintProjectBand(g, b, r, headerColor != null ? headerColor : b.isUnknown() ? mix(p.custom(), fill, 0.18) : p.headerBg(),
+                b.border != null ? border : b.headerFill != null ? hp.boxBorder() : p.boxBorder(), hp);
 
         // methods
         if (b.methods.isEmpty()) {
@@ -627,6 +938,7 @@ public final class FlowDiagramPainter {
             Font mf = methodFont(b, m);
             g.setFont(mf);
             g.drawString(m.name, (float) (name.getX() + 24), (float) baseline(name, metrics(mf)));
+            paintMethodTag(g, m, name.getX() + 24 + metrics(mf).stringWidth(m.name) + 8, name, fill);
             paintBadge(g, m, name, p);
             paintNote(g, methodNote(m), m.noteFormat, name.getX() + 24, name.getMaxY() - 5, p);
         }
@@ -636,6 +948,60 @@ public final class FlowDiagramPainter {
         g.setStroke(new BasicStroke(selected || b.isUnknown() || b.border != null ? 2f : 1f));
         g.draw(card);
         g.setStroke(s);
+    }
+
+    /**
+     * The project band: joined on top of the class section, in its own colors, border and text format (the file
+     * name's), a little deeper so it reads as its own part, with a divider under it.
+     */
+    private void paintProjectBand(Graphics2D g, FlowDiagram.Box b, Rectangle2D r, Color section, Color line, Palette hp) {
+        if (b.project().isEmpty()) return;
+        Shape old = g.getClip();
+        RoundRectangle2D whole = new RoundRectangle2D.Double(r.getX(), r.getY(), r.getWidth(), r.getHeight(), 12, 12);
+        g.clip(whole);
+        Color fill = b.projectFill != null ? b.projectFill : mix(line, section, 0.18);
+        g.setColor(fill);
+        g.fill(new Rectangle2D.Double(r.getX(), r.getY(), r.getWidth(), PROJECT_BAND));
+        g.setClip(old);
+        Color edge = b.projectBorder != null ? b.projectBorder : line;
+        g.setColor(edge);
+        g.draw(new java.awt.geom.Line2D.Double(r.getX(), r.getY() + PROJECT_BAND, r.getMaxX(), r.getY() + PROJECT_BAND));
+        if (b.projectBorder != null) { // its own border: around the band (the box's rounded top corners included)
+            Shape oldClip = g.getClip();
+            g.clip(new Rectangle2D.Double(r.getX() - 2, r.getY() - 2, r.getWidth() + 4, PROJECT_BAND + 2));
+            g.draw(whole);
+            g.setClip(oldClip);
+        }
+        // a small folder mark, then the name
+        double x = r.getX() + 14, cy = r.getY() + PROJECT_BAND / 2;
+        Color usual = b.projectFill == null ? hp.muted() : readableOn(b.projectFill);
+        Color text = b.projectFormat != null ? colored(b.projectFormat, usual) : b.projectFill != null ? usual : colored(b.fileFormat, usual);
+        g.setColor(text);
+        Path2D folder = new Path2D.Double();
+        folder.moveTo(x, cy - 3.5);
+        folder.lineTo(x + 3.5, cy - 3.5);
+        folder.lineTo(x + 5, cy - 2);
+        folder.lineTo(x + 9, cy - 2);
+        folder.lineTo(x + 9, cy + 4);
+        folder.lineTo(x, cy + 4);
+        folder.closePath();
+        g.draw(folder);
+        Font f = projectFont(b);
+        g.setFont(f);
+        FontMetrics m = metrics(f);
+        g.drawString(b.project(), (float) (x + 14), (float) (cy + (m.getAscent() - m.getDescent()) / 2.0));
+    }
+
+    /** The project name's font: its own format, else the file name's format in bold. */
+    private Font projectFont(FlowDiagram.Box b) {
+        if (b.projectFormat != null) return styled(small, b.projectFormat, Font.PLAIN);
+        return fileFont(b).deriveFont(fileFont(b).getStyle() | Font.BOLD);
+    }
+
+    /** Text that stays readable on a background: light on a dark one, dark on a light one. */
+    private static Color readableOn(Color bg) {
+        double lum = (0.299 * bg.getRed() + 0.587 * bg.getGreen() + 0.114 * bg.getBlue()) / 255;
+        return lum < 0.55 ? new Color(0xE6E8EC) : new Color(0x3A3D45);
     }
 
     /** A note's lines from the given top (the usual note color: muted). */
@@ -662,6 +1028,33 @@ public final class FlowDiagramPainter {
         String count = n == 1 ? "1 line" : n + " lines";
         return m.picked.isEmpty() ? count : count + " (+" + m.picked.size() + ")";
     }
+
+    // ---------- tags (Bug, Important, Question) ----------
+
+    /** The space a method's tag pill takes after its name (0 without a tag). */
+    private double tagWidth(FlowDiagram.Method m) {
+        FlowTag t = FlowTag.byId(m.tag);
+        return t == null ? 0 : 8 + smallFm.stringWidth(t.label) + 12;
+    }
+
+    /** A method's tag as a small pill after its name, in the tag's colors for a light or dark method section. */
+    private void paintMethodTag(Graphics2D g, FlowDiagram.Method m, double x, Rectangle2D row, Color section) {
+        FlowTag t = FlowTag.byId(m.tag);
+        if (t == null) return;
+        boolean dark = FlowDiagram.isDark(section);
+        Color fg = new Color(dark ? TAG_DARK_FG[t.ordinal()] : TAG_LIGHT_FG[t.ordinal()]);
+        Color bg = new Color(dark ? TAG_DARK_BG[t.ordinal()] : TAG_LIGHT_BG[t.ordinal()]);
+        double w = smallFm.stringWidth(t.label) + 12, h = smallFm.getHeight() + 2;
+        g.setColor(bg);
+        g.fill(new RoundRectangle2D.Double(x, row.getCenterY() - h / 2, w, h, 8, 8));
+        g.setColor(fg);
+        g.setFont(small);
+        g.drawString(t.label, (float) (x + 6), (float) baseline(row, smallFm));
+    }
+
+    /** The tags' colors (as {@link FlowTag} has them), by ordinal, for images in either background. */
+    private static final int[] TAG_LIGHT_FG = {0xD64550, 0xC27C0E, 0x7A4FD6}, TAG_DARK_FG = {0xE5636D, 0xE5A83B, 0xA987F0};
+    private static final int[] TAG_LIGHT_BG = {0xFCE8EA, 0xFDF1DC, 0xEFE8FC}, TAG_DARK_BG = {0x3A1F25, 0x3A2E17, 0x2B2240};
 
     private void paintBadge(Graphics2D g, FlowDiagram.Method m, Rectangle2D row, Palette p) {
         String text = badge(m);
@@ -823,10 +1216,14 @@ public final class FlowDiagramPainter {
         Map<FlowDiagram.Box, Double> centers = new LinkedHashMap<>();
         List<FlowDiagram.Box> participants = new ArrayList<>();
         for (FlowDiagram.Step s : steps) {
-            switch (s) {
-                case FlowDiagram.Start st -> addOnce(participants, st.box());
-                case FlowDiagram.Call c -> { addOnce(participants, c.from()); addOnce(participants, c.to()); }
-                case FlowDiagram.Return r -> { addOnce(participants, r.from()); addOnce(participants, r.to()); }
+            if (s instanceof FlowDiagram.Start st) {
+                addOnce(participants, st.box());
+            } else if (s instanceof FlowDiagram.Call c) {
+                addOnce(participants, c.from());
+                addOnce(participants, c.to());
+            } else if (s instanceof FlowDiagram.Return r) {
+                addOnce(participants, r.from());
+                addOnce(participants, r.to());
             }
         }
         if (participants.isEmpty()) participants.addAll(d.boxes);
@@ -835,9 +1232,14 @@ public final class FlowDiagramPainter {
         double column = 150;
         for (FlowDiagram.Box b : participants) column = Math.max(column, participantWidth(b) + SEQ_GAP);
         int number = 0;
+        double bodyRows = 0;
         for (FlowDiagram.Step s : steps) {
-            if (s instanceof FlowDiagram.Call c) column = Math.max(column, fm.stringWidth(++number + ". " + c.method().name) + 40);
+            if (s instanceof FlowDiagram.Call c) {
+                column = Math.max(column, fm.stringWidth(++number + ". " + c.method().name) + 40);
+                for (String line : callNoteLines(c.note())) column = Math.max(column, smallFm.stringWidth(line) + 40);
+            }
             if (s instanceof FlowDiagram.Start st) column = Math.max(column, smallFm.stringWidth(st.method().name) + 40);
+            bodyRows += seqRowHeight(s);
         }
         double titleH = boldFm.getHeight() + 14;
         double x = MARGIN + column / 2;
@@ -847,19 +1249,23 @@ public final class FlowDiagramPainter {
         }
         double w = Math.max(participants.size() * column, boldFm.stringWidth(title)) + 2 * MARGIN;
         double top = MARGIN + titleH;
-        double bodyH = Math.max(1, steps.size()) * SEQ_ROW + 20;
-        double h = top + SEQ_HEAD + bodyH + SEQ_HEAD + MARGIN;
+        double bodyH = Math.max(SEQ_ROW, bodyRows) + 20;
+        // with a project, a participant gets the project band on top (as its class box has); all heads line up
+        double head = SEQ_HEAD;
+        for (FlowDiagram.Box b : participants) if (!b.project().isEmpty()) head = SEQ_HEAD + PROJECT_BAND;
+        double headH = head;
+        double h = top + headH + bodyH + headH + MARGIN;
 
         return image(w, h, p, g -> {
             paintTitle(g, title, p);
-            double lifeTop = top + SEQ_HEAD, lifeBottom = top + SEQ_HEAD + bodyH;
+            double lifeTop = top + headH, lifeBottom = top + headH + bodyH;
             g.setColor(p.lifeline());
             g.setStroke(new BasicStroke(1f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10, new float[]{5, 4}, 0));
             for (double cx : centers.values()) g.draw(new java.awt.geom.Line2D.Double(cx, lifeTop, cx, lifeBottom));
             g.setStroke(new BasicStroke(1f));
             for (FlowDiagram.Box b : participants) {
-                participant(g, b, centers.get(b), top, p);
-                participant(g, b, centers.get(b), lifeBottom, p);
+                participant(g, b, centers.get(b), top, headH, p);
+                participant(g, b, centers.get(b), lifeBottom, headH, p);
             }
             if (steps.isEmpty()) {
                 g.setFont(font);
@@ -871,16 +1277,43 @@ public final class FlowDiagramPainter {
             double y = lifeTop + 24;
             int n = 0;
             for (FlowDiagram.Step s : steps) {
-                switch (s) {
-                    case FlowDiagram.Start st -> note(g, centers.get(st.box()), y, st.method().name, p);
-                    case FlowDiagram.Call c -> message(g, centers.get(c.from()), centers.get(c.to()), y,
+                if (s instanceof FlowDiagram.Start st) {
+                    note(g, centers.get(st.box()), y, st.method().name, p);
+                } else if (s instanceof FlowDiagram.Call c) {
+                    message(g, centers.get(c.from()), centers.get(c.to()), y,
                             ++n + ". " + c.method().name, false, isCustom(c.method()) || c.to().isUnknown(), p);
-                    case FlowDiagram.Return r -> message(g, centers.get(r.from()), centers.get(r.to()), y, "return", true,
+                    seqCallNote(g, c, centers.get(c.from()), centers.get(c.to()), y, p);
+                } else if (s instanceof FlowDiagram.Return r) {
+                    message(g, centers.get(r.from()), centers.get(r.to()), y, "return", true,
                             r.from().isUnknown(), p);
                 }
-                y += SEQ_ROW;
+                y += seqRowHeight(s);
             }
         });
+    }
+
+    /** A row of the sequence diagram: taller for a call with a note (the note goes under its arrow). */
+    private double seqRowHeight(FlowDiagram.Step s) {
+        int notes = s instanceof FlowDiagram.Call c ? callNoteLines(c.note()).size() : 0;
+        return SEQ_ROW + (notes == 0 ? 0 : notes * NOTE_LINE + 4);
+    }
+
+    /** A call's note, under the middle of its arrow (beside the loop of a call within one class). */
+    private void seqCallNote(Graphics2D g, FlowDiagram.Call c, double x1, double x2, double y, Palette p) {
+        List<String> lines = callNoteLines(c.note());
+        if (lines.isEmpty()) return;
+        double w = 0;
+        for (String s : lines) w = Math.max(w, smallFm.stringWidth(s));
+        double top = x1 == x2 ? y + 12 : y + 4;
+        double left = x1 == x2 ? x1 + 38 : (x1 + x2) / 2 - w / 2 - 6;
+        noteCard(g, new Rectangle2D.Double(left, top - 2, w + 12, lines.size() * NOTE_LINE + 4), c.noteStyle(), p, false);
+        g.setFont(small.deriveFont(Font.ITALIC));
+        g.setColor(noteText(c.noteStyle(), p));
+        for (int i = 0; i < lines.size(); i++) {
+            String s = lines.get(i);
+            double x = x1 == x2 ? x1 + 44 : (x1 + x2) / 2 - smallFm.stringWidth(s) / 2.0;
+            g.drawString(s, (float) x, (float) (top + i * NOTE_LINE + smallFm.getAscent()));
+        }
     }
 
     private static void addOnce(List<FlowDiagram.Box> list, FlowDiagram.Box b) {
@@ -888,30 +1321,42 @@ public final class FlowDiagramPainter {
     }
 
     private double participantWidth(FlowDiagram.Box b) {
-        return Math.max(110, Math.max(metrics(titleFont(b)).stringWidth(b.name), metrics(fileFont(b)).stringWidth(b.subtitle())) + 28);
+        double w = Math.max(metrics(titleFont(b)).stringWidth(b.name), metrics(fileFont(b)).stringWidth(b.fileLine())) + 28;
+        if (!b.project().isEmpty()) w = Math.max(w, metrics(projectFont(b)).stringWidth(b.project()) + 28 + 14);
+        return Math.max(110, w);
     }
 
-    private void participant(Graphics2D g, FlowDiagram.Box b, double cx, double y, Palette p) {
+    /**
+     * A participant's head, like its class box: the project band on top (in the box's colors, or its own), then the
+     * class name and its file.
+     */
+    private void participant(Graphics2D g, FlowDiagram.Box b, double cx, double y, double headH, Palette p) {
         Color section = headerColor(b, p);
-        p = boxPalette(p, section);
+        Palette hp = boxPalette(p, section);
         double w = participantWidth(b);
-        Shape r = new RoundRectangle2D.Double(cx - w / 2, y, w, SEQ_HEAD, 10, 10);
-        g.setColor(section != null ? section : b.isUnknown() ? mix(p.custom(), p.boxBg(), 0.16) : p.headerBg());
+        Shape r = new RoundRectangle2D.Double(cx - w / 2, y, w, headH, 10, 10);
+        Color fill = section != null ? section : b.isUnknown() ? mix(p.custom(), p.boxBg(), 0.16) : p.headerBg();
+        Color line = b.border != null ? b.border : b.isUnknown() ? p.custom() : p.boxBorder();
+        g.setColor(fill);
         g.fill(r);
-        g.setColor(b.border != null ? b.border : b.isUnknown() ? p.custom() : p.boxBorder());
+        boolean band = !b.project().isEmpty();
+        if (band) paintProjectBand(g, b, new Rectangle2D.Double(cx - w / 2, y, w, headH), fill, line, hp);
+        g.setColor(line);
         g.draw(r);
-        boolean sub = !b.subtitle().isEmpty();
+        double top = band ? y + PROJECT_BAND : y, height = band ? headH - PROJECT_BAND : headH;
+        boolean sub = !b.fileLine().isEmpty();
         Font tf = titleFont(b);
         FontMetrics tm = metrics(tf);
         g.setFont(tf);
-        g.setColor(colored(b.title, p.title()));
-        double ty = sub ? y + 6 + tm.getAscent() : y + (SEQ_HEAD + tm.getAscent() - tm.getDescent()) / 2;
+        g.setColor(colored(b.title, hp.title()));
+        double block = tm.getAscent() + (sub ? 3 + smallFm.getAscent() + smallFm.getDescent() : tm.getDescent());
+        double ty = top + (height - block) / 2 + tm.getAscent();
         g.drawString(b.name, (float) (cx - tm.stringWidth(b.name) / 2.0), (float) ty);
         if (sub) {
             Font ff = fileFont(b);
             g.setFont(ff);
-            g.setColor(colored(b.fileFormat, p.muted()));
-            g.drawString(b.subtitle(), (float) (cx - metrics(ff).stringWidth(b.subtitle()) / 2.0), (float) (ty + 3 + smallFm.getAscent()));
+            g.setColor(colored(b.fileFormat, hp.muted()));
+            g.drawString(b.fileLine(), (float) (cx - metrics(ff).stringWidth(b.fileLine()) / 2.0), (float) (ty + 3 + smallFm.getAscent()));
         }
     }
 

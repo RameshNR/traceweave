@@ -34,8 +34,19 @@ public final class FlowOutline {
             Pattern.compile("(?:^|[^\\w$.])function\\s*\\*?\\s*([A-Za-z_$][\\w$]*)\\s*\\(");
     private static final Pattern ASSIGNED_FUNCTION = Pattern.compile(
             "([A-Za-z_$][\\w$]*)\\s*[:=]\\s*(?:async\\s+)?(?:function\\b[^(]*\\([^)]*\\)|(?:\\([^()]*\\)|[A-Za-z_$][\\w$]*)\\s*=>)\\s*$");
-    private static final Pattern CLASS_DECL =
-            Pattern.compile("(?:^|[^\\w$])(?:class|interface|enum)\\s+([A-Za-z_$][\\w$]*)");
+    private static final Pattern CLASS_DECL = Pattern.compile(
+            "(?:^|[^\\w$])(?:class|interface|enum|struct|trait|object|record|protocol|extension)\\s+([A-Za-z_$][\\w$]*)");
+    /** Rust: impl Type { or impl Trait for Type {. */
+    private static final Pattern IMPL_DECL = Pattern.compile("(?:^|[^\\w$])impl(?:\\s*<[^>]*>)?\\s+(?:[\\w:<>]+\\s+for\\s+)?([A-Za-z_][\\w]*)");
+    /** Functions with a keyword: Go (func, with a receiver), Rust (fn), Kotlin / Swift (fun / func), Scala (def). */
+    private static final Pattern KEYWORD_FUNCTION = Pattern.compile(
+            "(?:^|[^\\w$.])(?:func|fn|fun|def)\\s+(?:\\([^)]*\\)\\s*)?([A-Za-z_$][\\w$]*)\\s*[<(\\[]");
+    /** What may follow a parameter list before the block: C++ const / override / noexcept, Dart async, Swift throws, -> Type. */
+    private static final Pattern AFTER_PARAMS = Pattern.compile(
+            "\\)\\s*(?:(?:const|override|final|noexcept|async\\*?|sync\\*|throws|rethrows|mutating)\\s*)*(?:->\\s*[^{};=]+)?$");
+    /** Python and Ruby: def name / def self.name, and class / module Name. */
+    private static final Pattern INDENT_DEF = Pattern.compile("^\\s*(?:async\\s+)?def\\s+(?:self\\.)?([A-Za-z_][\\w]*[?!=]?)");
+    private static final Pattern INDENT_CLASS = Pattern.compile("^\\s*(?:class|module)\\s+([A-Za-z_]\\w*(?:::[A-Za-z_]\\w*)*)");
     private static final Pattern TS_RETURN_TYPE = Pattern.compile("\\)\\s*:\\s*[^(){};=]+$");
     private static final Pattern THROWS = Pattern.compile("\\)\\s*throws\\s+[\\w.,\\s]+$");
     private static final Pattern TLD_NAME = Pattern.compile("<name>\\s*([^<]+?)\\s*</name>");
@@ -55,6 +66,8 @@ public final class FlowOutline {
             case JSP -> jspScope(text, offset, fileName);
             case MARKUP -> markupScope(text, offset, fileName, NONE);
             case CONFIG -> configScope(text, offset, fileName);
+            case BRACES -> scriptScope(text, maskCode(text, offset, false), offset, NONE);
+            case INDENTED -> indentScope(text, offset);
             default -> NONE; // JVM languages are read with PSI instead
         };
     }
@@ -112,8 +125,9 @@ public final class FlowOutline {
                     else if (callback == null) callback = callbackName(header);
                 }
                 Matcher m = CLASS_DECL.matcher(header);
-                if (m.find()) {
-                    cls = m.group(1);
+                Matcher impl = IMPL_DECL.matcher(header);
+                if (m.find() || impl.find()) {
+                    cls = m.find(0) ? m.group(1) : impl.group(1);
                     break;
                 }
             }
@@ -121,6 +135,51 @@ public final class FlowOutline {
         if (method == null) method = callback;
         if (method == null && cls == null) return fallback;
         return new Scope(cls == null ? "-" : cls, method == null ? fallback.methodName : method);
+    }
+
+    /**
+     * Python and Ruby: the nearest def above the line with less indentation is the method, and the nearest class
+     * (or module) above that is the class.
+     */
+    private static Scope indentScope(CharSequence text, int offset) {
+        String before = text.subSequence(0, Math.min(offset, text.length())).toString();
+        String[] lines = before.split("\\n", -1);
+        int indent = indentOf(lines[lines.length - 1] + text.subSequence(offset, Math.min(text.length(), offset + 1)));
+        String method = null, cls = null;
+        for (int i = lines.length - 2; i >= 0; i--) {
+            String l = lines[i];
+            if (l.isBlank() || l.stripLeading().startsWith("#")) continue;
+            int in = indentOf(l);
+            if (in >= indent) continue;
+            indent = in;
+            Matcher def = INDENT_DEF.matcher(l);
+            if (method == null && def.find()) {
+                method = def.group(1) + "()";
+                continue;
+            }
+            Matcher c = INDENT_CLASS.matcher(l);
+            if (c.find()) {
+                cls = c.group(1);
+                break;
+            }
+            if (in == 0) break;
+        }
+        // The line is a def or class itself.
+        String own = lines[lines.length - 1] + text.subSequence(offset, lineEnd(text, offset, text.length())).toString();
+        Matcher def = INDENT_DEF.matcher(own);
+        if (method == null && def.find()) method = def.group(1) + "()";
+        if (method == null && cls == null) return NONE;
+        return new Scope(cls == null ? "-" : cls, method == null ? "[top level]" : method);
+    }
+
+    private static int indentOf(String line) {
+        int n = 0;
+        for (char c : line.toCharArray()) {
+            if (c == ' ') n++;
+            else if (c == '\t') n += 4;
+            else break;
+        }
+        return n;
     }
 
     /**
@@ -145,11 +204,15 @@ public final class FlowOutline {
         String found = null;
         while (m.find()) found = m.group(1);
         if (found != null) return found;
+        m = KEYWORD_FUNCTION.matcher(header);
+        while (m.find()) found = m.group(1);
+        if (found != null) return found;
         m = ASSIGNED_FUNCTION.matcher(header);
         if (m.find()) return m.group(1);
 
         // A method: "name(params)" at the end, optionally with "throws ..." or a TypeScript return type.
-        String h = THROWS.matcher(header).replaceFirst(")");
+        String h = AFTER_PARAMS.matcher(header).replaceFirst(")");
+        h = THROWS.matcher(h).replaceFirst(")");
         h = TS_RETURN_TYPE.matcher(h).replaceFirst(")").strip();
         if (!h.endsWith(")")) return null;
         int open = matchingOpen(h, h.length() - 1);

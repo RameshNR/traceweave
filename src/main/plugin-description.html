@@ -7,18 +7,19 @@
   to the public folder that holds them; the IMAGES placeholder is replaced with it. While pluginImagesUrl
   is empty, those blocks are left out (no broken images). This header is not copied into plugin.xml.
 -->
-<p><b>Flow Tracker</b> helps you follow a code path through a Java, Kotlin or Java web project (JSP, JavaScript,
-TLD and more). While you read code, click the lines that matter. Flow Tracker collects them in a side panel, keeps
+<p><b>TraceWeave - Code Flow Tracker</b> helps you follow a code path through a Java, Kotlin or Java web project (JSP, JavaScript,
+TLD and more). While you read code, click the lines that matter. TraceWeave collects them in a side panel, keeps
 them in <b>call order</b> automatically, and copies the whole flow as text, a compact log or a Markdown document.</p>
 
-<!--img--><p><img src="@IMAGES@/flow-tracker-grouped-view.png" alt="Grouped View: files, methods and saved lines with syntax colors" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-grouped-view.png" alt="Grouped View: files, methods and saved lines with syntax colors" width="640"></p><!--/img-->
 
 <h3>Collect lines while you read</h3>
 <ul>
   <li>Hover any line and click the <b>+</b> in the gutter to save it, together with its file, class, method,
       line number and project. Works in Java, Kotlin, Groovy, JSP / tag files, JavaScript / TypeScript
-      (JS, JSX, TS, TSX), TLD, XML, HTML, properties, YAML and SQL files.</li>
-  <li><b>Add to Flow Tracker</b> from the editor's right-click menu or <b>Ctrl+Alt+Shift+A</b>: the caret line or
+      (JS, JSX, TS, TSX), C#, C / C++, Go, Rust, Swift, PHP, Dart, Scala, Python, Ruby, TLD, XML, HTML,
+      properties, YAML and SQL files, and in libraries' decompiled .class files.</li>
+  <li><b>Add to TraceWeave</b> from the editor's right-click menu or <b>Ctrl+Alt+Shift+A</b>: the caret line or
       every selected line, as one undo step.</li>
   <li><b>Record</b> with the debugger: every line where it stops (breakpoints and steps) is added in the order
       it runs.</li>
@@ -47,7 +48,7 @@ them in <b>call order</b> automatically, and copies the whole flow as text, a co
   <li><b>Search</b> to show only matching lines (code, file, method, note or tag).</li>
 </ul>
 
-<!--img--><p><img src="@IMAGES@/flow-tracker-flat-view.png" alt="Flat View: one numbered sequence in flow order" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-flat-view.png" alt="Flat View: one numbered sequence in flow order" width="640"></p><!--/img-->
 
 <h3>Work with rows</h3>
 <ul>
@@ -62,17 +63,19 @@ them in <b>call order</b> automatically, and copies the whole flow as text, a co
       an API call handled in another project.</li>
 </ul>
 
-<!--img--><p><img src="@IMAGES@/flow-tracker-hover-actions.png" alt="Hover action bar on a row: move, copy, note and delete" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-hover-actions.png" alt="Hover action bar on a row: move, copy, note and delete" width="640"></p><!--/img-->
 
 <h3>Flow Diagram: draw and edit the flow</h3>
 <ul>
   <li><b>Flow Diagram</b> (toolbar) opens the flow as a diagram: a box per class or file with its methods, and an
       arrow for every call.</li>
-  <li><b>Add File / Class</b> searches the project as you type (3 letters, a pattern such as <code>*Cruise*.java</code>
-      or a <code>/regex/</code>); <b>Add Method / Function</b> filters the same way and shows the method's code so you
-      pick the lines to add.</li>
-  <li><b>Custom Class / File</b> and <b>Custom Method / Function</b> add ones that aren't in the code yet (drawn in amber);
-      <b>Connect</b> draws a call from one method to another; <b>Rename</b> and <b>Delete</b> change classes and methods.</li>
+  <li><b>Add File</b> finds a file as you type (3 letters, a pattern such as <code>*Cruise*.java</code> or a
+      <code>/regex/</code>), then lists its classes; a file that isn't in the project becomes a custom class (drawn in
+      amber). <b>Add Function</b> filters the same way and shows the method's code so you pick the lines to
+      add; a new name becomes a custom method.</li>
+  <li>Boxes show their file and project. <b>Connect</b> draws a call from one method to another, with a <b>note</b> at
+      the middle of its arrow (in the sequence diagram too); <b>Tag</b> a method Bug, Important or Question;
+      <b>Rename</b> and <b>Delete</b> change classes and methods.</li>
   <li><b>Click a method</b> to see its lines of code under the diagram, with syntax colors; <b>View Full Code</b>
       shows the whole file at that method.</li>
   <li><b>Format</b>: box themes (Plain, Light, Dark and eight colors) or your own class section, method section and
@@ -87,9 +90,25 @@ them in <b>call order</b> automatically, and copies the whole flow as text, a co
       with a light or dark background.</li>
 </ul>
 
-<!--img--><p><img src="@IMAGES@/flow-tracker-flow-diagram.png" alt="Flow Diagram: class boxes with methods, call arrows and the History" width="640"></p><!--/img-->
-<!--img--><p><img src="@IMAGES@/flow-tracker-diagram-themes.png" alt="A formatted Flow Diagram: box themes, notes and line styles" width="640"></p><!--/img-->
-<!--img--><p><img src="@IMAGES@/flow-tracker-diagram-code-panel.png" alt="Click a method to see its code under the diagram" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-flow-diagram.png" alt="Flow Diagram: class boxes with methods, call arrows and the History" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-diagram-themes.png" alt="A formatted Flow Diagram: box themes, notes and line styles" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-diagram-code-panel.png" alt="Click a method to see its code under the diagram" width="640"></p><!--/img-->
+
+<h3>Debug Data: save, compare and find debug values</h3>
+<ul>
+  <li>Right-click a variable in the debugger's Variables view (or an Evaluate Expression result, or an expression in
+      the editor) &rarr; <b>Save to TraceWeave</b>: it is saved with its fields a few levels deep, the line where the
+      debugger stopped and the flow.</li>
+  <li><b>Compare</b> it with the same variable saved at that line in another flow or debug run, or with its value
+      now: every field side by side, the differences highlighted; map entries matched by key, instance ids
+      ignored.</li>
+  <li><b>Capture Data</b>: the variables are saved by themselves while you debug, wherever the debugger stops or at
+      every line it runs.</li>
+  <li>See a value as a tree, as <b>JSON</b> or as text; copy it or export it to a file.</li>
+  <li><b>Find</b> a name, key or value (e.g. something hidden in the session's attributes) in all saved values and in
+      the current debug session.</li>
+  <li><b>Edit</b> saved values with a history you can revert, and restore deleted ones from the Recycle Bin.</li>
+</ul>
 
 <h3>Walk through the flow</h3>
 <ul>
@@ -114,8 +133,8 @@ them in <b>call order</b> automatically, and copies the whole flow as text, a co
       Original Log at the end, with each call nested under the line that makes it.</li>
 </ul>
 
-<!--img--><p><img src="@IMAGES@/flow-tracker-settings.png" alt="Settings: Sync Files, copy formats, Copy All Flows, Use IntelliJ Theme, Recycle Bin, Info" width="640"></p><!--/img-->
-<!--img--><p><img src="@IMAGES@/flow-tracker-markdown-copy.png" alt="Markdown copy rendered, with the call flow diagram" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-settings.png" alt="Settings: Sync Files, copy formats, Copy All Flows, Use IntelliJ Theme, Recycle Bin, Info" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-markdown-copy.png" alt="Markdown copy rendered, with the call flow diagram" width="640"></p><!--/img-->
 
 <h3>Good to know</h3>
 <ul>

@@ -70,12 +70,53 @@ public final class FlowCopy {
      */
     private static String originalLog(FlowStore store, List<FlowEntry> picked, List<FlowEntry> all, FlowSync.Calls calls) {
         boolean nested = store.isNestedCallLog();
-        String log = nested ? FlowCallLog.render(picked, store.isFlatView(), all, calls) : plainText(store, picked, all);
+        String log = originalLogText(store, picked, all, calls);
         String fence = log.contains("```") ? "````" : "```";
         return "## 📜 Original Log\n\n_" + (store.isFlatView() ? "Flat View" : "Grouped View")
                 + (nested ? " copy, as plain text, with each call nested under the line that makes it._\n\n"
                 : " copy, as plain text._\n\n")
                 + fence + "text\n" + log + (log.endsWith("\n") ? "" : "\n") + fence + "\n";
+    }
+
+    /**
+     * The Original Log alone, as plain text (what the Markdown copy ends with, without the Markdown around it): with
+     * "Nest Calls in Original Log" on, each called method's lines under the line that calls it; off, the plain copy
+     * of the current view.
+     */
+    public static String originalLogText(FlowStore store, List<FlowEntry> picked, List<FlowEntry> all, FlowSync.Calls calls) {
+        return store.isNestedCallLog() ? FlowCallLog.render(picked, store.isFlatView(), all, calls) : plainText(store, picked, all);
+    }
+
+    /** Copies the Original Log of the given lines of the active flow (every flow's, one after the other, with Copy All Flows). */
+    public static void copyOriginalLog(Project project, List<FlowEntry> picked) {
+        FlowStore store = FlowStore.get(project);
+        if (store.isCopyAllFlows()) {
+            List<FlowStore.Flow> flows = store.getAllFlows().stream().filter(f -> !f.entries.isEmpty()).toList();
+            if (flows.isEmpty()) {
+                notify(project, "Nothing to copy: no flow has lines yet", NotificationType.INFORMATION);
+                return;
+            }
+            FlowSync.callsFor(project, flows.stream().map(f -> f.entries).toList(), calls -> {
+                StringBuilder out = new StringBuilder();
+                for (int i = 0; i < flows.size(); i++) {
+                    FlowStore.Flow f = flows.get(i);
+                    if (i > 0) out.append("\n\n");
+                    out.append("===== ").append(f.name).append(" =====\n\n")
+                            .append(originalLogText(store, f.entries, f.entries, FlowSync.withManual(calls.get(i), f.entries)));
+                }
+                toClipboard(out.toString());
+                notify(project, "Copied the Original Log of " + flows.size() + (flows.size() == 1 ? " flow" : " flows"),
+                        NotificationType.INFORMATION);
+            });
+            return;
+        }
+        if (picked.isEmpty()) {
+            notify(project, "Nothing to copy: this flow has no lines yet", NotificationType.INFORMATION);
+            return;
+        }
+        toClipboard(originalLogText(store, picked, store.getEntries(), store.getCalls()));
+        notify(project, "Copied the Original Log (" + picked.size() + (picked.size() == 1 ? " line)" : " lines)"),
+                NotificationType.INFORMATION);
     }
 
     /** The given lines of the active flow, titled with the flow's name. */
@@ -137,7 +178,7 @@ public final class FlowCopy {
     public static void openMarkdown(Project project, List<FlowEntry> picked) {
         FlowStore store = FlowStore.get(project);
         if (store.isCopyAllFlows()) {
-            allFlows(project, true, all -> openScratch(project, "Flow Tracker - all flows", all.text()));
+            allFlows(project, true, all -> openScratch(project, "TraceWeave - all flows", all.text()));
             return;
         }
         if (picked.isEmpty()) {
@@ -157,7 +198,7 @@ public final class FlowCopy {
     }
 
     public static void notify(Project project, String text, NotificationType type) {
-        NotificationGroupManager.getInstance().getNotificationGroup("Flow Tracker")
+        NotificationGroupManager.getInstance().getNotificationGroup("TraceWeave")
                 .createNotification(text, type).notify(project);
     }
 }

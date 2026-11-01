@@ -31,27 +31,27 @@ import java.util.List;
 
 /**
  * Screenshot carousel at the top of the Info dialog: the images packaged in the plugin
- * ({@code /images/flow-tracker-*.png}), one at a time with a caption, dots to pick one, arrows on hover and
+ * ({@code /images/traceweave-*.png}), one at a time with a caption, dots to pick one, arrows on hover and
  * the Left / Right keys. It moves on by itself every few seconds unless the mouse is over it.
  */
 final class FlowCarousel extends JComponent {
 
     /** Screenshots in the order they are shown; missing files are skipped. */
     private static final String[][] SLIDES = {
-            {"flow-tracker-grouped-view.png", "Grouped View: files, methods and saved lines with syntax colors"},
-            {"flow-tracker-flat-view.png", "Flat View: one numbered sequence in flow order"},
-            {"flow-tracker-hover-actions.png", "Hover a row for its actions: move, copy, note and delete"},
-            {"flow-tracker-record.png", "Record: every line where the debugger stops is added"},
-            {"flow-tracker-recycle-bin.png", "Recycle Bin: restore deleted lines and flows"},
-            {"flow-tracker-settings.png", "Settings: call order, copy formats, Copy All Flows, IntelliJ theme, Recycle Bin"},
-            {"flow-tracker-markdown-copy.png", "Markdown copy: diagrams of the real calls"},
-            {"flow-tracker-flow-diagram.png", "Flow Diagram: edit the flow as boxes and arrows, with a History"},
-            {"flow-tracker-diagram-code-panel.png", "Click a method to see its code; View Full Code shows the whole file"},
-            {"flow-tracker-diagram-themes.png", "Format: box themes, notes under names and line styles"},
-            {"flow-tracker-diagram-format-box.png", "Format Box: themes, section colors, text formats and a note"},
-            {"flow-tracker-diagram-color-picker.png", "Pick any color: Auto, suggested, a color grid, recent or #RRGGBB"},
-            {"flow-tracker-diagram-format-line.png", "Line: pattern, width, shape, arrow and color"},
-            {"flow-tracker-diagram-sequence.png", "Copy Sequence PNG: the calls as a sequence diagram image"},
+            {"traceweave-grouped-view.png", "Grouped View: files, methods and saved lines with syntax colors"},
+            {"traceweave-flat-view.png", "Flat View: one numbered sequence in flow order"},
+            {"traceweave-hover-actions.png", "Hover a row for its actions: move, copy, note and delete"},
+            {"traceweave-record.png", "Record: every line where the debugger stops is added"},
+            {"traceweave-recycle-bin.png", "Recycle Bin: restore deleted lines and flows"},
+            {"traceweave-settings.png", "Settings: call order, copy formats, Copy All Flows, IntelliJ theme, Recycle Bin"},
+            {"traceweave-markdown-copy.png", "Markdown copy: diagrams of the real calls"},
+            {"traceweave-flow-diagram.png", "Flow Diagram: edit the flow as boxes and arrows, with a History"},
+            {"traceweave-diagram-code-panel.png", "Click a method to see its code; View Full Code shows the whole file"},
+            {"traceweave-diagram-themes.png", "Format: box themes, notes under names and line styles"},
+            {"traceweave-diagram-format-box.png", "Format Box: themes, section colors, text formats and a note"},
+            {"traceweave-diagram-color-picker.png", "Pick any color: Auto, suggested, a color grid, recent or #RRGGBB"},
+            {"traceweave-diagram-format-line.png", "Line: pattern, width, shape, arrow and color"},
+            {"traceweave-diagram-sequence.png", "Copy Sequence PNG: the calls as a sequence diagram image"},
     };
     private static final int AUTO_ADVANCE_MS = 5000;
 

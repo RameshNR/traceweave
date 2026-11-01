@@ -38,7 +38,7 @@ public final class FlowMarkdown {
      * @param sequence true = draw a sequence diagram (classes talking to each other) instead of a flowchart
      */
     public static String toMarkdown(List<FlowEntry> entries, boolean flat, Set<String> links, boolean sequence) {
-        return toMarkdown(entries, flat, links, sequence, "Flow Tracker");
+        return toMarkdown(entries, flat, links, sequence, "TraceWeave");
     }
 
     /** @param title the document heading (Copy All Flows uses the flow's name) */

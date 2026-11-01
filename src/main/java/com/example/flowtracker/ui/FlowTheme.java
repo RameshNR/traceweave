@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 /**
- * Colors, fonts and icons shared by the Flow Tracker tool window. Light value first, dark value second; with
+ * Colors, fonts and icons shared by the TraceWeave tool window. Light value first, dark value second; with
  * Settings → Use IntelliJ Theme ({@link FlowLook}) they come from the current IntelliJ theme instead.
  */
 public final class FlowTheme {
@@ -37,7 +37,7 @@ public final class FlowTheme {
     /** Where the IntelliJ theme keeps its accent: the default button's color. */
     private static final String[] ACCENT_KEYS = {"Button.default.startBackground", "Component.focusColor"};
 
-    // Each color has Flow Tracker's own light / dark value and, for "Use IntelliJ Theme", where the current
+    // Each color has TraceWeave's own light / dark value and, for "Use IntelliJ Theme", where the current
     // IntelliJ theme (or editor color scheme) keeps it. They are looked up at paint time, so switching either
     // the setting or the IDE theme repaints with the new colors.
 
@@ -96,7 +96,7 @@ public final class FlowTheme {
     public static final Color NUMBER = color(0x1750EB, 0x2AACB8, syntax(DefaultLanguageHighlighterColors.NUMBER));
     public static final Color COMMENT = color(0x8C8C8C, 0x6F7787, syntax(DefaultLanguageHighlighterColors.LINE_COMMENT));
 
-    /** Flow Tracker's own color (light, dark), or the IntelliJ theme's when that setting is on and it has one. */
+    /** TraceWeave's own color (light, dark), or the IntelliJ theme's when that setting is on and it has one. */
     private static Color color(int light, int dark, Supplier<Color> ide) {
         JBColor own = new JBColor(light, dark);
         return JBColor.lazy(() -> {
@@ -164,7 +164,7 @@ public final class FlowTheme {
     static final Icon ICON_RECORD = icon("tb_record");
     static final Icon ICON_PREV = icon("tb_prev");
     static final Icon ICON_NEXT = icon("tb_next");
-    static final Icon ICON_TAG = icon("tb_tag");
+    public static final Icon ICON_TAG = icon("tb_tag");
     static final Icon ICON_WARNING = icon("tb_warning");
     // ----- Flow Diagram window -----
     static final Icon ICON_DIAGRAM = icon("tb_diagram");
@@ -184,6 +184,8 @@ public final class FlowTheme {
     public static final Icon ICON_ZOOM_IN = icon("tb_zoom_in");
     public static final Icon ICON_ZOOM_OUT = icon("tb_zoom_out");
     public static final Icon ICON_CODE = icon("tb_code");
+    static final Icon ICON_RECYCLE = icon("tb_recycle");
+    static final Icon ICON_CAPTURE = icon("tb_capture");
 
     /** The grey SVG icon painted in exactly the given color (theme colors resolve at paint time). */
     public static Icon tinted(Icon icon, Color color) {

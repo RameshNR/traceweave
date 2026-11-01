@@ -1,12 +1,12 @@
 package com.example.flowtracker.code;
 
+import com.example.flowtracker.compat.FlowCompat;
 import com.example.flowtracker.model.FlowEntry;
 import com.example.flowtracker.model.FlowProjects;
 import com.example.flowtracker.model.FlowStore;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
@@ -65,7 +65,7 @@ public final class FlowCapture {
     }
 
     /** The entry for a 0-based line, or null for an empty line, an unsupported file or a line saved already. */
-    static @Nullable FlowEntry entryFor(Project project, Document doc, int line) {
+    public static @Nullable FlowEntry entryFor(Project project, Document doc, int line) {
         if (line < 0 || line >= doc.getLineCount()) return null;
 
         VirtualFile vf = FileDocumentManager.getInstance().getFile(doc);
@@ -84,7 +84,7 @@ public final class FlowCapture {
         int offset = start + (lineText.length() - lineText.stripLeading().length());
 
         String fileName = vf.getName();
-        String[] names = ReadAction.computeBlocking(() -> {
+        String[] names = FlowCompat.read(() -> {
             if (!FlowLang.usesJavaPsi(fileName) && !FlowLang.isKotlin(fileName)) {
                 FlowOutline.Scope scope = FlowOutline.locate(doc.getCharsSequence(), offset, fileName);
                 return new String[]{scope.className(), scope.methodName()};

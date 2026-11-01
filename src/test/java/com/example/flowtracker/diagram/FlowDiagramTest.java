@@ -60,7 +60,7 @@ class FlowDiagramTest {
         FlowDiagram.Box main = box(d, "Main");
         assertEquals(List.of("main()"), main.methods.stream().map(m -> m.name).toList(), "fields get no method row");
         assertEquals(2, method(main, "main()").lineCount());
-        assertEquals("Main.java", main.subtitle());
+        assertEquals("Main.java  ·  TravelBooking", main.subtitle(), "the file and the project it is in");
         assertEquals(1, d.links.size());
         assertFalse(d.links.get(0).manual(), "found in the code");
     }
@@ -203,10 +203,11 @@ class FlowDiagramTest {
         FlowDiagram.Method book = method(box(d, "BookingService"), "bookTrip()");
         FlowDiagram.Method cancel = method(box(d, "BookingService"), "cancel()");
         d.connect(book.id, cancel.id);
-        List<String> steps = d.sequence().stream().map(s -> switch (s) {
-            case FlowDiagram.Start st -> "note " + st.box().name + ": " + st.method().name;
-            case FlowDiagram.Call c -> c.from().name + " -> " + c.to().name + ": " + c.method().name;
-            case FlowDiagram.Return r -> r.from().name + " --> " + r.to().name;
+        List<String> steps = d.sequence().stream().map(s -> {
+            if (s instanceof FlowDiagram.Start st) return "note " + st.box().name + ": " + st.method().name;
+            if (s instanceof FlowDiagram.Call c) return c.from().name + " -> " + c.to().name + ": " + c.method().name;
+            FlowDiagram.Return r = (FlowDiagram.Return) s;
+            return r.from().name + " --> " + r.to().name;
         }).toList();
         assertEquals(List.of(
                 "note Main: main()",
@@ -263,6 +264,128 @@ class FlowDiagramTest {
             through.intersect(new java.awt.geom.Area(painter.bounds(travel)));
             assertTrue(through.isEmpty(), shape + " line runs through the travel box");
         }
+    }
+
+    @Test
+    void notesOnCallsAreKeptAndShownInTheSequence() {
+        FlowDiagram d = diagram();
+        FlowDiagram.Link call = d.links.get(0);
+        d.setCallNote(call, "  REST: POST /bookings  ");
+        assertEquals("REST: POST /bookings", d.callNote(call));
+        FlowDiagram copy = d.copy();
+        assertEquals("REST: POST /bookings", copy.callNote(copy.links.get(0)), "copies (History steps) keep it");
+        assertFalse(d.sameAs(diagram()), "a note is a change");
+
+        FlowDiagram again = diagram();
+        again.applyLooks(d.looks());
+        assertEquals("REST: POST /bookings", again.callNote(again.links.get(0)), "saved with the flow");
+
+        d.resetLooks();
+        assertEquals("REST: POST /bookings", d.callNote(call), "Reset Theme keeps notes");
+        boolean found = false;
+        for (FlowDiagram.Step s : d.sequence()) {
+            if (s instanceof FlowDiagram.Call c && c.note().equals("REST: POST /bookings")) found = true;
+        }
+        assertTrue(found, "the sequence diagram's call carries the note");
+
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        painter.autoLayout(d);
+        java.awt.geom.Rectangle2D r = painter.callNoteBounds(d, call);
+        assertNotNull(r);
+        assertSame(call, painter.hit(d, new java.awt.geom.Point2D.Double(r.getCenterX(), r.getCenterY())).link(),
+                "clicking the note selects the call");
+        d.setCallNote(call, "");
+        assertNull(painter.callNoteBounds(d, call));
+    }
+
+    @Test
+    void notesOfCallsFromTheSameMethodDontCoverEachOther() {
+        FlowDiagram d = diagram();
+        FlowDiagram.Method main = method(box(d, "Main"), "main()");
+        assertTrue(d.connect(main.id, method(box(d, "BookingService"), "cancel()").id));
+        for (FlowDiagram.Link l : d.links) d.setCallNote(l, "call to " + d.method(l.to()).name);
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        painter.autoLayout(d);
+        List<java.awt.geom.Rectangle2D> notes = new java.util.ArrayList<>(painter.callNoteLayout(d).values());
+        assertEquals(2, notes.size());
+        assertFalse(notes.get(0).intersects(notes.get(1)), "two notes on one spot: " + notes);
+        for (java.awt.geom.Rectangle2D n : notes) {
+            for (FlowDiagram.Box b : d.boxes) assertFalse(n.intersects(painter.bounds(b)), "a note on " + b.name);
+        }
+    }
+
+    @Test
+    void noteStylesAreKeptAndResetThemeResetsThem() {
+        FlowDiagram d = diagram();
+        FlowDiagram.Link call = d.links.get(0);
+        d.setCallNote(call, "REST\nPOST /bookings");
+        FlowDiagram.NoteStyle style = new FlowDiagram.NoteStyle(FlowDiagram.NoteShape.PILL,
+                new java.awt.Color(0xFFF1D6), null, new java.awt.Color(0xC27C0E));
+        d.setNoteStyle(call, style);
+        FlowDiagram again = diagram();
+        again.applyLooks(d.looks());
+        assertEquals(style, again.noteStyle(again.links.get(0)), "saved with the flow");
+        assertEquals("REST\nPOST /bookings", again.callNote(again.links.get(0)), "several lines");
+        d.resetLooks();
+        assertEquals(FlowDiagram.NoteStyle.DEFAULT, d.noteStyle(call));
+        assertEquals("REST\nPOST /bookings", d.callNote(call), "Reset Theme keeps the note");
+    }
+
+    @Test
+    void aCustomClassCanHaveAProject() {
+        FlowDiagram d = new FlowDiagram();
+        FlowDiagram.Box b = d.addUnknownClass("PaymentGateway", "PaymentGateway.java", 0, 0);
+        d.addUnknownMethod(b, "charge");
+        d.setCustomFile(b, "PaymentGateway.java", "Payments");
+        assertEquals("PaymentGateway.java  ·  Payments", b.subtitle());
+        FlowDiagram.Result r = d.apply(List.of());
+        assertEquals("Payments", r.entries().get(0).projectName);
+        assertEquals("Payments", box(FlowDiagram.of(r.entries(), Set.of()), "PaymentGateway").projectName, "read back from the lines");
+    }
+
+    @Test
+    void aTagSetInTheDiagramGoesToAllTheMethodsLines() {
+        FlowDiagram d = diagram();
+        FlowDiagram.Method main = method(box(d, "Main"), "main()");
+        assertEquals("", main.tag);
+        d.setMethodTag(main, "bug");
+        FlowDiagram.Result r = d.apply(flow());
+        int tagged = 0;
+        for (FlowEntry e : r.entries()) {
+            if (e.className.equals("Main") && e.methodName.equals("main()")) {
+                assertEquals("bug", e.tag);
+                tagged++;
+            }
+        }
+        assertTrue(tagged > 0);
+        assertTrue(r.removed().isEmpty(), "tagged lines are the same lines, not removed ones");
+        assertEquals("bug", method(box(FlowDiagram.of(r.entries(), Set.of()), "Main"), "main()").tag, "read back from the lines");
+    }
+
+    @Test
+    void connectingACallByHandRemovesNoLine() {
+        FlowDiagram d = diagram();
+        assertTrue(d.connect(method(box(d, "BookingService"), "bookTrip()").id, method(box(d, "BookingService"), "cancel()").id));
+        FlowDiagram.Result r = d.apply(flow());
+        assertTrue(r.removed().isEmpty(), "the calling line gets the connection; it isn't removed: " + r.removed());
+    }
+
+    @Test
+    void aCustomClassKeepsTheFileItWasNamedAfter() {
+        FlowDiagram d = new FlowDiagram();
+        FlowDiagram.Box b = d.addUnknownClass("PaymentGateway", "PaymentGateway.java", 0, 0);
+        assertEquals("PaymentGateway.java", b.subtitle());
+        d.addUnknownMethod(b, "charge");
+        FlowDiagram.Result r = d.apply(List.of());
+        assertEquals("PaymentGateway.java", r.entries().get(0).fileName);
+        FlowDiagram back = FlowDiagram.of(r.entries(), Set.of());
+        assertEquals("PaymentGateway.java", box(back, "PaymentGateway").fileName);
+        d.setCustomFile(b, "payment.js");
+        assertEquals("payment.js", b.subtitle());
+        FlowDiagram.Box plain = d.addUnknownClass("Audit", 0, 0);
+        assertEquals("", plain.subtitle(), "named after itself: no file line");
+        d.renameClass(plain, "AuditLog");
+        assertEquals("AuditLog", plain.fileName, "its file follows the new name");
     }
 
     @Test
@@ -817,5 +940,41 @@ class FlowDiagramTest {
             }
         }
         return dark > 20;
+    }
+
+    @Test
+    void twoCallsFromOneMethodLeaveFromTheirOwnSpots() {
+        FlowDiagram d = FlowDiagram.of(flow(), Set.of(FlowSync.link(mainKey, bookKey), FlowSync.link(mainKey, cancelKey)));
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        painter.autoLayout(d);
+        assertEquals(2, d.links.size());
+        String bookId = method(box(d, "BookingService"), "bookTrip()").id;
+        FlowDiagram.Link toBook = d.links.stream().filter(l -> l.to().equals(bookId)).findFirst().orElseThrow();
+        FlowDiagram.Link toCancel = d.links.stream().filter(l -> !l.to().equals(bookId)).findFirst().orElseThrow();
+        double[] a = new double[6], b = new double[6];
+        painter.linkPath(d, toBook).getPathIterator(null).currentSegment(a);
+        painter.linkPath(d, toCancel).getPathIterator(null).currentSegment(b);
+        assertEquals(a[0], b[0], 0.001, "both leave main()'s row on the same side");
+        assertTrue(b[1] - a[1] >= 6, "separate starts, the call to the lower row lower: " + a[1] + " / " + b[1]);
+    }
+
+    @Test
+    void theProjectBandHasItsOwnLookThatIsSavedAndReset() {
+        FlowDiagram d = diagram();
+        FlowDiagram.Box main = box(d, "Main");
+        main.projectFill = new java.awt.Color(0x1F2A4D);
+        main.projectBorder = new java.awt.Color(0xC27C0E);
+        main.projectFormat = new FlowDiagram.Format(true, true, new java.awt.Color(0xFFFFFF));
+        assertFalse(d.sameAs(diagram()), "a look change");
+        FlowDiagram again = diagram();
+        again.applyLooks(d.looks());
+        FlowDiagram.Box back = box(again, "Main");
+        assertEquals(main.projectFill, back.projectFill);
+        assertEquals(main.projectBorder, back.projectBorder);
+        assertEquals(main.projectFormat, back.projectFormat);
+        assertEquals(main.projectFill, box(d.copy(), "Main").projectFill, "History copies keep it");
+        d.resetLooks();
+        assertNull(main.projectFill);
+        assertNull(main.projectFormat);
     }
 }

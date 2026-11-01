@@ -1,13 +1,68 @@
 <idea-plugin>
     <!-- Permanent Marketplace ID: never change it after publishing. (The Java package name is separate.) -->
-    <id>io.github.rameshnr.flowtracker</id>
-    <name>Flow Tracker</name>
-    <vendor url="https://github.com/RameshNR/flow-tracker">RameshNR</vendor>
+    <id>io.github.rameshnr.traceweave</id>
+    <name>TraceWeave - Code Flow Tracker</name>
+    <vendor url="https://github.com/RameshNR/traceweave">RameshNR</vendor>
     <!-- <version> and <idea-version since-build> are filled in by Gradle (build.gradle.kts). -->
 
     <!-- <description> comes from src/main/plugin-description.html (see build.gradle.kts). -->
 
     <change-notes><![CDATA[
+<h3>1.3.0</h3>
+<ul>
+  <li>New name: TraceWeave - Code Flow Tracker (was Flow Tracker), with a new plugin ID
+      (<code>io.github.rameshnr.traceweave</code>). Uninstall Flow Tracker first (Settings → Plugins), then install
+      TraceWeave: your flows, settings, saved debug values and shortcuts are kept.</li>
+  <li>Works in IntelliJ IDEA 2023.1 and every later version (1.2.1 needed 2026.2 or later). Checked with the
+      Plugin Verifier against 2023.1, 2023.3, 2024.2, 2025.1, 2025.2, 2026.2 and 2026.3.</li>
+  <li>Debug Data: right-click a variable in the debugger's Variables view → Save to TraceWeave. Compare it with
+      the same variable saved at that line in another flow or debug run (or with its value now), find names, keys
+      and values in all saved values and in the current debug session, edit saved values with a history to revert,
+      and restore deleted ones from the Recycle Bin.</li>
+  <li>Flow Diagram: Add File / Class asks for a file, then one of its classes; a file that isn't in the project
+      becomes a custom class named after it (its file can be changed later). Add Method offers a custom method for
+      a new name. The Custom Class and Custom Method buttons are gone.</li>
+  <li>Flow Diagram: boxes show their project; notes on calls (at the middle of the arrow, and in the sequence
+      diagram); tag a method Bug, Important or Question.</li>
+  <li>Tags show at the start of a line in the panel (a coloured bar and the tag before the code).</li>
+  <li>Copy ▾ → Copy Original Log copies only the Original Log as plain text.</li>
+  <li>New Flow Diagram and Clear icons.</li>
+  <li>More languages: C#, C / C++, Go, Rust, Swift, PHP, Dart, Scala (by their { } blocks), Python and Ruby (by
+      indentation), and libraries' decompiled .class files (also found by Add File). The Flow Diagram's buttons say
+      Add File and Add Function.</li>
+  <li>Debug Data: save values from the editor (a selected expression or the variable at the caret), from Evaluate
+      Expression results, or with Add Expression; show a value as JSON or text, copy it and export it. Compare
+      matches map entries by key and ignores instance ids (HotelService@1141), so only real changes show.</li>
+  <li>Flow Diagram: notes on calls take the first free spot on their arrow, so they don't cover each other or boxes;
+      the window opens at once and only once, however often its button is clicked. It is a normal window (it doesn't
+      block the IDE) with the system's Minimize, Maximize and Close. Notes on calls get a shape and background, text
+      and border colors; custom classes get a project.</li>
+  <li>Debug Data: a clearer Compare (changed / added / removed counts, map entries as key = value), Compare as JSON in
+      IntelliJ's diff viewer, and Compare Pasted Data (JSON, XML, toString() or text, detected and laid out line by
+      line). Fixed: values read while the debugger was still collecting them could be incomplete.</li>
+  <li>Debug Data: Export the selected (or all) saved values with their edit history to a .flowdebug.json file, and
+      Import such a file.</li>
+  <li>Debug Data: Capture Data saves each variable by itself while debugging, where the debugger stops or at every
+      line it runs up to the next breakpoint, all of them or only the line's; Compare opens the saved value next to an
+      empty side to paste the other one (Ctrl+Enter compares); Layout: side by side or top and bottom (Auto when
+      narrow); keys Delete, Ctrl+D, F2, Ctrl+F; New Value, Add / Edit / Remove Field and Copy (value, name = value,
+      JSON) that know maps, lists and objects (an object can be added as JSON); edit a value as JSON or text and
+      Apply, or Reset it to the saved data; every change revertible in History; Add Field lists the class's own and
+      inherited fields; added values get types like the debugger's; Compare marks Old and New and can swap them, and
+      edits both sides (Tree, JSON, Text) with Undo, Redo, History (with the saved values' own changes), Reset and
+      "See what changed"; Add Field doesn't add a field or key twice; copy, remove and delete several at once,
+      Copy Children as JSON and Paste; the value tree stays open while you edit; Add Expression is enabled only
+      while the debugger is paused; the value's Tree / JSON / Text / Copy / Save As buttons wrap; clearer Delete and
+      Recycle Bin icons.</li>
+  <li>Flow Diagram and Compare windows get the color of IntelliJ's main header; a class's project is shown in a band
+      on top of its box; "text only" notes are no longer crossed by their arrow; several calls from (or to) one method
+      start (or end) at their own spots, and the one going further away takes its own way, so they don't look like
+      one call that branches; call notes keep off other calls' lines.</li>
+  <li>Flow Diagram: Apply asks to confirm the changes (and no longer asks to discard them); Cancel asks once; the
+      project band can have its own background, border and text format, and shows in the sequence diagram too.</li>
+  <li>Fixed: connecting a call by hand in the Flow Diagram sent the calling line to the Recycle Bin on Apply; the
+      Copy menu showed its title twice.</li>
+</ul>
 <h3>1.2.1</h3>
 <ul>
   <li>Flow Diagram: the flow as an editable diagram. Add classes and files (JSP, JavaScript, TLD...) and methods
@@ -93,33 +148,45 @@
     <depends>com.intellij.java</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow id="Flow Tracker"
+        <toolWindow id="TraceWeave"
                     anchor="right"
                     icon="/icons/flowTracker.svg"
                     factoryClass="com.example.flowtracker.ui.FlowToolWindowFactory"/>
         <editorFactoryListener implementation="com.example.flowtracker.editor.FlowEditorFactoryListener"/>
-        <notificationGroup id="Flow Tracker" displayType="BALLOON"/>
+        <notificationGroup id="TraceWeave" displayType="BALLOON"/>
     </extensions>
 
     <actions>
-        <group id="FlowTracker.Menu" text="Flow Tracker" popup="true">
+        <group id="FlowTracker.Menu" text="TraceWeave" popup="true">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <action id="FlowTracker.AddLines" class="com.example.flowtracker.editor.FlowAddAction"
-                    text="Add to Flow Tracker" description="Add the caret line or the selected lines to the Flow Tracker flow"
+                    text="Add to TraceWeave" description="Add the caret line or the selected lines to the TraceWeave flow"
                     icon="AllIcons.General.Add">
                 <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift A"/>
                 <add-to-group group-id="EditorPopupMenu" anchor="first"/>
             </action>
             <action id="FlowTracker.NextStep" class="com.example.flowtracker.editor.FlowWalk$Next"
-                    text="Next Flow Step" description="Open the next saved line of the Flow Tracker flow"
+                    text="Next Flow Step" description="Open the next saved line of the TraceWeave flow"
                     icon="/icons/tb_next.svg">
                 <keyboard-shortcut keymap="$default" first-keystroke="alt CLOSE_BRACKET"/>
             </action>
             <action id="FlowTracker.PreviousStep" class="com.example.flowtracker.editor.FlowWalk$Previous"
-                    text="Previous Flow Step" description="Open the previous saved line of the Flow Tracker flow"
+                    text="Previous Flow Step" description="Open the previous saved line of the TraceWeave flow"
                     icon="/icons/tb_prev.svg">
                 <keyboard-shortcut keymap="$default" first-keystroke="alt OPEN_BRACKET"/>
             </action>
         </group>
+        <action id="FlowTracker.SaveDebugValue" class="com.example.flowtracker.debug.FlowSaveValueAction"
+                text="Save to TraceWeave"
+                description="Save this value with its fields to TraceWeave's Debug Data, to compare it with later debug runs and search in it"
+                icon="AllIcons.Actions.MenuSaveall">
+            <add-to-group group-id="XDebugger.ValueGroup" anchor="last"/>
+        </action>
+        <action id="FlowTracker.SaveDebugExpression" class="com.example.flowtracker.debug.FlowSaveExpressionAction"
+                text="Save Value to TraceWeave"
+                description="Evaluate the selected expression (or the variable at the caret) where the debugger is paused and save it to TraceWeave's Debug Data"
+                icon="AllIcons.Actions.MenuSaveall">
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="FlowTracker.AddLines"/>
+        </action>
     </actions>
 </idea-plugin>

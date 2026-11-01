@@ -158,6 +158,8 @@ public final class FlowCodeSearch {
             for (VirtualFile vf : FilenameIndex.getVirtualFilesByName(name, scope)) files.put(vf, true);
         }
         PsiShortNamesCache cache = PsiShortNamesCache.getInstance(project);
+        GlobalSearchScope libraries = GlobalSearchScope.allScope(project);
+        Map<VirtualFile, Boolean> libraryFiles = new LinkedHashMap<>(); // compiled classes of libraries (.class)
         int classes = 0;
         for (String name : cache.getAllClassNames()) {
             if (!p.matcher(name).find() || ++classes > 500) continue;
@@ -166,7 +168,15 @@ public final class FlowCodeSearch {
                 VirtualFile vf = f == null ? null : f.getVirtualFile();
                 if (vf != null) files.putIfAbsent(vf, false);
             }
+            if (libraryFiles.size() >= 40) continue;
+            for (PsiClass c : cache.getClassesByName(name, libraries)) {
+                PsiFile f = c.getContainingFile();
+                VirtualFile vf = f == null ? null : f.getVirtualFile();
+                if (vf != null && !files.containsKey(vf) && FlowLang.isSupported(vf)) libraryFiles.putIfAbsent(vf, false);
+            }
         }
+        // The project's own files first; library classes (read from their decompiled .class) after them.
+        libraryFiles.forEach(files::putIfAbsent);
 
         List<ClassHit> hits = new ArrayList<>();
         for (Map.Entry<VirtualFile, Boolean> f : files.entrySet()) {
@@ -178,10 +188,43 @@ public final class FlowCodeSearch {
             if (hits.size() >= limit * 3) break;
         }
         String q = query.strip().toLowerCase(Locale.ROOT);
-        hits.sort(Comparator.<ClassHit>comparingInt(h -> h.name().toLowerCase(Locale.ROOT).startsWith(q) ? 0 : 1)
+        hits.sort(Comparator.<ClassHit>comparingInt(h -> isLibrary(h.url()) ? 1 : 0)
+                .thenComparingInt(h -> h.name().toLowerCase(Locale.ROOT).startsWith(q) ? 0 : 1)
                 .thenComparingInt(h -> h.name().length())
                 .thenComparing(ClassHit::path));
         return hits.size() > limit ? new ArrayList<>(hits.subList(0, limit)) : hits;
+    }
+
+    /** A file of the project: where it is and which project it belongs to. */
+    public record FileHit(String url, String fileName, String path, String projectName) {}
+
+    /**
+     * Files of the project whose file name (or one of whose classes) matches the search text, best matches first:
+     * names starting with the text, then shorter names.
+     */
+    public static List<FileHit> findFiles(Project project, String query, int limit) {
+        Map<String, FileHit> files = new LinkedHashMap<>();
+        for (ClassHit h : findClasses(project, query, limit * 3)) {
+            files.putIfAbsent(h.url(), new FileHit(h.url(), h.fileName(), h.path(), h.projectName()));
+        }
+        String q = query.strip().toLowerCase(Locale.ROOT);
+        List<FileHit> out = new ArrayList<>(files.values());
+        out.sort(Comparator.<FileHit>comparingInt(f -> isLibrary(f.url()) ? 1 : 0)
+                .thenComparingInt(f -> f.fileName().toLowerCase(Locale.ROOT).startsWith(q) ? 0 : 1)
+                .thenComparingInt(f -> f.fileName().length())
+                .thenComparing(FileHit::path));
+        return out.size() > limit ? new ArrayList<>(out.subList(0, limit)) : out;
+    }
+
+    /** A library's file (a compiled .class in a jar), not one of the project's own. */
+    public static boolean isLibrary(String url) {
+        return url.startsWith("jar:") || url.endsWith(".class");
+    }
+
+    /** The classes of a file (nested ones as Outer.Inner), or the file itself when it has no classes. */
+    public static List<ClassHit> classesIn(Project project, String url) {
+        VirtualFile vf = VirtualFileManager.getInstance().findFileByUrl(url);
+        return vf == null ? List.of() : classesIn(project, vf);
     }
 
     /** The classes of a file (nested ones as Outer.Inner), or the file itself when it has no classes. */
@@ -257,7 +300,7 @@ public final class FlowCodeSearch {
 
     /**
      * The blocks of a file read as text: each run of lines with the same method (a function, a scriptlet, an
-     * element), as Flow Tracker names them when a line is saved.
+     * element), as TraceWeave names them when a line is saved.
      */
     static List<MethodHit> blocks(Document doc, String fileName) {
         List<MethodHit> out = new ArrayList<>();
@@ -334,7 +377,8 @@ public final class FlowCodeSearch {
      * The 0-based first and last line of the method, function or block around a 0-based line of a file (Java and
      * Kotlin from the code, other files read as blocks), or null when there is none.
      */
-    public static int @Nullable [] methodRange(Project project, String url, int line) {
+    @Nullable
+    public static int[] methodRange(Project project, String url, int line) {
         VirtualFile vf = VirtualFileManager.getInstance().findFileByUrl(url);
         Document doc = vf == null ? null : FileDocumentManager.getInstance().getDocument(vf);
         PsiFile psi = vf == null ? null : PsiManager.getInstance(project).findFile(vf);

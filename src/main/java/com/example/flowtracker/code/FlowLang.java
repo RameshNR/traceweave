@@ -11,13 +11,15 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * The file types Flow Tracker works in and how each is understood:
+ * The file types TraceWeave works in and how each is understood:
  * <ul>
  *   <li>Java and Groovy through Java PSI, Kotlin through UAST (the IDE's common syntax tree for JVM
  *       languages, so no compile-time dependency on the Kotlin plugin is needed). Sync follows their calls.</li>
  *   <li>Web and config files (JSP, JavaScript / TypeScript, TLD, XML, HTML, properties, YAML, SQL) through
  *       {@link FlowOutline}, which finds the enclosing function, tag or element from the text, since the
  *       Community edition has no parser for most of them.</li>
+ *   <li>Other popular languages, read as text the same way: brace languages (C#, C, C++, Go, Rust, Swift, PHP,
+ *       Dart, Scala, and the decompiled Java of a .class file) by their {} blocks, Python and Ruby by indentation.</li>
  * </ul>
  */
 public final class FlowLang {
@@ -32,7 +34,11 @@ public final class FlowLang {
         /** XML-like markup: TLD, XML, HTML. */
         MARKUP("xml"),
         /** Line-oriented config and query files. */
-        CONFIG("properties");
+        CONFIG("properties"),
+        /** Other brace languages (C#, C / C++, Go, Rust, Swift, PHP, Dart, Scala) and decompiled .class files. */
+        BRACES("c"),
+        /** Indented languages: Python, Ruby. */
+        INDENTED("python");
 
         final String fence;
 
@@ -52,14 +58,24 @@ public final class FlowLang {
             Map.entry("tld", Kind.MARKUP), Map.entry("xml", Kind.MARKUP), Map.entry("html", Kind.MARKUP),
             Map.entry("htm", Kind.MARKUP), Map.entry("xhtml", Kind.MARKUP),
             Map.entry("properties", Kind.CONFIG), Map.entry("yaml", Kind.CONFIG), Map.entry("yml", Kind.CONFIG),
-            Map.entry("sql", Kind.CONFIG));
+            Map.entry("sql", Kind.CONFIG),
+            Map.entry("cs", Kind.BRACES), Map.entry("c", Kind.BRACES), Map.entry("h", Kind.BRACES),
+            Map.entry("cpp", Kind.BRACES), Map.entry("cc", Kind.BRACES), Map.entry("cxx", Kind.BRACES),
+            Map.entry("hpp", Kind.BRACES), Map.entry("hh", Kind.BRACES), Map.entry("go", Kind.BRACES),
+            Map.entry("rs", Kind.BRACES), Map.entry("swift", Kind.BRACES), Map.entry("php", Kind.BRACES),
+            Map.entry("dart", Kind.BRACES), Map.entry("scala", Kind.BRACES), Map.entry("class", Kind.BRACES),
+            Map.entry("py", Kind.INDENTED), Map.entry("rb", Kind.INDENTED));
 
     /** Code fence names that differ from the kind's default. */
-    private static final Map<String, String> FENCE_BY_EXTENSION = Map.of(
-            "jsx", "jsx", "ts", "typescript", "tsx", "tsx", "html", "html", "htm", "html", "xhtml", "html",
-            "yaml", "yaml", "yml", "yaml", "sql", "sql");
+    private static final Map<String, String> FENCE_BY_EXTENSION = Map.ofEntries(
+            Map.entry("jsx", "jsx"), Map.entry("ts", "typescript"), Map.entry("tsx", "tsx"), Map.entry("html", "html"),
+            Map.entry("htm", "html"), Map.entry("xhtml", "html"), Map.entry("yaml", "yaml"), Map.entry("yml", "yaml"),
+            Map.entry("sql", "sql"), Map.entry("cs", "csharp"), Map.entry("cpp", "cpp"), Map.entry("cc", "cpp"),
+            Map.entry("cxx", "cpp"), Map.entry("hpp", "cpp"), Map.entry("hh", "cpp"), Map.entry("go", "go"),
+            Map.entry("rs", "rust"), Map.entry("swift", "swift"), Map.entry("php", "php"), Map.entry("dart", "dart"),
+            Map.entry("scala", "scala"), Map.entry("class", "java"), Map.entry("rb", "ruby"));
 
-    /** The kind of a file, or null when Flow Tracker doesn't support it. */
+    /** The kind of a file, or null when TraceWeave doesn't support it. */
     public static @Nullable Kind kind(String fileName) {
         return BY_EXTENSION.get(extension(fileName));
     }

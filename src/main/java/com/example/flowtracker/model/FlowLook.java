@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * How Flow Tracker looks, the same in every project (saved in the IDE's {@code flowTracker.xml}): its own colors or
+ * How TraceWeave looks, the same in every project (saved in the IDE's {@code flowTracker.xml}): its own colors or
  * the IntelliJ theme's, the Flow Diagram window's background, and the background of the diagram images it copies.
  */
 @Service(Service.Level.APP)
@@ -22,7 +22,7 @@ public final class FlowLook implements PersistentStateComponent<FlowLook.State> 
     public enum Background { THEME, LIGHT, DARK }
 
     public static class State {
-        /** true = every Flow Tracker color comes from the current IntelliJ theme (and editor color scheme). */
+        /** true = every TraceWeave color comes from the current IntelliJ theme (and editor color scheme). */
         public boolean useIdeTheme = false;
         /** Background of the Flow Diagram window's drawing area. */
         public Background diagramBackground = Background.THEME;
@@ -37,7 +37,7 @@ public final class FlowLook implements PersistentStateComponent<FlowLook.State> 
         return ApplicationManager.getApplication().getService(FlowLook.class);
     }
 
-    /** True when Flow Tracker uses the IntelliJ theme's colors; false outside a running IDE (tests). */
+    /** True when TraceWeave uses the IntelliJ theme's colors; false outside a running IDE (tests). */
     public static boolean ideTheme() {
         var app = ApplicationManager.getApplication();
         return app != null && !app.isDisposed() && get().state.useIdeTheme;

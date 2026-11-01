@@ -18,12 +18,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
 
-/** "Info" from the settings popup: what Flow Tracker does and how to use every part of it. */
+/** "Info" from the settings popup: what TraceWeave does and how to use every part of it. */
 final class FlowInfoDialog extends DialogWrapper {
 
     FlowInfoDialog(Project project) {
         super(project, false);
-        setTitle("Flow Tracker — Info");
+        setTitle("TraceWeave — Info");
         init();
     }
 
@@ -76,7 +76,7 @@ final class FlowInfoDialog extends DialogWrapper {
         String accent = hex(FlowTheme.ACCENT);
         String fg = hex(UIUtil.getLabelForeground());
         return "<html><body style='color:" + fg + "'>"
-                + "<h2 style='margin-bottom:2px'>🧭 Flow Tracker <span style='color:" + muted
+                + "<h2 style='margin-bottom:2px'>🧭 TraceWeave - Code Flow Tracker <span style='color:" + muted
                 + ";font-weight:normal'>v" + version() + "</span></h2>"
                 + "<p style='color:" + muted + "'>Collect the lines of a code path while you read it, keep them in "
                 + "call order, add notes, and copy the whole flow in one click.</p>"
@@ -84,7 +84,7 @@ final class FlowInfoDialog extends DialogWrapper {
                 + section(accent, "Add lines")
                 + "<ul><li>Hover a line in a supported file and click the <b>+</b> icon in the gutter. Click the green "
                 + "marker to remove the line again.</li>"
-                + "<li>Or right-click in the editor \u2192 <b>Add to Flow Tracker</b> (<b>Ctrl+Alt+Shift+A</b>): the caret "
+                + "<li>Or right-click in the editor \u2192 <b>Add to TraceWeave</b> (<b>Ctrl+Alt+Shift+A</b>): the caret "
                 + "line, or every selected line, as one undo step. On a saved line it reads <b>Remove from Flow "
                 + "Tracker</b>.</li>"
                 + "<li>Saved lines show their <b>step number</b> in the gutter; hover it for the method, tag and note. "
@@ -160,17 +160,20 @@ final class FlowInfoDialog extends DialogWrapper {
                 + "fixes them all.</li>"
                 + "<li><b>Ctrl+C</b> copies the selection, <b>Delete</b> removes it.</li></ul>"
                 + "<h3>Flow Diagram</h3>"
-                + "<ul><li><b>Flow Diagram</b> (toolbar) opens the flow as a diagram: a box per class or file with its "
+                + "<ul><li><b>Flow Diagram</b> (toolbar) opens the flow as a diagram, in a window that doesn't block the IDE "
+                + "(a normal window with Minimize, Maximize and Close; Close asks like Cancel when there are changes): "
+                + "a box per class or file with its "
                 + "methods, solid arrows for calls found in the code and dashed ones for calls connected by hand.</li>"
-                + "<li><b>Add File / Class</b> picks a class, or a JSP, JavaScript, TLD... file, from the project: type at least "
-                + "3 letters of a class or file name, a pattern such as <code>*Cruise*.java</code> or a regular expression "
-                + "such as <code>/Book.*Service/</code>; a name no class has can be added as a custom class. <b>Add Method / "
-                + "Function</b> lists the class's methods (filtered the same way), then shows the method's code so you can "
-                + "pick the lines to add (none picked: its first line).</li>"
-                + "<li><b>Custom Class / File</b> and <b>Custom Method / Function</b> add ones that aren't in the code yet "
-                + "(drawn in amber). Double-click a class name to pick another class for it, its methods to add one, or an "
-                + "empty spot to add a class. Renaming a class lists the matching classes; a name the project doesn't have "
-                + "makes it a custom class.</li>"
+                + "<li><b>Add File</b> asks for a file of the project (Java, JSP, JavaScript, TLD...): type at least "
+                + "3 letters of its name, a pattern such as <code>*Cruise*.java</code> or a regular expression such as "
+                + "<code>/Book.*Service/</code>, then pick one of its classes when it has several. A file that isn't in the "
+                + "project becomes a custom class named after it (PaymentGateway.java: PaymentGateway); right-click it to "
+                + "rename it or change its file. <b>Add Function</b> lists the class's methods (filtered the same "
+                + "way), then shows the method's code so you can pick the lines to add (none picked: its first line); a name "
+                + "the class doesn't have becomes a custom method.</li>"
+                + "<li>Custom classes and methods (not in the code) are drawn in amber. Each box shows its file and project. "
+                + "Double-click a class name to pick another class for it, its methods to add one, or an empty spot to add "
+                + "a class. Right-click a method → <b>Tag</b> to tag all its lines Bug, Important or Question.</li>"
                 + "<li><b>Connect</b>: drag from a method to the method it calls. <b>Rename</b> (F2) and <b>Delete</b> change "
                 + "the selected class, method or call. Drag boxes, or use <b>Auto Layout</b>.</li>"
                 + "<li><b>Moving around</b>: boxes never cover each other (the others make room when a box grows or is "
@@ -182,13 +185,14 @@ final class FlowInfoDialog extends DialogWrapper {
                 + "<li><b>Format</b> (or right-click): a box's theme (Plain, Light, Dark and eight colors) or its own class "
                 + "section, method section and border colors, with text that stays readable; class, file and method names "
                 + "and notes in bold, italic, underline, strike-through and any color; the note under a class or method "
-                + "name; and a call's line (pattern, width, shape, arrow, color). Each window has a <b>Reset</b> button; "
+                + "name; and a call's line (pattern, width, shape, arrow, color) and its note, shown at the middle of the arrow "
+                + "and under it in the sequence diagram. Each window has a <b>Reset</b> button; "
                 + "<b>Reset Theme</b> in the toolbar gives every class, method and line the default look again.</li>"
                 + "<li>The <b>History</b> lists every change and stays after Apply (while the IDE runs); <b>Undo / Redo</b> "
                 + "(Ctrl+Z / Ctrl+Y) or a click on a step goes back and forth. Changes that change nothing (e.g. Auto "
                 + "Layout again) aren't listed.</li>"
                 + "<li><b>Apply</b> writes the changes to the flow as one step the toolbar's Undo can revert: picked "
-                + "lines become saved lines, renamed classes and methods get their new names (in Flow Tracker only, "
+                + "lines become saved lines, renamed classes and methods get their new names (in TraceWeave only, "
                 + "not in your code), removed ones go to the Recycle Bin, and custom ones become lines marked "
                 + "<b>+</b> (no code yet). Formats, notes and positions are saved with the flow and exported with it. "
                 + "<b>Cancel</b> keeps the flow as it was.</li>"
@@ -197,11 +201,43 @@ final class FlowInfoDialog extends DialogWrapper {
                 + "set the images' default background and the window's background; the <b>Dark / Light</b> switch in the "
                 + "drawing area's corner flips it.</li></ul>"
 
+                + section(accent, "Debug Data")
+                + "<ul><li>While debugging, right-click a variable in the Variables view (or an Evaluate Expression result) → "
+                + "<b>Save to TraceWeave</b>: it is saved with its fields (4 levels deep), where the debugger stopped and "
+                + "the active flow, in the <b>Debug Data</b> tab. In the editor, select an expression (or put the caret on a "
+                + "variable) → right-click → <b>Save … to TraceWeave</b>; or type one with <b>Add Expression…</b> (enabled while "
+                + "the debugger is paused).</li>"
+                + "<li><b>Capture Data</b> saves the frame's variables by itself while you debug, each on its own: where the "
+                + "debugger stops, or (choose it with ▾) at every line it runs up to the next breakpoint, saving what changed; "
+                + "all variables, or only the ones used on the line.</li>"
+                + "<li><b>Compare</b> (Ctrl+D) two selected values with each other, or one with pasted data: the saved value "
+                + "on the left, paste the other one on the right and press Ctrl+Enter. The Compare window shows Tree, JSON "
+                + "and Text views and can be minimized and maximized. <b>Layout</b> places the list and the value side by side or top and bottom.</li>"
+                + "<li><b>Compare</b> a saved value with the same variable saved at that line before (any flow, any debug "
+                + "run) or with its value now: every field side by side, differences highlighted (map entries by key, instance "
+                + "ids like @1141 ignored). Saving offers it right away.</li>"
+                + "<li><b>Compare as JSON</b> shows both in IntelliJ's diff viewer; <b>Compare</b> with nothing selected compares two pasted pieces of "
+                + "data (JSON, XML, toString(), text: the kind is detected) and shows the added, removed and changed lines.</li>"
+                + "<li>Show a value as a <b>Tree</b>, as <b>JSON</b> or as <b>Text</b>; <b>Copy</b> it or <b>Export…</b> it "
+                + "to a .json or .txt file.</li>"
+                + "<li><b>Find</b> a name, map key, type or value (or a /regex/) in all saved values, and in the paused debug "
+                + "session's variables with <b>Also in the current debug session</b>.</li>"
+                + "<li>In the JSON or Text view, <b>Edit</b>, change the data and <b>Apply</b> (Ctrl+Enter): maps stay maps, "
+                + "unchanged values stay as the debugger showed them. <b>Reset</b> goes back to the saved data; both are in "
+                + "History.</li>"
+                + "<li><b>New Value…</b> adds a value by hand (JSON becomes fields). <b>Add Field</b> (Insert), <b>Edit</b> "
+                + "(F2) a name or value, <b>Remove Field</b> (Delete); right-click a field to copy its value, "
+                + "name = value, or JSON.</li>"
+                + "<li><b>Edit</b> (or double-click) a saved field; <b>History</b> lists the changes and reverts them. "
+                + "<b>Delete</b> moves values to the tab's Recycle Bin, where they can be restored.</li>"
+                + "<li><b>Export…</b> saves the selected (or all) values with their edit history to a .flowdebug.json file; "
+                + "<b>Import…</b> adds the values of such a file.</li></ul>"
+
                 + section(accent, "Walk-through")
                 + "<ul><li><b>Next Step / Previous Step</b> (toolbar, or <b>Alt+]</b> / <b>Alt+[</b> anywhere) open "
                 + "each saved line in the editor in turn, with the step number, method, tag and note in a hint.</li>"
                 + "<li>Select a line (or right-click \u2192 <b>Walk from Here</b>) to continue from it. Also under "
-                + "Tools \u2192 Flow Tracker; rebind the keys in Settings \u2192 Keymap.</li></ul>"
+                + "Tools \u2192 TraceWeave; rebind the keys in Settings \u2192 Keymap.</li></ul>"
 
                 + section(accent, "Sync (call order)")
                 + "<ul><li>When on, lines are kept in call order automatically: a method first, and the methods "
@@ -231,7 +267,7 @@ final class FlowInfoDialog extends DialogWrapper {
                 + "diagrams included; all flows when Copy All Flows is on.</li>"
                 + "<li><b>Copy All Flows</b> — the Copy button copies every flow, one after the other under its "
                 + "name, in the Flows popup's order. Ctrl+C still copies the selected lines.</li>"
-                + "<li><b>Use IntelliJ Theme</b> — take every Flow Tracker color (panel, buttons, popups, highlighted "
+                + "<li><b>Use IntelliJ Theme</b> — take every TraceWeave color (panel, buttons, popups, highlighted "
                 + "code and the Flow Diagram) from the current IntelliJ theme and editor color scheme. Off: Flow "
                 + "Tracker's own colors.</li>"
                 + "<li><b>Recycle Bin</b> and <b>Info</b> open from the same popup.</li>"

@@ -105,4 +105,79 @@ class FlowOutlineTest {
         assertFalse(inBudget.contains("checkDays"), "\"checkDays(1)\" in a string / comment: " + inBudget);
         assertFalse(scriptCalls(5).contains("validate/"), "the declaration itself is not a call");
     }
+
+    /** The class and method of a 1-based line of an inline source text. */
+    private static String at(String fileName, String text, int line) {
+        int offset = 0;
+        for (int l = 1; l < line; l++) offset = text.indexOf('\n', offset) + 1;
+        while (offset < text.length() && (text.charAt(offset) == ' ' || text.charAt(offset) == '\t')) offset++;
+        FlowOutline.Scope s = FlowOutline.locate(text, offset, fileName);
+        return s.className() + " | " + s.methodName();
+    }
+
+    @Test
+    void otherBraceLanguages() {
+        assertEquals("BookingService | Book()", at("BookingService.cs", """
+                namespace Travel {
+                  public class BookingService {
+                    public async Task<int> Book(string name) {
+                      var id = Save(name);
+                      return id;
+                    }
+                  }
+                }
+                """, 4), "C#");
+        assertEquals("- | Handle()", at("server.go", """
+                package main
+                func (s *Server) Handle(w http.ResponseWriter, r *http.Request) {
+                    s.count++
+                }
+                """, 3), "Go, a method with a receiver");
+        assertEquals("Booking | total()", at("booking.rs", """
+                impl Booking {
+                    pub fn total(&self) -> f64 {
+                        self.price * 2.0
+                    }
+                }
+                """, 3), "Rust");
+        assertEquals("Cart | add()", at("cart.cpp", """
+                class Cart {
+                  void add(int item) const {
+                    items.push_back(item);
+                  }
+                };
+                """, 3), "C++");
+        assertEquals("BookingService | bookTrip()", at("BookingService.class", """
+                public class BookingService {
+                    public void bookTrip(String name, int days) {
+                        this.validate(name);
+                    }
+                }
+                """, 3), "the decompiled Java of a .class file");
+    }
+
+    @Test
+    void indentedLanguages() {
+        assertEquals("BookingService | book()", at("booking.py", """
+                class BookingService:
+                    def book(self, name):
+                        if not name:
+                            raise ValueError("name")
+                        return save(name)
+                """, 4), "Python");
+        assertEquals("- | main()", at("app.py", """
+                def main():
+                    run()
+                """, 2), "a Python function outside a class");
+        assertEquals("Cart | add()", at("cart.rb", """
+                class Cart
+                  def add(item)
+                    @items << item
+                  end
+                end
+                """, 3), "Ruby");
+        assertEquals("go", FlowLang.fence("server.go"));
+        assertEquals("java", FlowLang.fence("BookingService.class"));
+        assertTrue(FlowLang.isSupportedName("models.py"));
+    }
 }

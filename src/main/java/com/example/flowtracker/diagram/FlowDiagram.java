@@ -4,6 +4,7 @@ import com.example.flowtracker.code.FlowLang;
 import com.example.flowtracker.code.FlowSync;
 import com.example.flowtracker.copy.FlowFormat;
 import com.example.flowtracker.model.FlowEntry;
+import com.example.flowtracker.model.FlowTag;
 import org.jetbrains.annotations.Nullable;
 
 import java.awt.Color;
@@ -53,7 +54,11 @@ public final class FlowDiagram {
     static final class Box {
         final String id;
         /** File and class of its lines; fileUrl is "" for an unknown class. */
-        final String fileUrl, fileName, projectName, origClass;
+        final String fileUrl, origClass;
+        /** The project its file is in (for a custom class: the one it is meant for, set by hand; "" = none). */
+        String projectName;
+        /** Its file's name; for a custom class the file it will be in (at first the name typed for it). */
+        String fileName;
         String name;
         /** True for a known class picked in this diagram (not in the flow yet). */
         final boolean picked;
@@ -68,6 +73,9 @@ public final class FlowDiagram {
          */
         @Nullable Color fill, headerFill, border;
         @Nullable Format title, fileFormat, methodsFormat;
+        /** The project band's own look (null = like the class section): background, border, text format and color. */
+        @Nullable Color projectFill, projectBorder;
+        @Nullable Format projectFormat;
         /** A note under the class name ("" = none), and its format. */
         String note = "";
         @Nullable Format noteFormat;
@@ -94,10 +102,32 @@ public final class FlowDiagram {
             methodsFormat = from.methodsFormat;
             note = from.note;
             noteFormat = from.noteFormat;
+            projectFill = from.projectFill;
+            projectBorder = from.projectBorder;
+            projectFormat = from.projectFormat;
         }
 
         /** The file name to show under the class name ("" for an unknown class). */
-        String subtitle() { return isUnknown() ? "" : fileName; }
+        /** The line under the class name in the diagram: its file ("" for a custom class named after itself). */
+        String fileLine() {
+            if (isUnknown()) return fileName.isBlank() || fileName.equals(name) ? "" : fileName;
+            return fileName;
+        }
+
+        /** The project it is in ("" for none), shown in a band above the class name. */
+        String project() {
+            return projectName == null ? "" : projectName.strip();
+        }
+
+        /** The file name, and the project it is in ("" for a custom class). */
+        String subtitle() {
+            if (isUnknown()) {
+                String file = fileName.isBlank() || fileName.equals(name) ? "" : fileName;
+                if (projectName == null || projectName.isBlank()) return file;
+                return file.isEmpty() ? projectName : file + "  \u00b7  " + projectName;
+            }
+            return projectName == null || projectName.isBlank() ? fileName : fileName + "  \u00b7  " + projectName;
+        }
 
         Box copy() {
             Box b = new Box(id, fileUrl, fileName, projectName, origClass, name, picked);
@@ -128,6 +158,9 @@ public final class FlowDiagram {
         @Nullable Format format;
         String note = "";
         @Nullable Format noteFormat;
+        /** Its lines' tag ({@link FlowTag#id}, "" = none); with {@code tagSet} the diagram gives it to all its lines on Apply. */
+        String tag = "";
+        boolean tagSet;
 
         Method(String id, @Nullable String origKey, String name, int saved, boolean unknown) {
             this.id = id;
@@ -143,6 +176,8 @@ public final class FlowDiagram {
             Method m = new Method(id, origKey, name, saved, unknown);
             m.picked.addAll(picked);
             m.copyLook(this);
+            m.tag = tag;
+            m.tagSet = tagSet;
             return m;
         }
 
@@ -163,6 +198,10 @@ public final class FlowDiagram {
     final List<Link> links = new ArrayList<>();
     /** The calls whose line looks different from the usual one, by {@link #lineKey}. */
     final Map<String, Line> lines = new HashMap<>();
+    /** Notes written on calls (shown at the middle of the arrow), by {@link #lineKey}. */
+    final Map<String, String> callNotes = new HashMap<>();
+    /** How notes on calls are drawn, when not the usual way, by {@link #lineKey}. */
+    final Map<String, NoteStyle> noteStyles = new HashMap<>();
     private int nextId;
 
     // ---------- building ----------
@@ -179,10 +218,12 @@ public final class FlowDiagram {
         Map<String, Method> byKey = new HashMap<>();
         Map<String, Integer> lineCount = new HashMap<>();
         Map<String, Boolean> onlyDiagram = new HashMap<>();
+        Map<String, String> tagOf = new HashMap<>(); // a method's tag: the first tag among its lines
         for (FlowEntry e : entries) {
             String key = FlowSync.methodKey(e);
             lineCount.merge(key, 1, Integer::sum);
             onlyDiagram.merge(key, isDiagramOnly(e), Boolean::logicalAnd);
+            if (FlowTag.of(e) != null) tagOf.putIfAbsent(key, e.tag);
         }
         for (FlowEntry e : entries) {
             Box box = byClass.computeIfAbsent(classKey(e), k -> {
@@ -194,6 +235,7 @@ public final class FlowDiagram {
             String key = FlowSync.methodKey(e);
             if (FlowFormat.isClassLevel(FlowFormat.methodLabel(e)) || byKey.containsKey(key)) continue;
             Method m = new Method(d.newId("m"), key, FlowFormat.methodName(e), lineCount.get(key), onlyDiagram.get(key));
+            m.tag = tagOf.getOrDefault(key, "");
             box.methods.add(m);
             byKey.put(key, m);
         }
@@ -236,6 +278,8 @@ public final class FlowDiagram {
         for (Box b : boxes) d.boxes.add(b.copy());
         d.links.addAll(links);
         d.lines.putAll(lines);
+        d.callNotes.putAll(callNotes);
+        d.noteStyles.putAll(noteStyles);
         return d;
     }
 
@@ -315,7 +359,12 @@ public final class FlowDiagram {
 
     /** Adds a class that isn't in the code. */
     Box addUnknownClass(String name, double x, double y) {
-        Box b = new Box(newId("c"), "", name.strip(), "", "", name.strip(), true);
+        return addUnknownClass(name, name, x, y);
+    }
+
+    /** Adds a custom class (not in the code) that will be in the given file, e.g. PaymentGateway in PaymentGateway.java. */
+    Box addUnknownClass(String name, String fileName, double x, double y) {
+        Box b = new Box(newId("c"), "", fileName.isBlank() ? name.strip() : fileName.strip(), "", "", name.strip(), true);
         b.x = x;
         b.y = y;
         boxes.add(b);
@@ -341,7 +390,20 @@ public final class FlowDiagram {
     }
 
     void renameClass(Box b, String name) {
+        // A custom class whose file was just named after it keeps it that way.
+        if (b.isUnknown() && b.fileName.equals(b.name)) b.fileName = name.strip();
         b.name = name.strip();
+    }
+
+    /** The file a custom class will be in. */
+    /** The file a custom class will be in, and the project it is meant for ("" = none). */
+    void setCustomFile(Box b, String fileName, String projectName) {
+        setCustomFile(b, fileName);
+        b.projectName = projectName == null ? "" : projectName.strip();
+    }
+
+    void setCustomFile(Box b, String fileName) {
+        b.fileName = fileName.isBlank() ? b.name : fileName.strip();
     }
 
     /**
@@ -361,7 +423,11 @@ public final class FlowDiagram {
 
     /** Turns a box into a custom class (not in the code) with this name, keeping its methods as custom ones. */
     Box replaceWithCustomClass(Box old, String name) {
-        return swap(old, new Box(newId("c"), "", name.strip(), "", "", name.strip(), true));
+        return replaceWithCustomClass(old, name, name);
+    }
+
+    Box replaceWithCustomClass(Box old, String name, String fileName) {
+        return swap(old, new Box(newId("c"), "", fileName.isBlank() ? name.strip() : fileName.strip(), "", "", name.strip(), true));
     }
 
     private Box swap(Box old, Box b) {
@@ -416,6 +482,12 @@ public final class FlowDiagram {
         return m;
     }
 
+    /** Tags all the method's lines (on Apply): a {@link FlowTag#id}, or "" for no tag. */
+    void setMethodTag(Method m, @Nullable String tagId) {
+        m.tag = tagId == null ? "" : tagId;
+        m.tagSet = true;
+    }
+
     void renameMethod(Method m, String name) {
         m.name = methodName(name);
     }
@@ -438,20 +510,26 @@ public final class FlowDiagram {
     boolean disconnect(Link link) {
         if (!link.manual() || !links.remove(link)) return false;
         lines.remove(lineKey(link));
+        callNotes.remove(lineKey(link));
+        noteStyles.remove(lineKey(link));
         return true;
     }
 
     private void dropLinks(String methodId) {
         links.removeIf(l -> l.from().equals(methodId) || l.to().equals(methodId));
         lines.keySet().removeIf(k -> k.startsWith(methodId + ">") || k.endsWith(">" + methodId));
+        callNotes.keySet().removeIf(k -> k.startsWith(methodId + ">") || k.endsWith(">" + methodId));
+        noteStyles.keySet().removeIf(k -> k.startsWith(methodId + ">") || k.endsWith(">" + methodId));
     }
 
     /** Text that changes only when something that {@link #apply} writes back changes (not box positions). */
     String signature() {
         StringBuilder sb = new StringBuilder();
         for (Box b : boxes) {
-            sb.append(b.id).append('=').append(b.name).append('{');
-            for (Method m : b.methods) sb.append(m.id).append('=').append(m.name).append('+').append(m.picked.size()).append(';');
+            sb.append(b.id).append('=').append(b.name).append('@').append(b.fileName).append('@').append(b.projectName).append('{');
+            for (Method m : b.methods) {
+                sb.append(m.id).append('=').append(m.name).append('+').append(m.picked.size()).append('#').append(m.tag).append(';');
+            }
             sb.append('}');
         }
         for (Link l : links) sb.append(l.from()).append('>').append(l.to()).append(l.manual() ? "m" : "c").append(';');
@@ -587,6 +665,57 @@ public final class FlowDiagram {
         else lines.put(lineKey(l), line);
     }
 
+    /** The shape of a note's card. */
+    enum NoteShape {
+        ROUNDED("Rounded"), RECTANGLE("Rectangle"), PILL("Pill"), PLAIN("Text only (no card)");
+        final String label;
+        NoteShape(String label) { this.label = label; }
+        @Override public String toString() { return label; }
+    }
+
+    /** How a call's note is drawn: its card's shape, and its background, text and border colors (null: the usual one). */
+    record NoteStyle(NoteShape shape, @Nullable Color background, @Nullable Color text, @Nullable Color border) {
+        static final NoteStyle DEFAULT = new NoteStyle(NoteShape.ROUNDED, null, null, null);
+
+        String encode() {
+            if (equals(DEFAULT)) return "";
+            return shape.name() + ";" + (background == null ? "" : hex(background)) + ";" + (text == null ? "" : hex(text))
+                    + ";" + (border == null ? "" : hex(border));
+        }
+
+        static NoteStyle decode(@Nullable String s) {
+            if (s == null || s.isBlank()) return DEFAULT;
+            String[] p = s.split(";", -1);
+            NoteShape shape;
+            try {
+                shape = NoteShape.valueOf(p[0]);
+            } catch (IllegalArgumentException e) {
+                shape = NoteShape.ROUNDED;
+            }
+            return new NoteStyle(shape, p.length > 1 ? parseColor(p[1]) : null, p.length > 2 ? parseColor(p[2]) : null,
+                    p.length > 3 ? parseColor(p[3]) : null);
+        }
+    }
+
+    NoteStyle noteStyle(Link l) {
+        return noteStyles.getOrDefault(lineKey(l), NoteStyle.DEFAULT);
+    }
+
+    void setNoteStyle(Link l, @Nullable NoteStyle style) {
+        if (style == null || style.equals(NoteStyle.DEFAULT)) noteStyles.remove(lineKey(l));
+        else noteStyles.put(lineKey(l), style);
+    }
+
+    /** The note written on a call ("" for none). */
+    String callNote(Link l) {
+        return callNotes.getOrDefault(lineKey(l), "");
+    }
+
+    void setCallNote(Link l, @Nullable String note) {
+        if (note == null || note.isBlank()) callNotes.remove(lineKey(l));
+        else callNotes.put(lineKey(l), note.strip());
+    }
+
     /**
      * Reset Theme: every box, method and call gets the default look again (colors, text formats, lines). Notes,
      * names, calls and positions stay.
@@ -600,12 +729,16 @@ public final class FlowDiagram {
             b.fileFormat = null;
             b.methodsFormat = null;
             b.noteFormat = null;
+            b.projectFill = null;
+            b.projectBorder = null;
+            b.projectFormat = null;
             for (Method m : b.methods) {
                 m.format = null;
                 m.noteFormat = null;
             }
         }
         lines.clear();
+        noteStyles.clear(); // the notes themselves stay
     }
 
     /** Every color, format, note and line, as one text (positions are compared separately). */
@@ -616,7 +749,9 @@ public final class FlowDiagram {
                     .append(b.border == null ? "" : hex(b.border)).append(',').append(enc(b.title)).append(',')
                     .append(b.headerFill == null ? "" : hex(b.headerFill)).append(',').append(enc(b.fileFormat)).append(',')
                     .append(enc(b.methodsFormat)).append(',')
-                    .append(b.note).append(',').append(enc(b.noteFormat)).append(';');
+                    .append(b.note).append(',').append(enc(b.noteFormat)).append(',')
+                    .append(b.projectFill == null ? "" : hex(b.projectFill)).append(',')
+                    .append(b.projectBorder == null ? "" : hex(b.projectBorder)).append(',').append(enc(b.projectFormat)).append(';');
             for (Method m : b.methods) {
                 sb.append(m.id).append(':').append(enc(m.format)).append(',').append(m.note).append(',')
                         .append(enc(m.noteFormat)).append(';');
@@ -624,6 +759,8 @@ public final class FlowDiagram {
         }
         new java.util.TreeMap<>(lines).forEach((k, v) -> sb.append(k).append('=').append(v.encode())
                 .append(v.color() == null ? "" : hex(v.color())).append(';'));
+        new java.util.TreeMap<>(callNotes).forEach((k, v) -> sb.append(k).append('"').append(v).append(';'));
+        new java.util.TreeMap<>(noteStyles).forEach((k, v) -> sb.append(k).append('%').append(v.encode()).append(';'));
         return sb.toString();
     }
 
@@ -650,6 +787,9 @@ public final class FlowDiagram {
             l.methodFormat = b.methodsFormat == null ? "" : b.methodsFormat.encode();
             l.note = b.note;
             l.noteFormat = b.noteFormat == null ? "" : b.noteFormat.encode();
+            l.projectFill = b.projectFill == null ? "" : hex(b.projectFill);
+            l.projectBorder = b.projectBorder == null ? "" : hex(b.projectBorder);
+            l.projectFormat = b.projectFormat == null ? "" : b.projectFormat.encode();
             out.add(l);
             for (Method m : b.methods) {
                 if (m.format == null && m.note.isEmpty() && m.noteFormat == null) continue;
@@ -662,8 +802,10 @@ public final class FlowDiagram {
         }
         for (Link link : links) {
             Line line = line(link);
+            String note = callNote(link);
             Box fb = boxOf(link.from()), tb = boxOf(link.to());
-            if (line.equals(Line.DEFAULT) || fb == null || tb == null) continue;
+            NoteStyle style = noteStyle(link);
+            if (line.equals(Line.DEFAULT) && note.isEmpty() && style.equals(NoteStyle.DEFAULT) || fb == null || tb == null) continue;
             FlowDiagramLook l = target(fb, method(link.from()));
             FlowDiagramLook to = target(tb, method(link.to()));
             l.toFileUrl = to.fileUrl;
@@ -671,6 +813,8 @@ public final class FlowDiagram {
             l.toMethod = to.method;
             l.line = line.encode();
             l.border = line.color() == null ? "" : hex(line.color());
+            l.note = note;
+            l.noteStyle = style.encode();
             out.add(l);
         }
         return out;
@@ -703,6 +847,9 @@ public final class FlowDiagram {
                 b.methodsFormat = Format.decode(l.methodFormat);
                 b.note = l.note == null ? "" : l.note;
                 b.noteFormat = Format.decode(l.noteFormat);
+                b.projectFill = parseColor(l.projectFill);
+                b.projectBorder = parseColor(l.projectBorder);
+                b.projectFormat = Format.decode(l.projectFormat);
                 continue;
             }
             Method m = findMethod(b, l.method);
@@ -717,7 +864,10 @@ public final class FlowDiagram {
             Method to = tb == null ? null : findMethod(tb, l.toMethod);
             if (to == null) continue;
             for (Link link : links) {
-                if (link.from().equals(m.id) && link.to().equals(to.id)) setLine(link, Line.decode(l.line, parseColor(l.border)));
+                if (!link.from().equals(m.id) || !link.to().equals(to.id)) continue;
+                setLine(link, Line.decode(l.line, parseColor(l.border)));
+                setCallNote(link, l.note);
+                setNoteStyle(link, NoteStyle.decode(l.noteStyle));
             }
         }
     }
@@ -830,7 +980,12 @@ public final class FlowDiagram {
     sealed interface Step permits Start, Call, Return {}
     /** A method nobody here calls: a note over its class, where a chain of calls starts. */
     record Start(Box box, Method method) implements Step {}
-    record Call(Box from, Box to, Method method) implements Step {}
+    /** A call, with the note written on it ("" for none). */
+    record Call(Box from, Box to, Method method, String note, NoteStyle noteStyle) implements Step {
+        Call(Box from, Box to, Method method, String note) {
+            this(from, to, method, note, NoteStyle.DEFAULT);
+        }
+    }
     record Return(Box from, Box to) implements Step {}
 
     /**
@@ -870,7 +1025,8 @@ public final class FlowDiagram {
             Method callee = method(calleeId);
             Box to = boxOf(calleeId);
             if (callee == null || to == null) continue;
-            out.add(new Call(from, to, callee));
+            String key = m.id + ">" + calleeId;
+            out.add(new Call(from, to, callee, callNotes.getOrDefault(key, ""), noteStyles.getOrDefault(key, NoteStyle.DEFAULT)));
             expand(callee, callees, expanded, out);
             out.add(new Return(to, from));
         }
@@ -927,13 +1083,16 @@ public final class FlowDiagram {
             String cls = targetClass(box, e);
             String method = m == null ? e.methodName : m.name;
             String url = box.isUnknown() ? DIAGRAM_URL + box.name : e.fileUrl;
-            String file = box.isUnknown() ? box.name : e.fileName;
-            if (!cls.equals(e.className) || !method.equals(e.methodName) || !url.equals(e.fileUrl) || !file.equals(e.fileName)) {
+            String file = box.isUnknown() ? box.fileName : e.fileName;
+            String project = box.isUnknown() ? box.projectName : e.projectName == null ? "" : e.projectName;
+            if (!cls.equals(e.className) || !method.equals(e.methodName) || !url.equals(e.fileUrl) || !file.equals(e.fileName)
+                    || !project.equals(e.projectName == null ? "" : e.projectName)) {
                 now = copy(e);
                 now.className = cls;
                 now.methodName = method;
                 now.fileUrl = url;
                 now.fileName = file;
+                now.projectName = project;
                 copies.put(e, now);
                 fresh.add(now);
             }
@@ -1000,7 +1159,30 @@ public final class FlowDiagram {
             if (want.equals(e.calls)) continue;
             FlowEntry c = fresh.contains(e) ? e : copy(e);
             c.calls = new ArrayList<>(want);
+            if (c != e) {
+                copies.put(e, c); // the same line with its connections, not a removed one
+                fresh.add(c);
+            }
             out.set(i, c);
+        }
+
+        // Tags set in the diagram go to every line of their method.
+        for (Map.Entry<Method, List<FlowEntry>> ml : linesOf.entrySet()) {
+            Method m = ml.getKey();
+            if (!m.tagSet) continue;
+            Set<FlowEntry> lines = Collections.newSetFromMap(new IdentityHashMap<>());
+            lines.addAll(ml.getValue());
+            for (int i = 0; i < out.size(); i++) {
+                FlowEntry e = out.get(i);
+                if (!lines.contains(e) || m.tag.equals(e.tag == null ? "" : e.tag)) continue;
+                FlowEntry c = fresh.contains(e) ? e : copy(e);
+                c.tag = m.tag;
+                if (c != e) {
+                    copies.put(e, c); // the same line with its new tag, not a removed one
+                    fresh.add(c);
+                }
+                out.set(i, c);
+            }
         }
 
         Set<FlowEntry> kept = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -1043,7 +1225,7 @@ public final class FlowDiagram {
     /** A line for an unknown method (or class): no code, line number 0. */
     private static FlowEntry diagramLine(Box b, String method, String text) {
         String url = b.isUnknown() ? DIAGRAM_URL + b.name : b.fileUrl;
-        String file = b.isUnknown() ? b.name : b.fileName;
+        String file = b.fileName;
         FlowEntry e = new FlowEntry(file, url, b.isUnknown() ? b.name : b.origClass, method, 0, text);
         e.projectName = b.projectName;
         if (!b.isUnknown() && !b.name.equals(className(e))) e.className = b.name;

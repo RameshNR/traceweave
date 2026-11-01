@@ -2,6 +2,7 @@ package com.example.flowtracker.diagram;
 
 import com.example.flowtracker.code.FlowCodeSearch;
 import com.example.flowtracker.code.FlowLang;
+import com.example.flowtracker.compat.FlowCompat;
 import com.example.flowtracker.copy.CodeHighlighter;
 import com.example.flowtracker.ui.FlowTheme;
 import com.intellij.icons.AllIcons;
@@ -57,23 +58,24 @@ final class FlowCodePicker {
     private FlowCodePicker() {}
 
     /**
-     * What the class picker returns: a class (or file) of the project, or the name typed for a custom class (one
-     * that isn't in the code).
+     * What the class picker returns: a class (or file) of the project, or a custom class (one that isn't in the
+     * code): its name and the file it will be in.
      */
-    record ClassChoice(@Nullable FlowCodeSearch.ClassHit hit, @Nullable String customName) {
+    record ClassChoice(@Nullable FlowCodeSearch.ClassHit hit, @Nullable String customName, @Nullable String customFile) {
         boolean isCustom() { return hit == null; }
     }
 
     /**
-     * Asks for a class of the project, listing the matches as the user types (by name, {@code *} / {@code ?}
-     * wildcards or a {@code /regex/}). A name no class has can be taken as a custom class. Null when cancelled.
+     * Asks for a file of the project (listed as the user types: by name, {@code *} / {@code ?} wildcards or a
+     * {@code /regex/}), then for one of the classes in it when it has several. A name no file has becomes a custom
+     * class named after it (PaymentGateway.java: class PaymentGateway in that file). Null when cancelled.
      *
-     * @param title       the window title, e.g. "Add Class" or "Rename Class"
+     * @param title       the window title, e.g. "Add File" or "Rename Class"
      * @param query       the search to start with (e.g. the class's current name)
-     * @param customCheck why a typed name can't be a custom class (null when it can)
+     * @param customCheck why a class name can't be a custom class (null when it can)
      */
     static @Nullable ClassChoice pickClass(Project project, Component parent, String title, String query,
-                                           Function<String, @Nullable String> customCheck) {
+                                           Function<String, String> customCheck) {
         ClassDialog d = new ClassDialog(project, parent, title, customCheck);
         if (!query.isEmpty()) {
             d.search.setText(query); // starts the search
@@ -81,19 +83,41 @@ final class FlowCodePicker {
         }
         if (!d.showAndGet()) return null;
         Object v = d.list.getSelectedValue();
-        if (v instanceof FlowCodeSearch.ClassHit h) return new ClassChoice(h, null);
-        return v instanceof Custom c ? new ClassChoice(null, c.name()) : null;
+        if (v instanceof Custom c) return new ClassChoice(null, c.className(), c.fileName());
+        if (!(v instanceof FlowCodeSearch.FileHit f)) return null;
+        List<FlowCodeSearch.ClassHit> classes = FlowCompat.read(() -> FlowCodeSearch.classesIn(project, f.url()));
+        if (classes.isEmpty()) return null;
+        if (classes.size() == 1) return new ClassChoice(classes.get(0), null, null);
+        ClassInFileDialog pick = new ClassInFileDialog(project, parent, f, classes);
+        return pick.showAndGet() && pick.list.getSelectedValue() != null ? new ClassChoice(pick.list.getSelectedValue(), null, null) : null;
     }
 
-    /** The list row that takes the typed name as a custom class. */
-    private record Custom(String name) {}
+    /** The list row that takes the typed name as a custom class: its class name and the file it will be in. */
+    private record Custom(String className, String fileName) {}
 
-    /** Asks for a method of the class; null when cancelled. */
-    static @Nullable FlowCodeSearch.MethodHit pickMethod(Project project, Component parent, FlowCodeSearch.ClassHit cls) {
-        List<FlowCodeSearch.MethodHit> methods = ReadAction.computeBlocking(() -> FlowCodeSearch.methods(project, cls));
-        MethodDialog d = new MethodDialog(project, parent, cls, methods);
-        return d.showAndGet() ? d.list.getSelectedValue() : null;
+    /** What the method picker returns: a method of the class's code, or the name typed for a custom method. */
+    record MethodChoice(@Nullable FlowCodeSearch.MethodHit hit, @Nullable String customName) {
+        boolean isCustom() { return hit == null; }
     }
+
+    /**
+     * Asks for a method of the class; a name the class doesn't have can be taken as a custom method. Null when
+     * cancelled.
+     *
+     * @param customCheck why a method name can't be a custom method (null when it can)
+     */
+    static @Nullable MethodChoice pickMethod(Project project, Component parent, FlowCodeSearch.ClassHit cls,
+                                             Function<String, String> customCheck) {
+        List<FlowCodeSearch.MethodHit> methods = FlowCompat.read(() -> FlowCodeSearch.methods(project, cls));
+        MethodDialog d = new MethodDialog(project, parent, cls, methods, customCheck);
+        if (!d.showAndGet()) return null;
+        Object v = d.list.getSelectedValue();
+        if (v instanceof FlowCodeSearch.MethodHit m) return new MethodChoice(m, null);
+        return v instanceof CustomMethod c ? new MethodChoice(null, c.name()) : null;
+    }
+
+    /** The list row that takes the typed name as a custom method. */
+    private record CustomMethod(String name) {}
 
     /**
      * Shows the method's code and asks which lines to add. Returns the 0-based lines picked (none picked: the
@@ -103,7 +127,7 @@ final class FlowCodePicker {
      */
     static @Nullable List<Integer> pickLines(Project project, Component parent, FlowCodeSearch.ClassHit cls,
                                              FlowCodeSearch.MethodHit method, Set<Integer> saved) {
-        List<FlowCodeSearch.CodeLine> lines = ReadAction.computeBlocking(() -> FlowCodeSearch.lines(cls.url(), method.start(), method.end()));
+        List<FlowCodeSearch.CodeLine> lines = FlowCompat.read(() -> FlowCodeSearch.lines(cls.url(), method.start(), method.end()));
         LinesDialog d = new LinesDialog(project, parent, cls, method, lines, saved);
         if (!d.showAndGet()) return null;
         List<Integer> picked = new ArrayList<>(d.checked);
@@ -122,17 +146,18 @@ final class FlowCodePicker {
         private final JBLabel status = new JBLabel();
         private final Timer debounce = new Timer(250, e -> runSearch());
         private final String okText;
-        private final Function<String, @Nullable String> customCheck;
-        /** The classes found for the current search. */
-        private List<FlowCodeSearch.ClassHit> hits = List.of();
+        /** The message for a custom class name, or null when it can't be one. */
+        private final Function<String, String> customCheck;
+        /** The files found for the current search. */
+        private List<FlowCodeSearch.FileHit> hits = List.of();
         private int generation;
 
-        ClassDialog(Project project, Component parent, String title, Function<String, @Nullable String> customCheck) {
+        ClassDialog(Project project, Component parent, String title, Function<String, String> customCheck) {
             super(project, parent, false, IdeModalityType.IDE);
             this.project = project;
             this.customCheck = customCheck;
             this.okText = title.startsWith("Add") ? "Add" : "OK";
-            search.getTextEditor().getAccessibleContext().setAccessibleName("Class or file name");
+            search.getTextEditor().getAccessibleContext().setAccessibleName("File name");
             setTitle(title);
             setOKButtonText(okText);
             debounce.setRepeats(false);
@@ -143,7 +168,7 @@ final class FlowCodePicker {
 
         @Override
         protected JComponent createCenterPanel() {
-            search.getTextEditor().getEmptyText().setText("Class or file name, e.g. Booking, *Cruise*.java or /Book.*Service/");
+            search.getTextEditor().getEmptyText().setText("File name, e.g. BookingService.java, index.jsp, *Cruise*.java or /Book.*Service/");
             search.addDocumentListener(new DocumentAdapter() {
                 @Override protected void textChanged(@NotNull DocumentEvent e) {
                     fill(); // the custom class row follows the text right away; the search waits for a pause
@@ -156,16 +181,16 @@ final class FlowCodePicker {
                 protected void customizeCellRenderer(@NotNull JList<?> l, Object value, int index, boolean selected, boolean focus) {
                     if (value instanceof Custom c) {
                         setIcon(FlowTheme.ICON_CLASS_UNKNOWN);
-                        append(c.name(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
-                        append("  custom class: not in the code (yet)", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
+                        append(c.fileName(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+                        append("  not in the project: add custom class " + c.className() + " (you can rename it or change its file later)",
+                                SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
                         return;
                     }
-                    FlowCodeSearch.ClassHit h = (FlowCodeSearch.ClassHit) value;
-                    setIcon(h.isFile() ? FileTypeManager.getInstance().getFileTypeByFileName(h.fileName()).getIcon() : AllIcons.Nodes.Class);
-                    append(h.name(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
-                    if (!h.isFile()) append("  " + h.fileName(), SimpleTextAttributes.REGULAR_ATTRIBUTES);
-                    append("  " + h.path(), SimpleTextAttributes.GRAYED_ATTRIBUTES);
-                    if (!h.projectName().isEmpty()) append("  [" + h.projectName() + "]", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
+                    FlowCodeSearch.FileHit f = (FlowCodeSearch.FileHit) value;
+                    setIcon(FileTypeManager.getInstance().getFileTypeByFileName(f.fileName()).getIcon());
+                    append(f.fileName(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+                    append("  " + f.path(), SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                    if (!f.projectName().isEmpty()) append("  [" + f.projectName() + "]", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
                 }
             });
             list.addListSelectionListener(e -> updateOk());
@@ -189,9 +214,9 @@ final class FlowCodePicker {
         }
 
         private static String hint() {
-            return "<html>Type at least " + FlowCodeSearch.MIN_LETTERS + " letters of a class or file name. "
-                    + "Use * and ? as wildcards (*Cruise*.java), or /…/ for a regular expression (/Book.*Service/). "
-                    + "A name no class has can be added as a custom class.</html>";
+            return "<html>Type at least " + FlowCodeSearch.MIN_LETTERS + " letters of the file name (a class name finds its file too). "
+                    + "Use * and ? as wildcards (*Cruise*.java), or /…/ for a regular expression. Next you pick a class of the file "
+                    + "when it has several. A file that isn't in the project becomes a custom class named after it.</html>";
         }
 
         private void move(int delta) {
@@ -213,7 +238,7 @@ final class FlowCodePicker {
                 return;
             }
             status.setText(DumbService.isDumb(project) ? "Waiting for indexing to finish…" : "Searching…");
-            ReadAction.nonBlocking(() -> FlowCodeSearch.findClasses(project, q, 100))
+            ReadAction.nonBlocking(() -> FlowCodeSearch.findFiles(project, q, 100))
                     .inSmartMode(project)
                     .expireWith(getDisposable())
                     .finishOnUiThread(ModalityState.stateForComponent(list), found -> {
@@ -221,24 +246,25 @@ final class FlowCodePicker {
                         hits = found;
                         fill();
                         status.setText(found.isEmpty()
-                                ? "No class or file matches “" + q.strip() + "”" + (custom() != null ? ": it can be added as a custom class." : "")
+                                ? "No file matches “" + q.strip() + "”" + (custom() != null ? ": it can be added as a custom class." : "")
                                 : found.size() + (found.size() == 1 ? " match" : found.size() >= 100 ? "+ matches (type more to narrow)" : " matches"));
                     })
                     .submit(AppExecutorUtil.getAppExecutorService());
         }
 
         /**
-         * The typed name as a custom class, or null: when it isn't a valid class name, or a class of the results
-         * is called exactly that (then that class is the one meant).
+         * The typed name as a custom class (named after the file: PaymentGateway.java gives PaymentGateway), or null:
+         * when it isn't a valid name, or a file of the results is called that (then that file is the one meant).
          */
         private @Nullable Custom custom() {
-            String name = search.getText().strip();
-            if (name.isEmpty() || customCheck.apply(name) != null) return null;
-            for (FlowCodeSearch.ClassHit h : hits) {
-                String simple = h.className().substring(h.className().lastIndexOf('.') + 1);
-                if (simple.equals(name) || h.className().equals(name) || h.fileName().equals(name)) return null;
+            String typed = search.getText().strip();
+            if (typed.isEmpty() || typed.startsWith("/") || typed.contains("*") || typed.contains("?")) return null;
+            String cls = FlowLang.isSupportedName(typed) ? FlowLang.baseName(typed) : typed;
+            if (cls.isEmpty() || customCheck.apply(cls) != null) return null;
+            for (FlowCodeSearch.FileHit f : hits) {
+                if (f.fileName().equals(typed) || FlowLang.baseName(f.fileName()).equals(cls)) return null;
             }
-            return new Custom(name);
+            return new Custom(cls, typed);
         }
 
         /** Shows the classes found and, last, the typed name as a custom class; keeps the selection when it can. */
@@ -266,41 +292,98 @@ final class FlowCodePicker {
         }
     }
 
+    /** The second step of Add Class for a file with several classes: which one. */
+    private static final class ClassInFileDialog extends DialogWrapper {
+        final JBList<FlowCodeSearch.ClassHit> list;
+
+        ClassInFileDialog(Project project, Component parent, FlowCodeSearch.FileHit file, List<FlowCodeSearch.ClassHit> classes) {
+            super(project, parent, false, IdeModalityType.IDE);
+            list = new JBList<>(classes);
+            list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+            int main = 0; // the class named like the file, when there is one
+            for (int i = 0; i < classes.size(); i++) {
+                if (classes.get(i).className().equals(FlowLang.baseName(file.fileName()))) main = i;
+            }
+            list.setSelectedIndex(main);
+            setTitle("Classes in " + file.fileName());
+            setOKButtonText("Add");
+            init();
+        }
+
+        @Override
+        protected JComponent createCenterPanel() {
+            list.setCellRenderer(new ColoredListCellRenderer<>() {
+                @Override
+                protected void customizeCellRenderer(@NotNull JList<? extends FlowCodeSearch.ClassHit> l, FlowCodeSearch.ClassHit h,
+                                                     int index, boolean selected, boolean focus) {
+                    setIcon(AllIcons.Nodes.Class);
+                    append(h.className(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+                    append("   line " + (h.declLine() + 1), SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                }
+            });
+            list.addMouseListener(new MouseAdapter() {
+                @Override public void mouseClicked(MouseEvent e) {
+                    if (e.getClickCount() == 2 && list.getSelectedValue() != null) doOKAction();
+                }
+            });
+            JPanel panel = new JPanel(new BorderLayout(0, JBUI.scale(6)));
+            JBLabel hint = new JBLabel("This file has " + list.getModel().getSize() + " classes. Pick the one to add:");
+            panel.add(hint, BorderLayout.NORTH);
+            panel.add(new JBScrollPane(list), BorderLayout.CENTER);
+            panel.setPreferredSize(new Dimension(JBUI.scale(420), JBUI.scale(280)));
+            return panel;
+        }
+
+        @Override
+        public @Nullable JComponent getPreferredFocusedComponent() {
+            return list;
+        }
+    }
+
     // ---------- method ----------
 
     private static final class MethodDialog extends DialogWrapper {
         private final List<FlowCodeSearch.MethodHit> all;
         private final SearchTextField filter = new SearchTextField(false);
-        private final DefaultListModel<FlowCodeSearch.MethodHit> model = new DefaultListModel<>();
-        final JBList<FlowCodeSearch.MethodHit> list = new JBList<>(model);
+        private final DefaultListModel<Object> model = new DefaultListModel<>();
+        final JBList<Object> list = new JBList<>(model);
         private final JBLabel status = new JBLabel();
+        /** Why a typed name can't be a custom method, or null when it can. */
+        private final Function<String, String> customCheck;
 
-        MethodDialog(Project project, Component parent, FlowCodeSearch.ClassHit cls, List<FlowCodeSearch.MethodHit> methods) {
+        MethodDialog(Project project, Component parent, FlowCodeSearch.ClassHit cls, List<FlowCodeSearch.MethodHit> methods,
+                     Function<String, String> customCheck) {
             super(project, parent, false, IdeModalityType.IDE);
             this.all = methods;
-            setTitle("Add Method / Function to " + cls.name());
-            setOKButtonText("Next: Pick Lines…");
+            this.customCheck = customCheck;
+            setTitle("Add Function to " + cls.name());
             init();
             refill();
         }
 
         @Override
         protected JComponent createCenterPanel() {
-            filter.getTextEditor().getEmptyText().setText("Method name, e.g. search, get*, *Booking* or /^(get|set)/");
+            filter.getTextEditor().getEmptyText().setText("Method name, e.g. search, get*, *Booking* or /^(get|set)/ (a new name: custom method)");
             filter.addDocumentListener(new DocumentAdapter() {
                 @Override protected void textChanged(@NotNull DocumentEvent e) { refill(); }
             });
             list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
             list.setCellRenderer(new ColoredListCellRenderer<>() {
                 @Override
-                protected void customizeCellRenderer(@NotNull JList<? extends FlowCodeSearch.MethodHit> l, FlowCodeSearch.MethodHit m,
-                                                     int index, boolean selected, boolean focus) {
+                protected void customizeCellRenderer(@NotNull JList<?> l, Object value, int index, boolean selected, boolean focus) {
+                    if (value instanceof CustomMethod c) {
+                        setIcon(FlowTheme.ICON_METHOD_UNKNOWN);
+                        append(c.name(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+                        append("  custom method: not in the code (yet)", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
+                        return;
+                    }
+                    FlowCodeSearch.MethodHit m = (FlowCodeSearch.MethodHit) value;
                     setIcon(AllIcons.Nodes.Method);
                     append(m.display(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
                     append("   lines " + (m.start() + 1) + "–" + (m.end() + 1), SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 }
             });
-            list.addListSelectionListener(e -> setOKActionEnabled(list.getSelectedValue() != null));
+            list.addListSelectionListener(e -> updateOk());
             list.addMouseListener(new MouseAdapter() {
                 @Override public void mouseClicked(MouseEvent e) {
                     if (e.getClickCount() == 2 && list.getSelectedValue() != null) doOKAction();
@@ -327,14 +410,31 @@ final class FlowCodePicker {
             for (FlowCodeSearch.MethodHit m : all) {
                 if (error == null && (p == null || FlowCodeSearch.matchesMethod(p, m))) model.addElement(m);
             }
+            CustomMethod custom = customMethod();
+            if (custom != null) model.addElement(custom);
             if (!model.isEmpty()) list.setSelectedIndex(0);
-            setOKActionEnabled(list.getSelectedValue() != null);
-            if (all.isEmpty()) status.setText("This class has no methods.");
+            updateOk();
+            if (all.isEmpty()) status.setText("This class has no methods in the code: type a name to add a custom method.");
             else if (error != null) status.setText(error);
             else if (p == null) status.setText("<html>Pick a method; the next step shows its code. Filter by name, "
                     + "* and ? wildcards (get*), or /…/ for a regular expression.</html>");
             else status.setText(model.isEmpty() ? "No method matches “" + q.strip() + "”"
                     : model.size() + " of " + all.size() + (all.size() == 1 ? " method" : " methods"));
+        }
+
+        /** The typed name as a custom method, or null: not a valid name, or the class has a method of that name. */
+        private @Nullable CustomMethod customMethod() {
+            String typed = filter.getText().strip();
+            if (typed.isEmpty() || typed.startsWith("/") || typed.contains("*") || typed.contains("?")) return null;
+            String name = FlowDiagram.methodName(typed);
+            for (FlowCodeSearch.MethodHit m : all) if (m.name().equals(name)) return null;
+            return customCheck.apply(typed) == null ? new CustomMethod(name) : null;
+        }
+
+        private void updateOk() {
+            Object v = list.getSelectedValue();
+            setOKActionEnabled(v != null);
+            setOKButtonText(v instanceof CustomMethod ? "Add Custom Method" : "Next: Pick Lines…");
         }
 
         private void move(int delta) {

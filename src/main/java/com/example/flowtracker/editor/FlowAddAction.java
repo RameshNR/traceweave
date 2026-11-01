@@ -21,9 +21,9 @@ import java.util.List;
 import java.util.TreeSet;
 
 /**
- * "Add to Flow Tracker" in the editor's right-click menu (and a shortcut): adds the caret line, or every
+ * "Add to TraceWeave" in the editor's right-click menu (and a shortcut): adds the caret line, or every
  * line of the selection (all carets), as one undoable step. On a saved line with no selection it becomes
- * "Remove from Flow Tracker".
+ * "Remove from TraceWeave".
  */
 public final class FlowAddAction extends DumbAwareAction {
 
@@ -52,10 +52,10 @@ public final class FlowAddAction extends DumbAwareAction {
         e.getPresentation().setEnabledAndVisible(on);
         if (!on) return;
         if (savedCaretLine(FlowStore.get(project), editor) != null) {
-            e.getPresentation().setText("Remove from Flow Tracker");
+            e.getPresentation().setText("Remove from TraceWeave");
         } else {
             int n = lines(editor).size();
-            e.getPresentation().setText(n > 1 ? "Add " + n + " Lines to Flow Tracker" : "Add to Flow Tracker");
+            e.getPresentation().setText(n > 1 ? "Add " + n + " Lines to TraceWeave" : "Add to TraceWeave");
         }
     }
 

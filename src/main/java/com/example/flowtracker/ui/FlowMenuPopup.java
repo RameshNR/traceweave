@@ -50,7 +50,7 @@ final class FlowMenuPopup {
     record Item(String label, @Nullable Icon icon, boolean enabled, Runnable run) {}
 
     /** null = a separator. */
-    static void show(FlowStore store, JComponent anchor, List<@Nullable Item> items) {
+    static void show(FlowStore store, JComponent anchor, List<Item> items) {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBackground(FlowTheme.CARD_BG);

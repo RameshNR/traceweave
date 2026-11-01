@@ -1,7 +1,7 @@
 package com.example.flowtracker.model;
 
+import com.example.flowtracker.compat.FlowCompat;
 import com.example.flowtracker.diagram.FlowDiagram;
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -30,7 +30,7 @@ public final class FlowCheck {
     /** The problem with a saved line, or null when it still matches the code. */
     public static @Nullable Problem check(FlowEntry e) {
         if (FlowDiagram.isDiagramOnly(e)) return null; // added in the Flow Diagram: no code to compare with
-        return ReadAction.computeBlocking(() -> {
+        return FlowCompat.read(() -> {
             VirtualFile vf = VirtualFileManager.getInstance().findFileByUrl(e.fileUrl);
             if (vf == null || !vf.isValid()) {
                 return new Problem(Kind.MISSING_FILE, e.fileName + " no longer exists (or was moved)", -1, null);

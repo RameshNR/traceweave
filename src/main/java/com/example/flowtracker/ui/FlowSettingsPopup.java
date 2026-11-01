@@ -44,7 +44,7 @@ public final class FlowSettingsPopup {
         panel.setBackground(FlowTheme.CARD_BG);
         panel.setBorder(JBUI.Borders.empty(12, 14, 10, 14));
 
-        JLabel title = new JLabel("Flow Tracker Settings");
+        JLabel title = new JLabel("TraceWeave Settings");
         title.setFont(JBUI.Fonts.label().deriveFont(java.awt.Font.BOLD, JBUI.Fonts.label().getSize2D() + 1f));
         title.setForeground(FlowTheme.FG);
         title.setAlignmentX(JComponent.LEFT_ALIGNMENT);
@@ -100,13 +100,13 @@ public final class FlowSettingsPopup {
         panel.add(sectionLabel("LOOK"));
         panel.add(row(FlowTheme.ICON_THEME, "Use IntelliJ Theme",
                 "Take every color from the current IntelliJ theme and editor color scheme: the panel, buttons, popups, "
-                        + "highlighted code and the Flow Diagram. Off: Flow Tracker's own colors. Applies to all projects.",
+                        + "highlighted code and the Flow Diagram. Off: TraceWeave's own colors. Applies to all projects.",
                 ideTheme, look::setUseIdeTheme));
 
         JBPopup[] holder = new JBPopup[1];
         panel.add(sectionLabel("DELETED"));
         int binned = store.getRecycleBin().size();
-        panel.add(actionRow(FlowTheme.ICON_DELETE, "Recycle Bin",
+        panel.add(actionRow(FlowTheme.ICON_RECYCLE, "Recycle Bin",
                 (binned == 0 ? "Empty. " : binned + (binned == 1 ? " deleted item. " : " deleted items. "))
                         + "Everything you delete (lines, cleared and deleted flows) goes here and can be "
                         + "restored.",
@@ -116,7 +116,7 @@ public final class FlowSettingsPopup {
                 }));
         panel.add(sectionLabel("HELP"));
         panel.add(actionRow(FlowTheme.ICON_INFO, "Info",
-                "How Flow Tracker works: adding lines, flows, views, the row action bar, Sync, recording, "
+                "How TraceWeave works: adding lines, flows, views, the row action bar, Sync, recording, "
                         + "walk-through, copy formats and shortcuts.",
                 () -> {
                     holder[0].cancel();
@@ -144,7 +144,7 @@ public final class FlowSettingsPopup {
         };
         store.addListener(syncSwitches);
         Disposer.register(popup, () -> store.removeListener(syncSwitches));
-        // The popup itself is drawn in Flow Tracker's colors: repaint it when they change.
+        // The popup itself is drawn in TraceWeave's colors: repaint it when they change.
         Runnable repaint = () -> {
             syncSwitches.run();
             panel.repaint();
@@ -187,7 +187,7 @@ public final class FlowSettingsPopup {
         List<Runnable> updates = new java.util.ArrayList<>();
         Runnable updateAll = () -> updates.forEach(Runnable::run);
         for (Map.Entry<String, List<Choice>> section : sections.entrySet()) {
-            panel.add(sectionLabel(section.getKey()));
+            if (!section.getKey().isEmpty()) panel.add(sectionLabel(section.getKey()));
             for (Choice c : section.getValue()) {
                 JLabel check = new JLabel();
                 Runnable update = () -> check.setIcon(c.chosen().getAsBoolean()

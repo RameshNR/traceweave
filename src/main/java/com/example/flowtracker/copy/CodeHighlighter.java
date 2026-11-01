@@ -75,6 +75,21 @@ public final class CodeHighlighter {
             "group", "by", "order", "having", "limit", "distinct", "primary", "key", "foreign", "references",
             "index", "view", "union", "all", "case", "when", "then", "else", "end", "is", "in", "like");
 
+    private static final Set<String> BRACES_KEYWORDS = Set.of(
+            "abstract", "as", "async", "await", "bool", "break", "case", "catch", "char", "class", "const", "continue",
+            "def", "default", "defer", "do", "double", "else", "enum", "extends", "extension", "false", "final", "float",
+            "fn", "for", "func", "function", "go", "if", "impl", "implements", "import", "in", "int", "interface", "let",
+            "long", "match", "mod", "mut", "namespace", "new", "nil", "null", "nullptr", "object", "override", "package",
+            "private", "protected", "pub", "public", "return", "self", "static", "string", "struct", "super", "switch",
+            "this", "throw", "throws", "trait", "true", "try", "type", "use", "using", "val", "var", "virtual", "void",
+            "where", "while", "yield", "echo", "include", "require", "unsafe", "guard", "protocol", "sealed");
+
+    private static final Set<String> INDENTED_KEYWORDS = Set.of(
+            "and", "as", "assert", "async", "await", "begin", "break", "class", "continue", "def", "del", "do", "elif",
+            "else", "elsif", "end", "ensure", "except", "False", "false", "finally", "for", "from", "global", "if",
+            "import", "in", "is", "lambda", "module", "nil", "None", "nonlocal", "not", "or", "pass", "raise", "rescue",
+            "return", "self", "True", "true", "try", "unless", "until", "when", "while", "with", "yield", "puts", "require");
+
     public static List<Span> highlight(String line) {
         return highlight(line, FlowLang.Kind.JAVA);
     }
@@ -88,11 +103,18 @@ public final class CodeHighlighter {
             case SCRIPT -> code(line, SCRIPT_KEYWORDS, true);
             case JSP, MARKUP -> markup(line);
             case CONFIG -> config(line);
+            case BRACES -> code(line, BRACES_KEYWORDS, true);
+            case INDENTED -> code(line, INDENTED_KEYWORDS, false, true);
         };
     }
 
     /** Java-like code. Scripts also allow `template` strings. */
     private static List<Span> code(String line, Set<String> keywords, boolean script) {
+        return code(line, keywords, script, false);
+    }
+
+    /** @param hashComments true for Python and Ruby: # starts a comment */
+    private static List<Span> code(String line, Set<String> keywords, boolean script, boolean hashComments) {
         Spans out = new Spans();
         int n = line.length();
         int i = 0;
@@ -100,7 +122,10 @@ public final class CodeHighlighter {
             char c = line.charAt(i);
             int end;
             Token color;
-            if (c == '/' && i + 1 < n && line.charAt(i + 1) == '/') {
+            if (hashComments && c == '#') {
+                end = n;
+                color = Token.COMMENT;
+            } else if (c == '/' && i + 1 < n && line.charAt(i + 1) == '/') {
                 end = n;
                 color = Token.COMMENT;
             } else if (c == '/' && i + 1 < n && line.charAt(i + 1) == '*') {

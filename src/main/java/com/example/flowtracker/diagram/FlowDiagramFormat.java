@@ -133,7 +133,10 @@ final class FlowDiagramFormat {
         TextFormat methods = new TextFormat(b.methodsFormat, FlowDiagram.Format.PLAIN);
         JBTextArea note = noteArea(b.note);
         TextFormat noteFormat = new TextFormat(b.noteFormat, FlowDiagram.Format.PLAIN);
-        List<TextFormat> texts = List.of(title, file, methods, noteFormat);
+        ColorField projectFill = new ColorField(b.projectFill, FILLS, "Auto", "A deeper shade of the class section");
+        ColorField projectBorder = new ColorField(b.projectBorder, COLORS, "Auto", "The box's border");
+        TextFormat projectText = new TextFormat(b.projectFormat, BOLD);
+        List<TextFormat> texts = List.of(title, file, methods, noteFormat, projectText);
 
         Preview preview = new Preview(palette, () -> {
             FlowDiagram.Box p = b.copy();
@@ -145,6 +148,9 @@ final class FlowDiagramFormat {
             p.methodsFormat = methods.format();
             p.note = note.getText().strip();
             p.noteFormat = noteFormat.format();
+            p.projectFill = projectFill.color;
+            p.projectBorder = projectBorder.color;
+            p.projectFormat = projectText.format();
             return p;
         }, null);
         java.util.function.Consumer<Theme> applyTheme = t -> {
@@ -154,6 +160,9 @@ final class FlowDiagramFormat {
             if (t.fill() == null) { // Plain: back to the diagram's own look
                 title.set(BOLD);
                 for (TextFormat f : List.of(file, methods, noteFormat)) f.set(FlowDiagram.Format.PLAIN);
+                projectFill.set(null);
+                projectBorder.set(null);
+                projectText.set(BOLD);
             } else { // a theme: text colors become automatic again, so they suit its background
                 texts.forEach(TextFormat::clearColor);
             }
@@ -165,7 +174,7 @@ final class FlowDiagramFormat {
             preview.refresh();
             themes.repaint();
         };
-        for (ColorField c : List.of(header, fill, border)) c.onChange = update;
+        for (ColorField c : List.of(header, fill, border, projectFill, projectBorder)) c.onChange = update;
         for (TextFormat f : texts) f.onChange = update;
         onEdit(note, update);
 
@@ -181,6 +190,13 @@ final class FlowDiagramFormat {
                 .addComponent(section("Text", "Auto keeps text readable on its section's background."))
                 .addLabeledComponent("Class name:", title);
         if (!b.subtitle().isEmpty()) builder.addLabeledComponent("File name:", file);
+        if (!b.project().isEmpty()) {
+            builder.addComponent(section("Project name", "The band above the class name: its own background, border and text "
+                    + "(Auto: like the class section)."))
+                    .addLabeledComponent("Background:", left(projectFill))
+                    .addLabeledComponent("Border:", left(projectBorder))
+                    .addLabeledComponent("Text:", projectText);
+        }
         JPanel form = builder
                 .addLabeledComponent("Method names:", methods)
                 .addComponent(hint("For every method of this box; a method's own format (Format Method) wins."))
@@ -197,6 +213,9 @@ final class FlowDiagramFormat {
         b.methodsFormat = methods.format();
         b.note = note.getText().strip();
         b.noteFormat = noteFormat.format();
+        b.projectFill = projectFill.color;
+        b.projectBorder = projectBorder.color;
+        b.projectFormat = projectText.format();
         }, () -> applyTheme.accept(THEMES.get(0))); // Reset: the Plain theme
     }
 
@@ -244,12 +263,12 @@ final class FlowDiagramFormat {
 
     // ---------- call ----------
 
-    /** The line picked for a call, and whether every call gets it. */
-    record LineChoice(FlowDiagram.Line line, boolean everyLine) {}
+    /** The line picked for a call, whether every call gets it, and the note written on the call. */
+    record LineChoice(FlowDiagram.Line line, boolean everyLine, String note, FlowDiagram.NoteStyle noteStyle) {}
 
-    /** Asks how a call's line looks; null when cancelled. */
+    /** Asks how a call's line looks and what its note says; null when cancelled. */
     static @Nullable LineChoice editLine(Project project, Component parent, String title, FlowDiagram.Line current, boolean manual,
-                                         FlowDiagramPainter.Palette palette) {
+                                         String currentNote, FlowDiagram.NoteStyle currentStyle, FlowDiagramPainter.Palette palette) {
         ComboBox<FlowDiagram.LinePattern> pattern = combo(FlowDiagram.LinePattern.values(), current.pattern(),
                 v -> new LineIcon(v, FlowDiagram.LineWidth.NORMAL, FlowDiagram.LineShape.STRAIGHT, FlowDiagram.ArrowHead.NONE, manual));
         ComboBox<FlowDiagram.LineWidth> width = combo(FlowDiagram.LineWidth.values(), current.width(),
@@ -261,6 +280,12 @@ final class FlowDiagramFormat {
         ColorField color = new ColorField(current.color(), COLORS, "Auto", "The usual color: grey for calls in the code, "
                 + "blue for calls connected by hand, amber for custom ones");
         JBCheckBox all = new JBCheckBox("Use this line for every call in the diagram");
+        JBTextArea note = noteArea(currentNote);
+        ComboBox<FlowDiagram.NoteShape> noteShape = new ComboBox<>(FlowDiagram.NoteShape.values());
+        noteShape.setSelectedItem(currentStyle.shape());
+        ColorField noteBg = new ColorField(currentStyle.background(), COLORS, "Auto", "The usual note background (light or dark with the diagram)");
+        ColorField noteText = new ColorField(currentStyle.text(), COLORS, "Auto", "The usual text color");
+        ColorField noteBorder = new ColorField(currentStyle.border(), COLORS, "Auto", "The usual note border");
 
         LinePreview preview = new LinePreview(manual, palette);
         Runnable update = () -> {
@@ -281,6 +306,10 @@ final class FlowDiagramFormat {
             shape.setSelectedItem(FlowDiagram.Line.DEFAULT.shape());
             arrow.setSelectedItem(FlowDiagram.Line.DEFAULT.arrow());
             color.set(null);
+            noteShape.setSelectedItem(FlowDiagram.NoteStyle.DEFAULT.shape());
+            noteBg.set(null);
+            noteText.set(null);
+            noteBorder.set(null);
         };
 
         JPanel form = FormBuilder.createFormBuilder()
@@ -293,10 +322,20 @@ final class FlowDiagramFormat {
                 .addLabeledComponent("Color:", left(color))
                 .addVerticalGap(JBUI.scale(4))
                 .addComponent(all)
+                .addComponent(section("Note on the call", "Shown on the arrow, in the Flow Diagram and in the sequence diagram "
+                        + "(e.g. \"REST: POST /bookings\"). Press Enter for several lines; long lines wrap. Leave it empty for no note."))
+                .addComponent(new NoteBox(note))
+                .addLabeledComponent("Shape:", noteShape)
+                .addLabeledComponent("Background:", left(noteBg))
+                .addLabeledComponent("Text:", left(noteText))
+                .addLabeledComponent("Border:", left(noteBorder))
                 .getPanel();
         Dialog d = new Dialog(project, parent, "Line of " + title, form, reset,
-                "Back to the usual line: automatic pattern, normal width, curved, sharp arrow, automatic color");
-        return d.showAndGet() ? new LineChoice(preview.line, all.isSelected()) : null;
+                "Back to the usual line: automatic pattern, normal width, curved, sharp arrow, automatic color (the note stays)");
+        if (!d.showAndGet()) return null;
+        FlowDiagram.NoteStyle style = new FlowDiagram.NoteStyle((FlowDiagram.NoteShape) noteShape.getSelectedItem(),
+                noteBg.color, noteText.color, noteBorder.color);
+        return new LineChoice(preview.line, all.isSelected(), note.getText().strip(), style);
     }
 
     private static <T> ComboBox<T> combo(T[] values, T selected, java.util.function.Function<T, Icon> icon) {
@@ -561,7 +600,9 @@ final class FlowDiagramFormat {
                 set(c);
             }, () -> {
                 if (popup[0] != null) popup[0].cancel();
-                Color c = ColorChooserService.getInstance().showDialog(this, "Pick a Color", color, false);
+                // The overload every supported IDE (2023.1 and later) has without deprecation; no project needed.
+                Color c = ColorChooserService.getInstance().showDialog(null, this, "Pick a Color", color, false,
+                        java.util.List.of(), false);
                 if (c != null) set(c);
             }, hex);
             popup[0] = JBPopupFactory.getInstance()

@@ -1,11 +1,11 @@
 package com.example.flowtracker.model;
 
+import com.example.flowtracker.compat.FlowCompat;
 import com.example.flowtracker.diagram.FlowDiagram;
 import com.example.flowtracker.diagram.FlowDiagramLook;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParseException;
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
@@ -34,7 +34,9 @@ public final class FlowTransfer {
     private FlowTransfer() {}
 
     public static final String EXTENSION = ".flow.json";
-    private static final String FORMAT = "flow-tracker";
+    private static final String FORMAT = "traceweave";
+    /** What files exported before the new name say (they are still read). */
+    private static final String OLD_FORMAT = "flow-tracker";
     private static final int VERSION = 1;
 
     /** The file layout. Field names are the JSON keys. */
@@ -116,8 +118,8 @@ public final class FlowTransfer {
         } catch (JsonParseException ex) {
             throw new IOException("Not a valid flow file: " + ex.getMessage(), ex);
         }
-        if (data == null || !FORMAT.equals(data.format) || data.lines == null) {
-            throw new IOException("Not a Flow Tracker file (expected \"format\": \"" + FORMAT + "\").");
+        if (data == null || !(FORMAT.equals(data.format) || OLD_FORMAT.equals(data.format)) || data.lines == null) {
+            throw new IOException("Not a TraceWeave file (expected \"format\": \"" + FORMAT + "\").");
         }
 
         List<FlowEntry> entries = new ArrayList<>();
@@ -192,6 +194,10 @@ public final class FlowTransfer {
         c.note = nn(l.note);
         c.noteFormat = nn(l.noteFormat);
         c.line = nn(l.line);
+        c.noteStyle = nn(l.noteStyle);
+        c.projectFill = nn(l.projectFill);
+        c.projectBorder = nn(l.projectBorder);
+        c.projectFormat = nn(l.projectFormat);
         return c;
     }
 
@@ -249,7 +255,7 @@ public final class FlowTransfer {
             if (vf != null) return vf;
         }
         if (DumbService.isDumb(project)) return null;
-        return ReadAction.computeBlocking(() -> {
+        return FlowCompat.read(() -> {
             Collection<VirtualFile> byName =
                     FilenameIndex.getVirtualFilesByName(fileName, GlobalSearchScope.projectScope(project));
             if (byName.size() == 1) return byName.iterator().next();

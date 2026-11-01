@@ -39,8 +39,14 @@ public class FlowDiagramLook {
     /** A note shown under the class name or the method name (several lines allowed). */
     public String note = "";
     public String noteFormat = "";
+    /** A class box's project band: its background, border and text format ("" = like the class section). */
+    public String projectFill = "";
+    public String projectBorder = "";
+    public String projectFormat = "";
     /** A call's line: pattern, width, shape and arrow head, e.g. "DASHED,THICK,ELBOW,OPEN" ("" = the usual one). */
     public String line = "";
+    /** How a call's note is drawn: shape;background;text;border, e.g. "PILL;#FFF1D6;;#C27C0E" ("" = the usual one). */
+    public String noteStyle = "";
 
     public FlowDiagramLook() {}
 
@@ -52,6 +58,7 @@ public class FlowDiagramLook {
     String text() {
         return String.join("\u0000", fileUrl, className, method, toFileUrl, toClass, toMethod,
                 placed ? Math.round(x) + "," + Math.round(y) : "", fill, header, border, format, fileFormat, methodFormat,
-                note, noteFormat, line);
+                note, noteFormat, line, noteStyle == null ? "" : noteStyle, projectFill == null ? "" : projectFill,
+                projectBorder == null ? "" : projectBorder, projectFormat == null ? "" : projectFormat);
     }
 }

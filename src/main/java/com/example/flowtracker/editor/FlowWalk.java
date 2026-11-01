@@ -45,15 +45,15 @@ public final class FlowWalk {
         FlowStore store = FlowStore.get(project);
         List<FlowEntry> order = order(store);
         if (order.isEmpty()) {
-            hintInSelectedEditor(project, "Flow Tracker: this flow has no lines yet");
+            hintInSelectedEditor(project, "TraceWeave: this flow has no lines yet");
             return;
         }
         FlowEntry current = store.getWalkEntry();
         int index = current == null ? (delta > 0 ? 0 : order.size() - 1) : order.indexOf(current) + delta;
         if (index < 0 || index >= order.size()) {
             hintInSelectedEditor(project, index < 0
-                    ? "Flow Tracker: already at the first step"
-                    : "Flow Tracker: end of the flow (" + order.size() + " steps)");
+                    ? "TraceWeave: already at the first step"
+                    : "TraceWeave: end of the flow (" + order.size() + " steps)");
             return;
         }
         show(project, order.get(index));
@@ -65,11 +65,11 @@ public final class FlowWalk {
         store.setWalkEntry(entry);
         VirtualFile vf = VirtualFileManager.getInstance().findFileByUrl(entry.fileUrl);
         if (vf == null && FlowDiagram.isDiagramOnly(entry)) {
-            hintInSelectedEditor(project, "Flow Tracker: " + FlowFormat.flatLabel(entry) + " was added in the Flow Diagram and has no code yet");
+            hintInSelectedEditor(project, "TraceWeave: " + FlowFormat.flatLabel(entry) + " was added in the Flow Diagram and has no code yet");
             return;
         }
         if (vf == null) {
-            hintInSelectedEditor(project, "Flow Tracker: " + entry.fileName + " was not found");
+            hintInSelectedEditor(project, "TraceWeave: " + entry.fileName + " was not found");
             return;
         }
         // navigate() is the open call that isn't deprecated in 2026.2 or 2026.3. If the editor opens later
