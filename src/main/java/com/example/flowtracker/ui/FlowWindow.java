@@ -55,6 +55,10 @@ public final class FlowWindow {
         }
     }
 
+    public void setTitle(String title) {
+        frame.setTitle(title);
+    }
+
     public void show() {
         frame.show();
         FlowWindowHeader.match(frame.getFrame());

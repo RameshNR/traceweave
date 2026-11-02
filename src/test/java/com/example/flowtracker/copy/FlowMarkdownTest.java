@@ -88,13 +88,30 @@ class FlowMarkdownTest {
         String d = diagrams(FlowMarkdown.toMarkdown(List.of(field, ctor, bookTrip, js, tld), false, Set.of(), true));
 
         assertTrue(d.contains("3 separate flows"), d);
-        assertTrue(d.contains("participant p1 as BookingService.java"), d);
-        assertTrue(d.contains("participant p1 as travel.js"), d);
-        assertTrue(d.contains("participant p1 as travel.tld"), d);
+        assertTrue(d.contains("participant p1 as 📦 TravelBooking<br/>BookingService.java"), d);
+        assertTrue(d.contains("participant p1 as 📦 TravelBooking<br/>travel.js"), d);
+        assertTrue(d.contains("participant p1 as 📦 TravelBooking<br/>travel.tld"), d);
         assertFalse(d.substring(d.indexOf("travel.js"), d.indexOf("### 3.")).contains("tlib-version"), d);
         assertFalse(d.contains("Note over p1: -") || d.contains("[class level]"), "fields are left out\n" + d);
         String chart = FlowMarkdown.toMarkdown(List.of(field, ctor, bookTrip, js, tld), false, Set.of(), false);
         assertEquals(3, chart.split("flowchart TD").length - 1, "the flowchart is split the same way");
+    }
+
+    @Test
+    void diagramsNameTheProjectOfEachFile() {
+        FlowEntry a = line("Main.java", "Main", "main()", 19, "bookingService.bookTrip(101);");
+        FlowEntry b = line("BookingService.java", "BookingService", "bookTrip()", 33, "travel.getDestination(), nights, rooms);");
+        FlowEntry c = line("TravelReportHandler.java", "TravelReportHandler", "handle()", 39, "x();");
+        a.projectName = "TravelBooking";
+        b.projectName = "TravelBooking";
+        c.projectName = "TravelReports";
+        Set<String> links = new LinkedHashSet<>(List.of(link(a, b), link(c, b)));
+        String seq = diagrams(FlowMarkdown.toMarkdown(List.of(a, b, c), true, links, true));
+        assertTrue(seq.contains("participant p1 as 📦 TravelBooking<br/>Main.java"), seq);
+        assertTrue(seq.contains("as 📦 TravelReports<br/>TravelReportHandler.java"), seq);
+        String chart = diagrams(FlowMarkdown.toMarkdown(List.of(a, b, c), true, links, false));
+        assertTrue(chart.contains("[\"📦 TravelBooking<br/>BookingService.java<br/><b>bookTrip()</b>\"]"), chart);
+        assertTrue(chart.contains("[\"📦 TravelReports<br/>TravelReportHandler.java<br/><b>handle()</b>\"]"), chart);
     }
 
     @Test
@@ -103,7 +120,7 @@ class FlowMarkdownTest {
         FlowEntry js = line("travel.js", "-", "addEventListener(\"submit\") callback", 9, "const budget = 1;");
         Set<String> links = new LinkedHashSet<>(List.of(link(page, search), link(search, getDest)));
         String d = diagrams(FlowMarkdown.toMarkdown(List.of(page, search, getDest, js), true, links, true));
-        assertTrue(d.contains("participant p1 as search.jsp") && d.contains("p1->>p2: search()"), d);
+        assertTrue(d.contains("participant p1 as 📦 TravelBooking<br/>search.jsp") && d.contains("p1->>p2: search()"), d);
         assertTrue(d.contains("p2->>p3: getDestination()"), d);
         assertTrue(d.contains("2 separate flows") && d.contains("### 2. travel.js"), d);
     }

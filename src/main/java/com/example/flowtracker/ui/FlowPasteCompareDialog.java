@@ -49,6 +49,11 @@ public final class FlowPasteCompareDialog {
     /** The saved value on the left (null when both sides are pasted). */
     private final @Nullable FlowValue saved;
     private final @Nullable FlowWindow window;
+    /** The editing view and the result of Compare, in the same window. */
+    private final JPanel views = new JPanel(new java.awt.CardLayout());
+    private final JPanel result = new JPanel(new BorderLayout());
+    /** What the result view holds (its diff viewer), let go when it is left. */
+    private @Nullable com.intellij.openapi.Disposable shown;
 
     public static void open(@Nullable Project project) {
         new FlowPasteCompareDialog(project, "", null);
@@ -68,8 +73,10 @@ public final class FlowPasteCompareDialog {
             rightTitle.setText("Paste the other value here");
             showSaved(true);
         }
-        JPanel root = build();
-        window = new FlowWindow(project, "TraceWeave.PasteCompare", this.title, root, null);
+        views.add(build(), "edit");
+        views.add(result, "result");
+        window = new FlowWindow(project, "TraceWeave.PasteCompare", this.title, views, null);
+        window.whenClosed(this::leaveResult);
         window.show();
         update();
         SwingUtilities.invokeLater(() -> (saved == null ? left : right).requestFocusInWindow());
@@ -134,6 +141,10 @@ public final class FlowPasteCompareDialog {
         JPanel leftButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0));
         leftButtons.add(paste);
         leftButtons.add(swap);
+        JButton openFile = new JButton("Open File…");
+        openFile.setToolTipText("Put a file's text on the right side (or on the left when that is empty)");
+        openFile.addActionListener(e -> openFile());
+        leftButtons.add(openFile);
         JPanel rightButtons = new JPanel(new FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0));
         rightButtons.add(compare);
         rightButtons.add(close);
@@ -196,6 +207,23 @@ public final class FlowPasteCompareDialog {
         }
     }
 
+    /** A file's text on the right (on the left when nothing is there yet and it isn't the saved value). */
+    private void openFile() {
+        com.intellij.openapi.vfs.VirtualFile file = com.intellij.openapi.fileChooser.FileChooser.chooseFile(
+                new com.intellij.openapi.fileChooser.FileChooserDescriptor(true, false, false, false, false, false) // any one file
+                        .withTitle("Compare with a File").withDescription("JSON, XML, text or a log"), project, null);
+        if (file == null) return;
+        try {
+            String text = new String(file.contentsToByteArray(), file.getCharset());
+            JBTextArea target = saved == null && left.getText().isBlank() ? left : right;
+            target.setText(text);
+            target.setCaretPosition(0);
+            (target == left ? leftTitle : rightTitle).setText(file.getName());
+        } catch (java.io.IOException ex) {
+            com.intellij.openapi.ui.Messages.showErrorDialog(left, "Couldn't read " + file.getName() + ": " + ex.getMessage(), "Open File");
+        }
+    }
+
     private void swap() {
         String a = left.getText(), at = leftTitle.getText();
         left.setText(right.getText());
@@ -217,19 +245,68 @@ public final class FlowPasteCompareDialog {
         return t.startsWith("Paste the other") ? "Pasted" : t;
     }
 
-    /** JSON on both sides: field by field in the Compare window; anything else: line by line in the diff viewer. */
+    /**
+     * Shows the result in this window (Back to Edit returns to the two sides): JSON on both sides field by field (the
+     * Compare view), anything else line by line in IntelliJ's diff viewer.
+     */
     private void compare() {
         String a = left.getText(), b = right.getText();
         if (a.isBlank() || b.isBlank()) return;
+        leaveResult();
         FlowValue av = FlowValueText.fromJson("value", a), bv = FlowValueText.fromJson("value", b);
+        JComponent view;
         if (av != null && bv != null) {
-            FlowCompareDialog.show(project, title, av, name(leftTitle), bv, name(rightTitle));
-            return;
+            FlowCompareDialog.Built built = FlowCompareDialog.build(project, title, null, av, name(leftTitle), null, bv, name(rightTitle),
+                    "Back to Edit", this::backToEdit);
+            shown = built.disposable();
+            view = built.root();
+        } else {
+            FlowTextFormat.Detected da = FlowTextFormat.detect(a), db = FlowTextFormat.detect(b);
+            String ext = da.extension().equals(db.extension()) ? da.extension() : "txt";
+            com.intellij.openapi.Disposable d = com.intellij.openapi.util.Disposer.newDisposable("TraceWeave paste diff");
+            shown = d;
+            view = textDiff(FlowDiffs.request(project, title, name(leftTitle) + " · " + da.kind(), da.formatted(),
+                    name(rightTitle) + " · " + db.kind(), db.formatted(), ext), d);
         }
-        FlowTextFormat.Detected da = FlowTextFormat.detect(a), db = FlowTextFormat.detect(b);
-        String ext = da.extension().equals(db.extension()) ? da.extension() : "txt";
-        FlowDiffs.show(project, title, name(leftTitle) + " · " + da.kind(), da.formatted(), name(rightTitle) + " · " + db.kind(),
-                db.formatted(), ext);
+        result.removeAll();
+        result.add(view, BorderLayout.CENTER);
+        result.revalidate();
+        ((java.awt.CardLayout) views.getLayout()).show(views, "result");
+        result.repaint();
+    }
+
+    /** IntelliJ's diff viewer in this window, with Back to Edit and Close under it. */
+    private JComponent textDiff(com.intellij.diff.requests.DiffRequest request, com.intellij.openapi.Disposable parent) {
+        com.intellij.diff.DiffRequestPanel diff = com.intellij.diff.DiffManager.getInstance().createRequestPanel(project, parent, null);
+        diff.setRequest(request);
+        JButton back = new JButton("Back to Edit");
+        back.setToolTipText("Back to the two sides (Esc)");
+        back.addActionListener(e -> backToEdit());
+        JButton close = new JButton("Close");
+        close.addActionListener(e -> close());
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0));
+        buttons.add(back);
+        buttons.add(close);
+        buttons.setBorder(JBUI.Borders.emptyTop(8));
+        JPanel p = new JPanel(new BorderLayout());
+        p.add(diff.getComponent(), BorderLayout.CENTER);
+        p.add(buttons, BorderLayout.SOUTH);
+        p.setBorder(JBUI.Borders.empty(10, 12, 10, 12));
+        key(p, KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "back", this::backToEdit);
+        return p;
+    }
+
+    /** Back to the two sides (what was compared stays there to change and compare again). */
+    private void backToEdit() {
+        ((java.awt.CardLayout) views.getLayout()).show(views, "edit");
+        leaveResult();
+        left.requestFocusInWindow();
+    }
+
+    private void leaveResult() {
+        if (shown != null) com.intellij.openapi.util.Disposer.dispose(shown);
+        shown = null;
+        result.removeAll();
     }
 
     private void close() {

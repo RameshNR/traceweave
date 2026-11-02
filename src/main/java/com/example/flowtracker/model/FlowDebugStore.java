@@ -35,6 +35,88 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
         public String captureScope = "ALL";
         /** How the list and the value are placed: "AUTO", "SIDE" (side by side) or "STACKED" (top and bottom). */
         public String layout = "AUTO";
+        /** Names given to lines (flow|fileUrl|line → name), shown after the file, method and line. */
+        public java.util.Map<String, String> lineNames = new java.util.HashMap<>();
+        /**
+         * Debug Data's own names of the flows (the Flow tab's flow name → the name shown here): renaming a flow in
+         * one doesn't rename it in the other.
+         */
+        public java.util.Map<String, String> flowTitles = new java.util.HashMap<>();
+    }
+
+    /** The name Debug Data shows for a flow (its own, else the Flow tab's). */
+    public String title(String flow) {
+        String t = state.flowTitles == null ? null : state.flowTitles.get(flow);
+        return t == null || t.isBlank() ? flow : t;
+    }
+
+    /** Renames a flow in Debug Data only (the Flow tab keeps its name). */
+    public void setTitle(String flow, String name) {
+        if (state.flowTitles == null) state.flowTitles = new java.util.HashMap<>();
+        if (name == null || name.isBlank() || name.strip().equals(flow)) state.flowTitles.remove(flow);
+        else state.flowTitles.put(flow, name.strip());
+        fire();
+    }
+
+    /**
+     * The flow was renamed in the Flow tab: its values stay with it, and Debug Data keeps showing the name it had
+     * here (the two aren't renamed together).
+     */
+    public void flowRenamedInFlowTab(String old, String now) {
+        if (state.flowTitles == null) state.flowTitles = new java.util.HashMap<>();
+        String shown = title(old);
+        state.flowTitles.remove(old);
+        if (!shown.equals(now)) state.flowTitles.put(now, shown);
+        renameFlow(old, now);
+        fire();
+    }
+
+    /** The key of a saved value's line within its flow (for its name). */
+    public static String lineKey(FlowSnapshot s) {
+        return s.flowName + "|" + s.fileUrl + "|" + s.line;
+    }
+
+    /** The name given to a line ("" when none). */
+    public String getLineName(String key) {
+        String n = state.lineNames == null ? null : state.lineNames.get(key);
+        return n == null ? "" : n;
+    }
+
+    public void setLineName(String key, String name) {
+        if (state.lineNames == null) state.lineNames = new java.util.HashMap<>();
+        if (name == null || name.isBlank()) state.lineNames.remove(key);
+        else state.lineNames.put(key, name.strip());
+        fire();
+    }
+
+    /** A flow was renamed: its values (also in the Recycle Bin) and its line names follow. */
+    public void renameFlow(String old, String now) {
+        boolean changed = false;
+        for (List<FlowSnapshot> list : List.of(state.snapshots, state.deleted)) {
+            for (FlowSnapshot s : list) {
+                if (s.flowName.equals(old)) {
+                    s.flowName = now;
+                    changed = true;
+                }
+            }
+        }
+        if (state.lineNames != null) {
+            java.util.Map<String, String> moved = new java.util.HashMap<>();
+            state.lineNames.entrySet().removeIf(e -> {
+                if (!e.getKey().startsWith(old + "|")) return false;
+                moved.put(now + e.getKey().substring(old.length()), e.getValue());
+                return true;
+            });
+            changed |= !moved.isEmpty();
+            state.lineNames.putAll(moved);
+        }
+        if (changed) fire();
+    }
+
+    /** Puts values into a flow (e.g. imported into the flow they were picked for). */
+    public void moveToFlow(List<FlowSnapshot> list, String flow) {
+        for (FlowSnapshot s : list) s.flowName = flow;
+        fire();
     }
 
     /** True when Capture Data saves only the variables used on the line where the debugger is. */

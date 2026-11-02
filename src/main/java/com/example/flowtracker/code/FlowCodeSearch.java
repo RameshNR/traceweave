@@ -411,6 +411,13 @@ public final class FlowCodeSearch {
         return doc == null ? null : FlowCapture.entryFor(project, doc, line);
     }
 
+    /** The saved line for a 0-based line of a file, also when the flow has it already; null for an empty line. */
+    public static @Nullable FlowEntry lineEntry(Project project, String url, int line) {
+        VirtualFile vf = VirtualFileManager.getInstance().findFileByUrl(url);
+        Document doc = vf == null ? null : FileDocumentManager.getInstance().getDocument(vf);
+        return doc == null ? null : FlowCapture.lineEntry(project, doc, line);
+    }
+
     // ---------- helpers ----------
 
     private static int nameOffset(PsiElement e) {

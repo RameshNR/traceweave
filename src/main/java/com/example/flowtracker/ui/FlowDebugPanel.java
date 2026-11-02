@@ -116,9 +116,19 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             this::exportData);
     private final FlowButton compare = button("Compare", AllIcons.Actions.Diff, "Compare the selected value with the same variable saved "
             + "at this line before or with its value now, or compare two pieces of pasted data (Ctrl+D). Select two saved values (Ctrl+click) to compare them with each other", this::compareSelected);
-    private final FlowButton layoutButton = button("Layout", FlowTheme.ICON_LAYOUT,
-            "Place the list and the value side by side or one above the other (Auto: above each other when the window is narrow)",
-            this::chooseLayout);
+    private final FlowButton flowsButton = button("Flow", FlowTheme.ICON_FLOWS,
+            "The flow new values go to (the Flow tab's flows): switch, drag to reorder, new, rename, delete, export, import",
+            this::flowsMenu);
+    private final FlowButton settingsButton = button("Settings", FlowTheme.ICON_SETTINGS,
+            "Layout (side by side or top and bottom) and what Capture Data saves", () -> settingsMenu(null));
+    private final FlowButton binSettingsButton = button("Settings", FlowTheme.ICON_SETTINGS,
+            "Layout (side by side or top and bottom)", () -> settingsMenu(null));
+    private final com.example.flowtracker.model.FlowStore flows;
+    private final java.util.function.BiConsumer<String, String> flowRenamed;
+    /** Repaints in the Flow tab's colors when its theme (or IntelliJ's) changes. */
+    private Runnable themeChanged = () -> {};
+    private final Runnable flowsChanged;
+    private String flowsSeen = "";
     private final JBSplitter split = new JBSplitter(false, 0.38f);
     private final FlowButton edit = button("Edit", AllIcons.Actions.Edit, "Change the selected field's name or value (F2; kept in its history)", this::editSelected);
     private final FlowButton newValue = button("New Value…", AllIcons.General.Add,
@@ -173,6 +183,20 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         this.project = project;
         this.store = FlowDebugStore.get(project);
         this.recorder = FlowDataRecorder.get(project);
+        this.flows = com.example.flowtracker.model.FlowStore.get(project);
+        // the flows are the Flow tab's (new, deleted, moved flows show), but their names here are Debug Data's own:
+        // a rename there keeps the name shown here (the values stay with the flow)
+        flowRenamed = (old, now) -> store.flowRenamedInFlowTab(old, now);
+        flowsChanged = () -> {
+            showFlowName();
+            String seen = flows.getFlowNames() + "#" + flows.getActiveFlowIndex();
+            if (!seen.equals(flowsSeen)) {
+                flowsSeen = seen;
+                reload();
+            }
+        };
+        flows.addRenameListener(flowRenamed);
+        flows.addListener(flowsChanged);
         searchTimer.setRepeats(false);
         capture.setDropDown("Where to capture: where the debugger stops, or every line it runs", this::chooseCaptureMode);
         compare.setDropDown("Compare with its value now or with an earlier save", this::compareMenu);
@@ -188,23 +212,29 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             runSearch();
         });
         JPanel searchRow = new JPanel(new BorderLayout(JBUI.scale(8), 0));
+        // as in the Flow tab: the Flow button keeps its own height (not stretched to the search box's)
+        JPanel flowBox = new JPanel(new java.awt.GridBagLayout());
+        flowBox.setOpaque(false);
+        flowBox.add(flowsButton);
+        searchRow.add(flowBox, BorderLayout.WEST);
         searchRow.add(search, BorderLayout.CENTER);
         // the search option and Layout (where the list and the value go) at the top right
         JPanel searchEnd = new JPanel(new FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0));
         searchEnd.add(searchNow);
-        layoutButton.setCompact(true);
-        searchEnd.add(layoutButton);
+
         searchRow.add(searchEnd, BorderLayout.EAST);
 
         // Two toolbars that wrap and shrink with the tool window like the Flow tab's: saved values, and the Recycle Bin.
         FlowToolbar savedBar = new FlowToolbar();
-        savedBar.addGroup(false, 1, capture, addExpression, newValue, compare);
-        savedBar.addGroup(false, 1, history, delete);
+        savedBar.addGroup(false, 1, capture, addExpression, newValue);
+        savedBar.addGroup(false, 1, compare, history);
+        savedBar.addGroup(false, 1, delete, bin);
         savedBar.addGroup(false, 1, importData, exportData);
-        savedBar.addGroup(false, 1, bin);
+        savedBar.addGroup(false, 1, settingsButton);
         FlowToolbar binBar = new FlowToolbar();
         binBar.addGroup(false, 1, back);
         binBar.addGroup(false, 1, restore, purge);
+        binBar.addGroup(false, 1, binSettingsButton);
         buttons.add(savedBar, "saved");
         buttons.add(binBar, "bin");
         JPanel top = new JPanel(new BorderLayout(0, JBUI.scale(6)));
@@ -221,6 +251,7 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         snapshots.addTreeSelectionListener(e -> {
             FlowSnapshot s = selectedSnapshot();
             if (s != null) showValue(s, s.value, null);
+            selectFlowEverywhere();
             updateButtons();
         });
         results.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
@@ -230,8 +261,8 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             if (m != null && !e.getValueIsAdjusting()) showValue(m.snapshot(), m.root(), m.path());
             updateButtons();
         });
-        left.add(new JBScrollPane(snapshots), "tree");
-        left.add(new JBScrollPane(results), "results");
+        left.add(FlowCard.plain(new JBScrollPane(snapshots)), "tree");
+        left.add(FlowCard.plain(new JBScrollPane(results)), "results");
 
         values.setCellRenderer(new ValueRenderer());
         values.getEmptyText().setText("Select a saved value to see its fields");
@@ -258,9 +289,9 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             }
         });
         asText.setFont(JBUI.Fonts.create(java.awt.Font.MONOSPACED, JBUI.Fonts.label().getSize()));
-        valueCards.add(new JBScrollPane(values), View.TREE.name());
+        valueCards.add(FlowCard.plain(new JBScrollPane(values)), View.TREE.name());
         JPanel textCard = new JPanel(new BorderLayout());
-        textCard.add(new JBScrollPane(asText), BorderLayout.CENTER);
+        textCard.add(FlowCard.plain(new JBScrollPane(asText)), BorderLayout.CENTER);
         JPanel textButtons = new JPanel(new FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0));
         textButtons.add(applyText);
         textButtons.add(cancelText);
@@ -304,8 +335,17 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         right.add(valueCards, BorderLayout.CENTER);
         setView(View.TREE);
 
-        split.setFirstComponent(left);
-        split.setSecondComponent(right);
+        // the Flow tab's look: the panel background, the list and the value each on a rounded card
+        FlowCard leftCard = FlowCard.of(left);
+        FlowCard rightCard = FlowCard.of(right);
+        for (JComponent c : List.<JComponent>of(top, searchRow, searchEnd, searchNow, buttons, savedBar, binBar, left, right, head,
+                views, valueCards, textCard, textBar, textButtons, status, split)) {
+            c.setOpaque(false);
+        }
+        split.setFirstComponent(leftCard);
+        split.setSecondComponent(rightCard);
+        split.setDividerWidth(JBUI.scale(8));
+        split.getDivider().setOpaque(false);
         // Both sides can be made small (the toolbars wrap and the title is cut), so the divider moves either way.
         left.setMinimumSize(new Dimension(JBUI.scale(80), JBUI.scale(60)));
         right.setMinimumSize(new Dimension(JBUI.scale(80), JBUI.scale(60)));
@@ -313,8 +353,18 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
 
         status.setForeground(UIUtil.getContextHelpForeground());
         status.setBorder(JBUI.Borders.empty(4, 6));
+        setBackground(FlowTheme.PANEL_BG);
+        setBorder(JBUI.Borders.empty(10));
+        top.setBorder(JBUI.Borders.emptyBottom(10));
         add(top, BorderLayout.NORTH);
         add(split, BorderLayout.CENTER);
+        // "Use IntelliJ Theme" switched: the colors are looked up when painting, so a repaint shows the new ones
+        // (the lists' card color is set on them, so it is set again)
+        themeChanged = () -> {
+            for (JComponent c : List.<JComponent>of(snapshots, results, values, asText)) c.setBackground(FlowTheme.CARD_BG);
+            repaint();
+        };
+        com.example.flowtracker.model.FlowLook.get().addListener(themeChanged);
         addComponentListener(new java.awt.event.ComponentAdapter() {
             @Override public void componentResized(java.awt.event.ComponentEvent e) { applyLayout(); }
         });
@@ -328,6 +378,7 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             searchTimer.stop();
             debuggerTimer.stop();
         });
+        showFlowName();
         reload();
     }
 
@@ -363,27 +414,64 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     // ---------- the saved values ----------
 
     /** Rebuilds the list of saved (or deleted) values: by flow, then by line. */
+    /** A flow (or one of its lines or values) picked here: it becomes the selected flow in the Flow tab too. */
+    private void selectFlowEverywhere() {
+        if (reloading || showingBin || leftShowsResults()) return;
+        TreePath[] paths = snapshots.getSelectionPaths();
+        if (paths == null || paths.length != 1) return;
+        String flow = pickedFlow();
+        int i = flows.getFlowNames().indexOf(flow);
+        if (i >= 0 && i != flows.getActiveFlowIndex()) flows.switchFlow(i);
+    }
+
+    /** True while the list is rebuilt (its selection changes then are not the user's). */
+    private boolean reloading;
+
     private void reload() {
+        reloading = true;
+        try {
+            reloadList();
+        } finally {
+            reloading = false;
+        }
+    }
+
+    private void reloadList() {
+        Group selectedRow = selectedGroup();
         FlowSnapshot selected = selectedSnapshot();
+        List<String> expandedGroups = expandedGroupKeys();
         DefaultMutableTreeNode root = new DefaultMutableTreeNode();
         Map<String, Map<String, List<FlowSnapshot>>> groups = new LinkedHashMap<>();
+        if (!showingBin) for (String f : flows.getFlowNames()) groups.put(f, new LinkedHashMap<>());
+        Map<String, FlowSnapshot> firstOfLine = new java.util.HashMap<>();
         for (FlowSnapshot s : showingBin ? store.getDeleted() : store.getSnapshots()) {
+            String key = FlowDebugStore.lineKey(s);
+            firstOfLine.putIfAbsent(key, s);
             groups.computeIfAbsent(s.flowName.isEmpty() ? "(no flow)" : s.flowName, k -> new LinkedHashMap<>())
-                    .computeIfAbsent(s.where() + (s.method().isEmpty() ? "" : "  " + s.method()), k -> new ArrayList<>()).add(s);
+                    .computeIfAbsent(key, k -> new ArrayList<>()).add(s);
         }
+        String active = flows.getActiveFlowName();
         groups.forEach((flow, lines) -> {
-            DefaultMutableTreeNode f = new DefaultMutableTreeNode(new Group(flow, true));
-            lines.forEach((line, list) -> {
-                DefaultMutableTreeNode l = new DefaultMutableTreeNode(new Group(line, false));
-                for (FlowSnapshot s : list) l.add(new DefaultMutableTreeNode(s));
+            DefaultMutableTreeNode f = new DefaultMutableTreeNode(new Group(store.title(flow), true, flow, null, flow.equals(active)));
+            lines.forEach((key, list) -> {
+                FlowSnapshot s = firstOfLine.get(key);
+                String where = s.where() + (s.method().isEmpty() ? "" : "  " + s.method());
+                DefaultMutableTreeNode l = new DefaultMutableTreeNode(new Group(where, false, flow, key, false));
+                for (FlowSnapshot x : list) l.add(new DefaultMutableTreeNode(x));
                 f.add(l);
             });
             root.add(f);
         });
         snapshots.setModel(new DefaultTreeModel(root));
         TreeUtil.expandAll(snapshots);
+        flowsSeen = flows.getFlowNames() + "#" + flows.getActiveFlowIndex();
         if (selected != null) {
             DefaultMutableTreeNode node = TreeUtil.findNodeWithObject(root, selected);
+            if (node != null) TreeUtil.selectNode(snapshots, node);
+        } else if (selectedRow != null) { // the flow (or line) row stays selected
+            DefaultMutableTreeNode node = TreeUtil.findNode(root, n -> n.getUserObject() instanceof Group g
+                    && g.flow() == selectedRow.flow() && g.flowName().equals(selectedRow.flowName())
+                    && java.util.Objects.equals(g.lineKey(), selectedRow.lineKey()));
             if (node != null) TreeUtil.selectNode(snapshots, node);
         }
         if (shownSnapshot != null && selectedSnapshot() == null && results.getSelectedValue() == null) clearValue();
@@ -396,7 +484,202 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         updateButtons();
     }
 
-    private record Group(String text, boolean flow) {}
+    /**
+     * A flow, or a line of a flow, in the list.
+     * @param lineKey the line's key (for its name), null for a flow
+     */
+    private record Group(String text, boolean flow, String flowName, @Nullable String lineKey, boolean active) {}
+
+    private List<String> expandedGroupKeys() {
+        return List.of(); // every group is shown open
+    }
+
+    private @Nullable Group selectedGroup() {
+        TreePath p = snapshots.getSelectionPath();
+        Object o = p == null ? null : ((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject();
+        return o instanceof Group g ? g : null;
+    }
+
+    // ---------- flows (the Flow tab's) and line names ----------
+
+    /** The flow picked in the list (a flow, one of its lines or values), else the active one. */
+    private String pickedFlow() {
+        Group g = selectedGroup();
+        if (g != null) return g.flowName();
+        FlowSnapshot s = selectedSnapshot();
+        return s != null && !s.flowName.isEmpty() ? s.flowName : flows.getActiveFlowName();
+    }
+
+    /** The flow picker: the Flow tab's flows popup (click to switch, drag to reorder), then this flow's actions. */
+    private void flowsMenu() {
+        String flow = flows.getActiveFlowName();
+        List<FlowMenuPopup.Item> items = new ArrayList<>();
+        items.add(new FlowMenuPopup.Item("New Flow…", AllIcons.General.Add, true, this::newFlow));
+        items.add(new FlowMenuPopup.Item("Rename Flow…", AllIcons.Actions.Edit, true, () -> renameFlow(flow)));
+        items.add(new FlowMenuPopup.Item("Delete Flow…", FlowTheme.ICON_DELETE, true, () -> deleteFlow(flow)));
+        items.add(new FlowMenuPopup.Item("Delete Flows…", FlowTheme.ICON_DELETE, true, this::deleteFlows));
+        items.add(null);
+        items.add(new FlowMenuPopup.Item("Export the Flow's Values…", FlowTheme.ICON_EXPORT, true, () -> exportFlow(flow)));
+        items.add(new FlowMenuPopup.Item("Import Values into the Flow…", FlowTheme.ICON_IMPORT, true, () -> importInto(flow)));
+        FlowMenuPopup.show(flows, flowsButton, items, store::title);
+    }
+
+    private void showFlowName() {
+        flowsButton.setText(com.intellij.openapi.util.text.StringUtil.shortenTextWithEllipsis(store.title(flows.getActiveFlowName()), 24, 0) + "  ▾");
+    }
+
+    /** Settings: where the list and the value go, and (for saved values) what Capture Data saves. */
+    private void settingsMenu(@Nullable FlowButton anchor) {
+        Map<String, List<FlowSettingsPopup.Choice>> sections = new LinkedHashMap<>();
+        sections.put("LAYOUT", List.of(
+                new FlowSettingsPopup.Choice(FlowTheme.ICON_LAYOUT, "Auto", "Side by side, or one above the other when the window is narrow.",
+                        () -> store.getLayout().equals("AUTO"), () -> setLayout("AUTO")),
+                new FlowSettingsPopup.Choice(AllIcons.Actions.SplitVertically, "Side by side", null,
+                        () -> store.getLayout().equals("SIDE"), () -> setLayout("SIDE")),
+                new FlowSettingsPopup.Choice(AllIcons.Actions.SplitHorizontally, "Top and bottom", null,
+                        () -> store.getLayout().equals("STACKED"), () -> setLayout("STACKED"))));
+        if (!showingBin) {
+            sections.put("CAPTURE DATA: WHEN", List.of(
+                    new FlowSettingsPopup.Choice(AllIcons.Debugger.Db_set_breakpoint, "Where the debugger stops", null,
+                            () -> !store.isCaptureEveryLine(), () -> store.setCaptureEveryLine(false)),
+                    new FlowSettingsPopup.Choice(AllIcons.Actions.TraceInto, "Every line it runs", "Up to the next breakpoint.",
+                            store::isCaptureEveryLine, () -> store.setCaptureEveryLine(true))));
+            sections.put("CAPTURE DATA: WHAT", List.of(
+                    new FlowSettingsPopup.Choice(AllIcons.Nodes.Variable, "All variables of the method", null,
+                            () -> !store.isCaptureLineOnly(), () -> store.setCaptureLineOnly(false)),
+                    new FlowSettingsPopup.Choice(AllIcons.Debugger.Frame, "Only the line's variables", null,
+                            store::isCaptureLineOnly, () -> store.setCaptureLineOnly(true))));
+        }
+        FlowSettingsPopup.showChoices(anchor != null ? anchor : showingBin ? binSettingsButton : settingsButton, "Settings", sections, null, false);
+    }
+
+    private void newFlow() {
+        String name = Messages.showInputDialog(project, "Name of the new flow:", "New Flow", null, flows.uniqueName("Flow"), null);
+        if (name == null || name.isBlank()) return;
+        flows.newFlow(name, List.of());
+        status.setText("Added the flow “" + flows.getActiveFlowName() + "”: new values go there (and lines in the Flow tab).");
+    }
+
+    private void renameFlow(String flow) {
+        int index = flows.getFlowNames().indexOf(flow);
+        String shown = store.title(flow);
+        String name = Messages.showInputDialog(project, "New name of the flow “" + shown + "” in Debug Data (the Flow tab keeps its name):",
+                "Rename Flow", null, shown, null);
+        if (name == null || name.isBlank() || name.strip().equals(shown)) return;
+        if (index >= 0) {
+            store.setTitle(flow, name); // Debug Data's name only: the Flow tab's flow keeps its name
+        } else {
+            store.renameFlow(flow, name.strip()); // values of a flow the Flow tab doesn't have (e.g. imported)
+        }
+        reload();
+        showFlowName();
+    }
+
+    private void moveFlow(String flow, int by) {
+        int index = flows.getFlowNames().indexOf(flow);
+        if (index < 0) return;
+        flows.moveFlow(index, Math.max(0, Math.min(flows.getFlowNames().size() - 1, index + by)));
+    }
+
+    private void deleteFlow(String flow) {
+        deleteFlowsNow(List.of(flow));
+    }
+
+    /** The flows selected on the left (their rows, not their lines or values). */
+    private List<String> selectedFlows() {
+        List<String> out = new ArrayList<>();
+        if (leftShowsResults() || showingBin) return out;
+        TreePath[] paths = snapshots.getSelectionPaths();
+        if (paths == null) return out;
+        for (TreePath p : paths) {
+            if (((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject() instanceof Group g && g.flow()
+                    && !out.contains(g.flowName())) {
+                out.add(g.flowName());
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Deletes flows here and in the Flow tab together: with nothing in either, at once; else one confirmation (this
+     * screen's values first, then the Flow tab's lines).
+     */
+    private void deleteFlowsNow(List<String> picked) {
+        String one = picked.size() == 1 ? store.title(picked.get(0)) : null;
+        // (values of a flow the Flow tab doesn't have, e.g. imported ones, go too)
+        if (!FlowDeleting.delete(project, picked, FlowDeleting.From.DEBUG_DATA)) return;
+        status.setText(one != null ? "Deleted the flow “" + one + "” (here and in the Flow tab)."
+                : "Deleted " + picked.size() + " flows (here and in the Flow tab).");
+    }
+
+    /** Delete Flows: several (or all) flows at once, here and in the Flow tab. */
+    private void deleteFlows() {
+        List<String> picked = FlowDeleteFlows.ask(project, flows.getFlowNames(),
+                f -> FlowDeleting.details(project, f, FlowDeleting.From.DEBUG_DATA), "They are deleted in the Flow tab too.");
+        if (picked == null || picked.isEmpty()) return;
+        deleteFlowsNow(picked);
+    }
+
+    private void exportFlow(String flow) {
+        List<FlowSnapshot> values = store.getSnapshots().stream().filter(s -> s.flowName.equals(flow)).toList();
+        if (values.isEmpty()) {
+            status.setText("“" + flow + "” has no saved values to export yet.");
+            return;
+        }
+        exportValues(values, flow);
+    }
+
+    private void importInto(String flow) {
+        List<FlowSnapshot> added = importFile();
+        if (added == null || added.isEmpty()) return;
+        store.moveToFlow(added, flow);
+        status.setText("Imported " + added.size() + (added.size() == 1 ? " value" : " values") + " into “" + flow + "”.");
+        select(added.get(0));
+    }
+
+    /** Names the selected line (after its file, method and line, which always stay). */
+    private void nameLine() {
+        Group g = selectedGroup();
+        if (g == null || g.lineKey() == null) return;
+        String now = Messages.showInputDialog(project, "A name for " + g.text() + " (shown after it; the file, method and line stay):",
+                "Name Line", null, store.getLineName(g.lineKey()), null);
+        if (now == null) return;
+        store.setLineName(g.lineKey(), now);
+    }
+
+    /** F2 in the list: rename the selected flow, or name the selected line. */
+    private void renameSelectedGroup() {
+        Group g = selectedGroup();
+        if (g == null) return;
+        if (g.flow()) renameFlow(g.flowName());
+        else nameLine();
+    }
+
+    private com.intellij.openapi.actionSystem.ActionGroup listMenu() {
+        com.intellij.openapi.actionSystem.DefaultActionGroup g = new com.intellij.openapi.actionSystem.DefaultActionGroup();
+        java.util.function.BooleanSupplier flowSel = () -> selectedGroup() != null && selectedGroup().flow() && !showingBin;
+        java.util.function.BooleanSupplier lineSel = () -> selectedGroup() != null && !selectedGroup().flow() && !showingBin;
+        g.add(menuItem("Rename Flow…", "F2", AllIcons.Actions.Edit, () -> renameFlow(pickedFlow()), flowSel));
+        g.add(menuItem("New Values Go Here", null, FlowTheme.ICON_FLOWS, () -> {
+            int i = flows.getFlowNames().indexOf(pickedFlow());
+            if (i >= 0) flows.switchFlow(i);
+        }, flowSel));
+        g.add(menuItem("Move Up", null, AllIcons.Actions.MoveUp, () -> moveFlow(pickedFlow(), -1), flowSel));
+        g.add(menuItem("Move Down", null, AllIcons.Actions.MoveDown, () -> moveFlow(pickedFlow(), 1), flowSel));
+        g.add(menuItem("Export Flow's Values…", null, FlowTheme.ICON_EXPORT, () -> exportFlow(pickedFlow()), flowSel));
+        g.add(menuItem("Import into Flow…", null, FlowTheme.ICON_IMPORT, () -> importInto(pickedFlow()), flowSel));
+        g.add(menuItem("Delete Flow…", null, FlowTheme.ICON_DELETE, () -> deleteFlow(pickedFlow()), flowSel));
+        g.addSeparator();
+        g.add(menuItem("Name This Line…", "F2", AllIcons.Actions.Edit, this::nameLine, lineSel));
+        g.add(menuItem("Clear Line Name", null, null, () -> {
+            Group s = selectedGroup();
+            if (s != null && s.lineKey() != null) store.setLineName(s.lineKey(), "");
+        }, () -> lineSel.getAsBoolean() && !store.getLineName(selectedGroup().lineKey()).isEmpty()));
+        g.addSeparator();
+        g.add(menuItem("New Flow…", null, AllIcons.General.Add, this::newFlow, () -> !showingBin));
+        g.add(menuItem("Copy Values as JSON", "Ctrl+C", AllIcons.Actions.Copy, this::copySnapshots, () -> !selectedSnapshots().isEmpty()));
+        return g;
+    }
 
     private @Nullable FlowSnapshot selectedSnapshot() {
         if (leftShowsResults()) {
@@ -573,7 +856,8 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
                 .replaceAll("[^\\w.-]+", "_");
         VirtualFileWrapper target = FileChooserFactory.getInstance()
                 .createSaveFileDialog(FlowCompat.saverDescriptor("Export Debug Value", "Save the value as " + (json ? "JSON" : "text"), ext), project)
-                .save(base + "." + ext);
+                .save(com.example.flowtracker.model.FlowProjects.prefixed(exportPrefix(shownSnapshot == null ? List.of() : List.of(shownSnapshot)),
+                        base + "." + ext));
         if (target == null) return;
         try {
             java.nio.file.Files.writeString(target.getFile().toPath(), text, java.nio.charset.StandardCharsets.UTF_8);
@@ -621,18 +905,6 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
 
     // ---------- layout and keys ----------
 
-    private void chooseLayout() {
-        Map<String, List<FlowSettingsPopup.Choice>> sections = new LinkedHashMap<>();
-        sections.put("PLACE THE LIST AND THE VALUE", List.of(
-                new FlowSettingsPopup.Choice(FlowTheme.ICON_LAYOUT, "Auto", "Side by side, or one above the other when the window is narrow.",
-                        () -> store.getLayout().equals("AUTO"), () -> setLayout("AUTO")),
-                new FlowSettingsPopup.Choice(AllIcons.Actions.SplitVertically, "Side by side", null,
-                        () -> store.getLayout().equals("SIDE"), () -> setLayout("SIDE")),
-                new FlowSettingsPopup.Choice(AllIcons.Actions.SplitHorizontally, "Top and bottom", null,
-                        () -> store.getLayout().equals("STACKED"), () -> setLayout("STACKED"))));
-        FlowSettingsPopup.showChoices(layoutButton, "Layout", sections, null, true);
-    }
-
     private void setLayout(String layout) {
         store.setLayout(layout);
         applyLayout();
@@ -659,19 +931,23 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_INSERT, 0), "addField", this::addFieldToSelected, values);
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_C, menu), "copyField", () -> copyField(CopyAs.VALUE), values);
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_C, menu), "copyValues", this::copySnapshots, snapshots, results);
+        key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_F2, 0), "renameGroup", this::renameSelectedGroup, snapshots);
+        com.intellij.ui.PopupHandler.installPopupMenu(snapshots, listMenu(), "TraceWeave.DebugList");
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_V, menu), "pasteField", this::pasteIntoSelected, values);
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_F2, 0), "edit", this::editSelected, this);
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_F, menu), "find",
                 () -> search.getTextEditor().requestFocusInWindow(), this);
     }
 
-    private static void key(javax.swing.KeyStroke stroke, String name, Runnable run, JComponent... on) {
+    /**
+     * A shortcut while the focus is in a component (or anywhere in this panel when it is the panel). Registered as an
+     * IDE action of that component: plain Swing key bindings never get keys the IDE's keymap uses (Delete, Ctrl+C,
+     * Ctrl+V, F2, Ctrl+D, Ctrl+F...), the IDE takes them first.
+     */
+    private void key(javax.swing.KeyStroke stroke, String name, Runnable run, JComponent... on) {
         for (JComponent c : on) {
-            int when = c instanceof FlowDebugPanel ? WHEN_ANCESTOR_OF_FOCUSED_COMPONENT : WHEN_FOCUSED;
-            c.getInputMap(when).put(stroke, "traceweave." + name);
-            c.getActionMap().put("traceweave." + name, new javax.swing.AbstractAction() {
-                @Override public void actionPerformed(java.awt.event.ActionEvent e) { run.run(); }
-            });
+            com.intellij.openapi.actionSystem.AnAction action = com.intellij.openapi.project.DumbAwareAction.create(e -> run.run());
+            action.registerCustomShortcutSet(new com.intellij.openapi.actionSystem.CustomShortcutSet(stroke), c, this);
         }
     }
 
@@ -684,16 +960,27 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
 
     // ---------- import / export of saved values ----------
 
+    /** The projects saved values come from, as the start of an exported file's name (e.g. carSearch_hotelBooking). */
+    private String exportPrefix(List<FlowSnapshot> list) {
+        List<String> names = new ArrayList<>();
+        for (FlowSnapshot s : list) names.add(com.example.flowtracker.model.FlowProjects.ofUrl(project, s.fileUrl));
+        return com.example.flowtracker.model.FlowProjects.exportPrefix(project, names);
+    }
+
     /** Export: the selected values (or all of them) to a .flowdebug.json file. */
     private void exportData() {
         List<FlowSnapshot> list = selectedSnapshots();
         if (list.isEmpty()) list = store.getSnapshots();
         if (list.isEmpty()) return;
-        String name = (list.size() == 1 ? list.get(0).name : "debug-data").replaceAll("[^\\w.-]+", "_");
+        exportValues(list, list.size() == 1 ? list.get(0).name : "debug-data");
+    }
+
+    private void exportValues(List<FlowSnapshot> list, String fileName) {
+        String name = fileName.replaceAll("[^\\w.-]+", "_");
         VirtualFileWrapper target = FileChooserFactory.getInstance()
                 .createSaveFileDialog(FlowCompat.saverDescriptor("Export Debug Data",
                         "Save " + list.size() + (list.size() == 1 ? " value" : " values") + " with their fields and edit history", "json"), project)
-                .save(name + FlowDebugTransfer.EXTENSION);
+                .save(com.example.flowtracker.model.FlowProjects.prefixed(exportPrefix(list), name + FlowDebugTransfer.EXTENSION));
         if (target == null) return;
         try {
             FlowDebugTransfer.write(list, target.getFile().toPath());
@@ -705,19 +992,27 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
 
     /** Import: the values of a .flowdebug.json file, added to the saved ones (nothing is replaced). */
     private void importData() {
+        List<FlowSnapshot> added = importFile();
+        if (added == null) return;
+        status.setText("Imported " + added.size() + (added.size() == 1 ? " value" : " values")
+                + ". They are compared and searched like your own.");
+        if (!added.isEmpty()) select(added.get(0));
+    }
+
+    /** Asks for a .flowdebug.json file and adds its values (null when cancelled or unreadable). */
+    private @Nullable List<FlowSnapshot> importFile() {
         com.intellij.openapi.vfs.VirtualFile file = com.intellij.openapi.fileChooser.FileChooser.chooseFile(
                 com.intellij.openapi.fileChooser.FileChooserDescriptorFactory.createSingleFileDescriptor("json")
                         .withTitle("Import Debug Data").withDescription("Choose a .flowdebug.json file exported from Debug Data"),
                 project, null);
-        if (file == null) return;
+        if (file == null) return null;
         try {
             List<FlowSnapshot> added = FlowDebugTransfer.read(java.nio.file.Path.of(file.getPath()), store.getSnapshots());
             store.addAll(added);
-            status.setText("Imported " + added.size() + (added.size() == 1 ? " value" : " values") + " from " + file.getName()
-                    + ". They are compared and searched like your own.");
-            if (!added.isEmpty()) select(added.get(0));
+            return added;
         } catch (java.io.IOException ex) {
             Messages.showErrorDialog(project, "Couldn't import " + file.getName() + ": " + ex.getMessage(), "Import Debug Data");
+            return null;
         }
     }
 
@@ -808,7 +1103,7 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         removeField.setEnabled(saved && shownSnapshot == s && fieldPath != null && !fieldPath.isEmpty());
         newValue.setEnabled(!showingBin);
         history.setEnabled(saved && !s.edits.isEmpty());
-        delete.setEnabled(!showingBin && !selectedSnapshots().isEmpty());
+        delete.setEnabled(!showingBin && (!selectedSnapshots().isEmpty() || !selectedFlows().isEmpty()));
         String fieldPath2 = selectedValuePath();
         delete.setToolTipText(valuesFocusedLast && fieldPath2 != null && !fieldPath2.isEmpty() && canEdit()
                 ? "Remove the selected field (Delete; History → Revert puts it back)"
@@ -1432,6 +1727,11 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             removeSelectedField();
             return;
         }
+        List<String> flowsPicked = selectedFlows();
+        if (!flowsPicked.isEmpty()) { // flows selected: the flows go (an empty one without asking)
+            deleteFlowsNow(flowsPicked);
+            return;
+        }
         List<FlowSnapshot> list = selectedSnapshots();
         if (list.isEmpty()) return;
         String group = selectedGroupName();
@@ -1485,6 +1785,9 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
 
     @Override
     public void dispose() {
+        com.example.flowtracker.model.FlowLook.get().removeListener(themeChanged);
+        flows.removeRenameListener(flowRenamed);
+        flows.removeListener(flowsChanged);
         store.removeListener(storeListener);
         recorder.removeListener(recorderListener);
         debuggerTimer.stop();
@@ -1499,6 +1802,13 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             if (o instanceof Group g) {
                 setIcon(g.flow() ? FlowTheme.ICON_FLOWS : AllIcons.Debugger.Db_set_breakpoint);
                 append(g.text(), g.flow() ? SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES : SimpleTextAttributes.REGULAR_ATTRIBUTES);
+                if (g.flow()) {
+                    if (((DefaultMutableTreeNode) value).getChildCount() == 0) append("   no values yet", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
+                    if (g.active() && !showingBin) append("   ● new values go here", new SimpleTextAttributes(SimpleTextAttributes.STYLE_SMALLER, EDITED));
+                } else if (g.lineKey() != null) {
+                    String name = store.getLineName(g.lineKey());
+                    if (!name.isEmpty()) append("  —  " + name, new SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, EDITED));
+                }
             } else if (o instanceof FlowSnapshot s) {
                 setIcon(AllIcons.Nodes.Variable);
                 append(s.name, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);

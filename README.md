@@ -128,13 +128,13 @@ Check the folder: it must contain `product-info.json`. Write the path in `build.
 The installable plugin is written to:
 
 ```
-build\distributions\traceweave-code-flow-tracker-1.3.1.zip
+build\distributions\traceweave-code-flow-tracker-1.3.2.zip
 ```
 
 Install it in IntelliJ IDEA:
 
 - **Settings** → **Plugins** → ⚙️ → **Install Plugin from Disk…**
-- Select `build\distributions\traceweave-code-flow-tracker-1.3.1.zip`
+- Select `build\distributions\traceweave-code-flow-tracker-1.3.2.zip`
 - Restart the IDE when asked
 
 To release a new version, change `version = "1.3.0"` in `build.gradle.kts`, add its change notes in `plugin.xml`, and build again.
@@ -275,32 +275,44 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 - **Compare**: when the same variable was saved at the same line before (in any flow, in any debug run), the notification says how many values differ and offers **Compare**. In the tab, **Compare** compares the selected value with *its value now* (while the debugger is paused) or with any earlier save of that variable at that line. The Compare window shows the number of changed, added and removed values, and every field side by side with a mark: **~** changed (amber), **+** only on the right (green), **−** only on the left (red); *Only what differs* hides the rest (keeping the rows above each difference, so you see where it is). It compares the data, not the objects: instance ids such as `HotelService@1141` or `{Double@1400}` are ignored, map entries are matched by their key and shown as `"goa" = 2500.0`, and list elements are lined up by their values. **Compare as JSON** opens both values as JSON (keys sorted) in IntelliJ's diff viewer, with added, removed and changed lines; **Copy Differences** copies the list of differences.
 - **Two saved values**: select both (Ctrl+click), then **Compare** (or **Ctrl+D**): they are compared with each other, the older one on the left.
 - The **Compare window** has the system's **Minimize**, **Maximize** and **Close**, and three views: **Tree** (every field side by side, what differs marked), **JSON** and **Text** (both values in IntelliJ's diff viewer, inside the window).
-- **Compare** (or **Ctrl+D**) with one saved value selected opens it on the left (as JSON, or switch it to Text) with the right side empty: paste the other value there (from a log, a teammate, another tool) and press **Ctrl+Enter**: JSON on both sides opens the Compare window (Tree, JSON, Text); other data is compared line by line in IntelliJ's diff viewer. Keys in that window: **Ctrl+Enter** Compare, **Ctrl+Shift+V** paste the clipboard, **Ctrl+Shift+X** swap sides, **Alt+1** / **Alt+2** left / right side, **Esc** close. Compare's **▾** compares with its value now or an earlier save instead.
+- **Compare** (or **Ctrl+D**) with one saved value selected opens it on the left (as JSON, or switch it to Text) with the right side empty: paste the other value there (from a log, a teammate, another tool) and press **Ctrl+Enter**: JSON on both sides shows the Compare view (Tree, JSON, Text); other data is compared line by line in IntelliJ's diff viewer, in the same window. Keys in that window: **Ctrl+Enter** Compare, **Ctrl+Shift+V** paste the clipboard, **Ctrl+Shift+X** swap sides, **Alt+1** / **Alt+2** left / right side, **Esc** close. Compare's **▾** compares with its value now or an earlier save instead.
 - **Pasted data**: **Compare** with nothing selected lets you paste two pieces of data (JSON, XML / HTML, a `toString()` or the debugger's text such as `Booking{id=4, rooms={ooty=12}}`, or a log) and see what was added, removed or changed. The kind is detected for each side, both are laid out one value per line (JSON keys sorted, instance ids left out), and IntelliJ's diff viewer shows the lines that differ.
 - **Find**: the search box finds a name, a map key, a type or a value in all saved values (`cart`, `4711`, or a regular expression such as `/order.*Id/`), with where each match is (`session › attributes › "cart" › total`). Tick **Also in the current debug session** to search the paused stack frame's variables too (read 3 levels deep, marked *now*). Click a match to see it in its value.
 - **Tree, JSON or Text**: show the selected value as the debugger's tree, as **JSON** (objects and maps as objects, lists as arrays, numbers and booleans as such, instance ids left out) or as plain indented **Text**. **Copy** copies it as shown; **Export…** saves it as a `.json` or `.txt` file.
 - **New Value…** adds a saved value by hand: a name and its data (JSON becomes fields; other text is kept as the value), e.g. the expected data to compare a debug value with.
 - **Edit in the Compare window**: in **Tree**, double-click a value in the Old or New column to change it; in **JSON** and **Text**, edit or paste on either side (the changed / added / removed counts follow as you type, marked *not saved yet*) and click **Save Edits** (Ctrl+S). Changes to saved values are saved (and are in their History in Debug Data); the comparison is redone at once. **Undo** (Ctrl+Z), **Redo** (Ctrl+Shift+Z), **History** and **Reset** (both sides back to the data as saved) work in the window. After a change, **See what changed** shows that side before and after. **History** lists the steps taken in the window (**Go To** one) and each saved value's own changes from Debug Data (**Revert** one); **Show Changes** shows what any of them did.
-- The Compare window says which side is **Old** and which is **New**; **⇄ Swap Old / New** (Ctrl+Shift+X) makes the other side the new data (what was added then shows as removed, and so on).
+- The Compare window says which side is **Old** and which is **New** (bright **OLD** / **NEW** labels over the sides, and in the JSON and Text views' titles); **⇄ Swap Old / New** (Ctrl+Shift+X) makes the other side the new data (what was added then shows as removed, and so on).
+- **Open File…** (Compare window) puts a `.json` file, or one value of a `.flowdebug.json` export, on the Old or the New side. **Export…** saves the Old data, the New data (as JSON), the differences (as text), or all three. Both open their menu above the button.
+- **Compare Pasted Data** (Compare with nothing selected): paste or **Open File…** on each side, then **Compare** (Ctrl+Enter). The result shows **in the same window**: the Compare view for JSON on both sides, IntelliJ's line-by-line diff for anything else. **Back to Edit** (Esc in the diff) returns to the two sides, with your text still there to change and compare again.
 - **Add Field** on an object lists its class's fields from the code: its **own** fields first, then the ones it **inherits** (marked with the parent class they come from, and the ones already saved marked too). Pick one (its type comes along) or type any name; a field (or map key) that is already there can't be added twice: edit it instead. Values added by hand get types like the debugger's: a new map entry takes the types of the map's other entries (e.g. `Integer`), other values a type from what they hold (`String`, `Integer`, `Double`, `Boolean`, `Object`, `List`).
 - **Edit as JSON or text**: in the **JSON** or **Text** view, just type (or click **Edit**), then **Apply** (Ctrl+Enter; Esc cancels). Maps stay maps (entries matched by key, new keys become entries), and what you didn't change keeps exactly what the debugger showed (types, ids). **Reset** goes back to the data as it was saved. Each Apply and Reset is in **History**, where **Revert** undoes it.
 - **Maps, lists and objects**: editing a map entry changes its **key** and **value** (the entry follows, also in JSON, search and Compare); **Add Field** on a map adds an entry (key and value), on a list an element, on an object a field. A value written as JSON (`{"city": "Goa", "rooms": 3}` or `[1, 2]`) becomes a whole object or list with its fields.
 - **Add, edit, remove, copy fields**: **Add Field** (Insert) adds a field under the selected one, **Edit** (F2, or double-click) changes a field's name or value, **Remove Field** (Delete) removes it. Right-click a field to **Copy Value** (Ctrl+C), **Copy “name = value”**, **Copy as JSON** (the field with its name) or **Copy Children as JSON** (only what is inside it), and **Paste** (Ctrl+V): pasted JSON adds its fields (or entries, or list elements) to the selected field and updates the ones it has, so a field copied as JSON and pasted on its parent updates it; plain text becomes a simple field's value. Select several fields (Ctrl+click / Shift+click) to copy or remove them together; Ctrl+C on the list copies the selected saved values as JSON, and several saved values (also search results) can be deleted at once. What is open in the tree stays open while you edit. Every change is kept in **History**, where **Revert** undoes it (an added field goes, a removed one comes back).
 - **Edit**: double-click a field (or **Edit**) to change a saved value, e.g. to note what it should have been. Edited values are marked ✎; **History** lists every change (old → new, when) and **Revert** puts a value back (as a new change, so the history stays complete).
 - **Import / Export**: **Export…** saves the selected values (or all of them) with their fields and edit history to a `.flowdebug.json` file, e.g. to attach to a bug report or to compare on another machine; **Import…** adds the values of such a file to yours (nothing is replaced; importing a file twice keeps both). **Save As…** next to a value saves just that value as `.json` or `.txt`.
-- The tab's buttons wrap and get shorter (icons only) when the tool window is narrow, like the Flow tab's. **Layout** (top right, next to the search) places the list and the value **side by side** or **top and bottom**; *Auto* (the default) puts them above each other when the tool window is narrow, so the value is never squeezed out.
-- **Delete** removes the field selected on the right when you clicked there last (History → Revert puts it back); otherwise it moves the values selected on the left to the Recycle Bin, and a whole line or flow only after asking.
-- Keys: **Delete** deletes the selected values (in the Recycle Bin: deletes them for good), **Ctrl+D** Compare, **F2** Edit, **Ctrl+F** Find.
+- **Flows**: the **Flow ▾** button left of the search shows the flow new values go to. It opens the same **Flows** popup as the Flow tab (click a flow to switch, drag to reorder) with **New Flow…**, **Rename Flow…**, **Delete Flow…**, **Delete Flows…**, **Export the Flow's Values…** and **Import Values into the Flow…**. The list groups the values by flow, then by line; every flow is listed, also an empty one.
+- **Right-click the list** for the flow's actions (**Rename Flow…** (F2), **New Values Go Here**, **Move Up / Down**, export, import, **Delete Flow…**, **New Flow…**), for a line's **Name This Line…** / **Clear Line Name**, and **Copy Values as JSON**. A line's name (e.g. *before payment*) shows after its file, line number and method, so lines are easy to tell apart.
+- **Selecting a flow** (or one of its lines or values) in the list selects it in the Flow tab too. **Renaming** a flow here renames it in Debug Data only; the Flow tab keeps its name (and the other way round).
+- **Settings** (the gear at the end of the toolbar) holds **Layout** (the list and the value **side by side**, **top and bottom**, or *Auto*: above each other when the tool window is narrow, so the value is never squeezed out) and Capture Data's *When* and *What*.
+- The tab looks like the Flow tab (its panel background, the list and the value on rounded cards, the same buttons, and **Use IntelliJ Theme** applies to it too). Its buttons wrap and get shorter (icons only) when the tool window is narrow.
+- **Delete** removes the field selected on the right when you clicked there last (History → Revert puts it back). With values or lines selected on the left, it moves them to the Recycle Bin. With **flows** selected, it deletes the flows (here and in the Flow tab): at once when they have nothing in either screen, else after one confirmation that says what goes (Debug Data's values first, then the Flow tab's lines).
+- Keys (they work wherever the focus is in the tab, before the IDE's own shortcuts): **Delete** deletes (in the Recycle Bin: for good), **Ctrl+C** copies the selected values (on a field: its value), **Ctrl+V** pastes into a field, **Insert** adds a field, **F2** renames a flow or line in the list, or edits a field, **Ctrl+D** Compare, **Ctrl+F** Find.
 - **Delete** moves saved values to the tab's **Recycle Bin** (**← Back to Saved Values** leaves it): **Restore** brings them back, **Delete Permanently** removes them (the bin keeps the latest 200).
 - Saved values are kept per project in `.idea/workspace.xml`, grouped by flow and by line.
+
+![Debug Data](src/main/resources/images/traceweave-debug-data.png)
+
+![Compare window](src/main/resources/images/traceweave-compare.png)
 
 **Flows (and sharing them)**
 
 - Each project can hold as many flows as you like. The flow button at the top left (for example `Flow 1: Checkout bug ▾`) opens the **Flows** popup: click a flow to show it. The current flow is checked, and every flow shows its line count.
 - **Reorder**: drag a flow by its handle (⠿), or select it and press `Ctrl+Up` / `Ctrl+Down`. **Copy All Flows** copies the flows in this order.
 - **New Flow…** and **Rename Flow…** start the name as `Flow 1: ` (with the flow's number) and put the cursor after it, so you only type the name, e.g. `Flow 1: Checkout bug`. You can delete the prefix if you don't want it. Leaving just the prefix keeps the plain `Flow 1`.
-- **Delete Flow** moves the flow to the Recycle Bin, so it can be restored. Deleting the only flow empties it instead.
+- **Delete Flow** moves the flow to the Recycle Bin, so it can be restored. Deleting the only flow empties it instead. **Delete Flows…** lists every flow with a checkbox (and what it has: `5 lines · 2 saved values`) to delete several, or all, at once.
+- **The Flow tab and Debug Data share their flows**: a flow made in one is in the other, and the flow selected in one is selected in the other. Deleting a flow deletes it in both: a flow with nothing in either (no lines, no saved values) goes at once; when either has data, one confirmation says what goes, first in the screen you are in, then in the other one (lines and values go to their Recycle Bins). **Names are not shared**: renaming a flow in one doesn't rename it in the other.
 - **Export Flow…** saves the current flow as a `.flow.json` file. Paths are stored relative to the project folder, so you can commit the file or send it to a teammate.
+- **Exported files start with the project's name** in camelCase, e.g. `travelBooking_Flow 1.flow.json`; a flow with lines from several projects gets all of them (`carSearch_hotelBooking_…`). The same goes for Debug Data and Compare exports.
 - **Import Flow…** opens a `.flow.json` file as a new flow. Files are found by relative path first, then by file name. Lines whose file isn't in the project are marked *file missing*.
 - Undo / Redo history belongs to the flow it was made in and starts empty when you switch.
 
@@ -323,6 +335,7 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 - Drag to reorder. Right-click for Move, Copy, Note, Jump to Source, Walk from Here, Connect Call To, Tag and Delete. Double-click a line to open it.
 - `Ctrl+C` copies the selection, `Delete` removes it.
 - **Connect calls by hand**: some calls can't be followed from the code, e.g. a REST / API request that is handled by a controller in another project. Right-click the calling line → **Connect Call To** → pick the method it reaches (the flow's other methods are listed; connected ones are checked, and picking one again removes it). The row shows `→ create()`, and the connection counts like a real call everywhere: Sync order, the Markdown diagrams and the nested Original Log. Connections are saved with the flow and included in **Export / Import**. **Remove Connections from This Line** clears them.
+- **Connect the Flow Between These Lines**: select two lines (Ctrl+click), e.g. a line of `main()` and a line of `Travel.getDestination()`, then right-click → **Connect the Flow Between These Lines**. TraceWeave reads the code and adds the lines in between, right after the first one: the calls that lead from one to the other (`bookingService.bookTrip(…)` in `main()`, then both lines of `bookTrip()` that call `getDestination()`). It follows what the first line works with (the variables it makes or uses, and what they are passed to), so of several ways it takes the one that carries that data; it looks only at the code from the first line on. The lines go in as one step that **Undo** takes back. It needs the project's code to resolve (a loaded Gradle / Maven project; red code can't be followed).
 - **Tags**: right-click → **Tag** → 🐞 Bug, ⭐ Important or ❓ Question (or No Tag). A tagged line shows a coloured bar at its start and its tag right after the line number, before the code, so it can be seen without scrolling a long line. Tags are included in every copy format, and can be set in the Flow Diagram too (right-click a method → **Tag**).
 - **Out-of-date lines**: when a saved line no longer matches the code, it gets an orange warning: *file missing*, *moved to line N* or *code changed*. Hover it for details. Right-click → **Re-link to Code** follows moved code, or takes the line's current code. **Re-link All Moved Lines** fixes every moved line at once.
 
@@ -330,7 +343,7 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 
 **Flow Diagram (draw and edit the flow)**
 
-- **Flow Diagram** (toolbar, next to **Open Markdown**) opens the flow as a diagram (one window per project; it opens right away with the calls the panel has found). It is a normal window that doesn't block the IDE: it has the system's **Minimize**, **Maximize** and **Close** buttons (Close asks before discarding changes, like **Cancel**), and **Flow Diagram** in the TraceWeave window brings it back when it is minimized or behind other windows: a box per class or file with its methods (and how many lines each has), solid arrows for calls found in the code and dashed arrows for calls connected by hand. Each box shows its file and the project it belongs to (`BookingService.java · TravelBooking`), in the diagram and in the sequence diagram.
+- **Flow Diagram** (toolbar, next to **Open Markdown**) opens the flow as a diagram (one window per project; it opens right away with the calls the panel has found). It is a normal window that doesn't block the IDE: it has the system's **Minimize**, **Maximize** and **Close** buttons (Close asks before dropping changes that aren't saved), and **Flow Diagram** in the TraceWeave window brings it back when it is minimized or behind other windows: a box per class or file with its methods (and how many lines each has), solid arrows for calls found in the code and dashed arrows only for calls connected by hand. Each box shows its file and the project it belongs to (`BookingService.java · TravelBooking`), in the diagram and in the sequence diagram. A selected call is highlighted with a glow.
 
 ![Flow Diagram](src/main/resources/images/traceweave-flow-diagram.png)
 
@@ -344,8 +357,32 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 | **Rename** (`F2`), **Delete** (`Delete`) | Rename or remove the selected class, method or call. |
 | **Format**, **Reset Theme** | Colors, text formats, notes and line styles (see below); Reset Theme gives everything the default look again. |
 | **Undo**, **Redo** (`Ctrl+Z` / `Ctrl+Y`) | Step through the History. |
-| **Auto Layout** | Arranges the classes in call order, left to right. |
+| **Auto Layout** | Arranges the classes in call order: every call goes from left to right (a class called directly and through another one is placed after that other one), with room between the boxes for the calls' notes. |
 | **Copy PNG ▾**, **Copy Sequence PNG ▾**, **Settings** | At the right end: copy images, and the window's background settings. |
+
+The toolbar belongs to the selected tab and sits above the tabs.
+
+*Tabs (one tab = one flow)*
+
+- Each tab shows one flow, like a browser's tabs: the selected one is joined to its page, with a bar of the tab's color on top. **+** after the last tab opens **New Flow** or one of the saved flows that isn't open yet. A new tab's flow is only kept when it gets something: closed (or the window closed) while empty, it is gone.
+- **Right-click a tab** for **Rename Flow…**, **Tab Color…**, **Connect With** (another tab, shown combined in a new tab), **Close Tab** and **Delete Flow…**.
+- **✕** on a tab closes it: at once when it is empty or saved; with changes that aren't saved it asks **Save and Close**, **Don't Save**, **Move to Another Tab…** (its classes go to another tab) or **Cancel**.
+- Closing the Flow Diagram window deletes every flow that is still empty (one flow always stays).
+
+*Several classes: select, copy, move to another tab*
+
+- **Ctrl+click** classes to select several (they get a dashed outline); **Ctrl+A** selects all. **Ctrl+C** / **Ctrl+X** / **Ctrl+V** copy, cut and paste them, also into another tab; **Delete** removes them.
+- Right-click → **Copy to Tab** / **Move to Tab** → an open tab, or **New Tab…** (a new flow named after the classes, laid out at once). Classes keep their look, tags and notes, and the calls between them; they don't show "added" or "(+1)" in their new tab.
+- **Link boxes**: where a moved class calls (or is called by) a class that stays, both tabs show the other side as a **link box**: the real class (click its methods to see their code), with `⇄ in “the other tab”` under its name and an orange frame. In the tab the class left, it takes the class's place; in the new tab, callers stand on the left and the classes it calls on the right, each class in its own link box. The calls keep their notes and styles.
+- Moving classes also opens a tab with **both tabs combined**: the classes back in their places, connected where the code really makes the calls (each call is checked in the code, not drawn because of the names), laid out left to right.
+
+*Connect the Flow to… (the code between two methods)*
+
+- Right-click a method → **Connect the Flow to…** → pick another method of the diagram. TraceWeave reads the code and adds what leads from one to the other: for `Main.main()` to `Travel.getDestination()`, the `bookingService.bookTrip(…)` line in `main()`, a **BookingService** box with the two lines of `bookTrip()` that call `getDestination()` (lines 33 and 41), and the calls between them, laid out left to right. Each line is the one the call is on (a call written over two lines adds its second line).
+- It looks at the whole first method and follows what its flow lines work with (e.g. `bookingService`), so another call that also gets there (e.g. `destinationService.search(…)`) isn't taken instead. A balloon says what was found; **Save** adds the new lines to the flow.
+- It needs the project's code to resolve: when IntelliJ can't (the Gradle / Maven project isn't loaded, or the code is red), it says so.
+
+![Connect the Flow](src/main/resources/images/traceweave-diagram-connect-flow.png)
 
 *Adding classes and methods*
 
@@ -353,7 +390,7 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 - **Custom classes**: a file name that isn't in the project is offered as a custom class named after it: `PaymentGateway.java` adds the class `PaymentGateway` in the file `PaymentGateway.java`. Right-click it to **Rename Class…** or **File and Project…** (its file name and the project it is meant for, shown in its box) later, or double-click its name to pick a class of the project instead.
 - **Add Function** lists the methods of a class from the code, or a file's functions and blocks (scriptlets, tags, elements), filtered as you type with the same search (`get*`, `*Booking`, `/^(get|set)/`), from the first letter. Pick one, and a second window shows **its code** so you can tick the lines to add. Without ticking any, the method's first line is added so the method is in the flow. A name the class doesn't have is offered as a **custom method** (the last row); for a custom class, Add Method asks for the name.
 - Custom classes and methods (not in the code) and the arrows to and from them are drawn in **amber** (marked *custom*). Code lines can only be picked for classes from the code.
-- **Tags**: right-click a method → **Tag** → Bug, Important or Question (or No Tag). The tag shows next to the method's name, and on Apply every line of the method gets it in the TraceWeave window.
+- **Tags**: right-click a method → **Tag** → Bug, Important or Question (or No Tag). The tag shows next to the method's name, and on Save every line of the method gets it in the TraceWeave window.
 - **Double-click** a class **name** to pick another class of the project for that box (its methods stay, as custom methods of the new class), its **methods** to add a method, or an empty spot to add a class there.
 - **Project**: a class's project is shown in a band joined on top of its box, in the box's own colors, border and file-name format, with a folder mark (custom classes get one with **File and Project…**). **Format** the class to give the band its own **background**, **border** and **text** (bold, italic, underline, color); Reset Theme takes them back. The sequence diagram (Copy Sequence PNG) shows the same band on top of each participant.
 - **Rename a class**: the project's classes that match the new name (also with wildcards or a `/regex/`) are listed as you type; pick one and it takes the box's place. A name no class has makes it a **custom class**. Renaming a method changes its name in TraceWeave only.
@@ -372,14 +409,24 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 *Code panel*
 
 - Click a method and the **code panel** opens under the diagram (it closes when no method is selected). It shows the method's lines in the flow in a read-only editor with the IDE's syntax colors and the file's real line numbers; the flow's lines are highlighted and the rest of the file is folded into `⋯ n lines` (click one to open it).
-- **View Full Code** shows the whole file at that method, with the flow's lines still highlighted; **Flow Lines Only** goes back. Drag the divider to give the code more room.
+- **View Full Code** shows the whole file at that method, with the flow's lines still highlighted; **Flow Lines Only** goes back. Drag the divider to give the code more room. The method's first line is brought into view near the top.
+- Hover a line number: **+** adds that line to the method (Save puts it in the flow), **−** on a flow line takes it out. A line can't be taken out while it makes a call that is drawn to another box, or when it is the last line of a method connected to other boxes: a warning under the code says why.
+- **Double-click** a line to open it in IntelliJ's editor. **Ctrl+click** a method, field or class name to show its code here; **Back** returns.
 
 ![Code panel](src/main/resources/images/traceweave-diagram-code-panel.png)
 
-*History, Apply and Cancel*
+*History, Save, Reset and Close*
 
-- Every change is listed on the right. **Undo** / **Redo**, or click a step to go back to it. The History stays after **Apply** and when the window is opened again (while the IDE runs); applied steps are marked ✔. Clicking a step from before an earlier Apply and applying it brings the flow back to that state. A change that leaves the diagram as it is (for example **Auto Layout** clicked again) isn't added.
-- **Apply** writes the changes to the flow as **one** step (the TraceWeave window's **Undo** reverts it); **Cancel** keeps the flow, and the History, as they were (it asks first when there are changes):
+- Every change is listed on the right. **Undo** / **Redo**, or click a step to go back to it. The History stays after **Save** and when the window is opened again (while the IDE runs); saved steps are marked ✔. Clicking a step from before an earlier Save and saving it brings the flow back to that state. A change that leaves the diagram as it is (for example **Auto Layout** clicked again) isn't added.
+- The buttons at the bottom right are **Close · Save · Reset**. Close and Save are split buttons: their **▾** opens a menu above the button.
+
+  | Button | Click | ▾ |
+  |---|---|---|
+  | **Close** | Closes this tab (asks first when it has changes that aren't saved) | **Close All** (each tab with changes asks), **Don't Save and Close All**, **Save and Close All** (every tab is saved, then the window closes) |
+  | **Save** | Saves this tab to its flow (after asking); the tab stays open | **Save All**: every tab with changes, without asking each one |
+  | **Reset** | Drops the changes made since the last Save (after asking); the tab stays open | |
+
+- **Save** writes the changes to the flow as **one** step (the TraceWeave window's **Undo** reverts it); **Reset** keeps the flow, and the History, as they were:
 
   | In the diagram | In the TraceWeave window |
   |---|---|
@@ -395,7 +442,7 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 
 *Format*
 
-**Format** (toolbar, or right-click → **Format Box (and Note)…** / **Format Method (and Note)…** / **Format Line…**) changes how the selection looks and holds its note. Formats, notes and box positions are saved with the flow when you **Apply**, so they come back after a restart; the toolbar's **Undo** reverts them, and **Export / Import** carries them in the `.flow.json` file.
+**Format** (toolbar, or right-click → **Format Box (and Note)…** / **Format Method (and Note)…** / **Format Line…**) changes how the selection looks and holds its note. Formats, notes and box positions are saved with the flow when you **Save**, so they come back after a restart; the toolbar's **Undo** reverts them, and **Export / Import** carries them in the `.flow.json` file.
 
 - **A box** (class or file): a **theme**: **Plain** (the default, the diagram's own look), **Light**, **Dark**, or Blue, Green, Amber, Rose, Purple, Teal, Navy, Slate, each with a strong class section, a softer method section and a matching border. Or set its own colors for the **class section** (name, file name, note), the **method section** and the **border**: set one section and the other follows in a matching shade until you set it too. Text turns dark or light by itself so it stays readable on any background (**Auto**). A live preview shows the box while you pick.
 - **Text** (class name, file name, method names, notes): **B**old, *I*talic, **U**nderline, **S**trike-through and a color. The B / I / U / S buttons are filled with the accent color while they are on. A box's *Method names* format applies to all its methods; a method's own format (Format Method) wins.
@@ -403,8 +450,6 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 - **Notes**: shown right under the class name or the method name. They can have several lines (long ones wrap) and their own text format. Drag the handle under the note box to make it taller or shorter.
 - **A call's line** (and its **note**): its **pattern** (automatic, solid, dashed, short dashes, long dashes, dotted, dash-dot, dash-dot-dot, double line, double dashed), **width** (thin to heavy), **shape** (curved, straight, elbow), **arrow** (sharp arrow, triangle, open arrow, diamond, dot, none) and **color**, each shown as a picture, with a live preview. *Use this line for every call in the diagram* styles all lines at once.
 - **Reset**: the Format Box, Format Method and Line windows have a **Reset** button (bottom left) that puts every option back to the default (the Plain theme, usual text formats, the usual line) before you press OK; the note text stays. **Reset Theme** in the toolbar does the same for every class, method and line at once, as one step you can undo; notes, calls and positions stay.
-
-![Formatted Flow Diagram](src/main/resources/images/traceweave-diagram-themes.png)
 
 ![Format Box](src/main/resources/images/traceweave-diagram-format-box.png)
 
@@ -456,7 +501,7 @@ In the Markdown copy, each method's lines are a table with the line number in it
 
 The code is colored with the same rules as the panel (keywords, types, strings, numbers, comments; tags and attribute values in markup) using inline HTML colors. IntelliJ's Markdown preview, VS Code and most editors show the colors; GitHub removes inline colors and shows the same table with plain code.
 
-In the Markdown diagrams, each box or column is titled with the file name and extension (for example `BookingService.java`, `travel.js`, `travel.tld`). Code that doesn't call between groups (for example a Java service, a script and a tag library) gets one diagram per group; a JSP page that calls Java methods is in the same diagram as them. Lines outside methods (fields, imports) are left out of the diagrams but stay in the details.
+In the Markdown diagrams, each box or column is titled with the project on top (`📦 TravelBooking`, like the project band in the Flow Diagram), then the file name and extension (for example `BookingService.java`, `travel.js`, `travel.tld`); the flowchart adds the method under it. Code that doesn't call between groups (for example a Java service, a script and a tag library) gets one diagram per group; a JSP page that calls Java methods is in the same diagram as them. Lines outside methods (fields, imports) are left out of the diagrams but stay in the details.
 
 Each flow's Markdown ends with an **Original Log** section: the lines as plain text in a text block. With **Copy All Flows** on, every flow ends with its own Original Log.
 
@@ -545,11 +590,13 @@ These are the screenshots in `src/main/resources/images/`. To update one, replac
 | `traceweave-markdown-copy.png` | A Markdown copy rendered in the preview, with the call diagram | README, Overview tab, Info |
 | `traceweave-flow-diagram.png` | The Flow Diagram window: toolbar, class boxes with methods, call arrows, the History and the zoom buttons | README, Overview tab, Info |
 | `traceweave-diagram-code-panel.png` | A method selected in the diagram and its code panel below | README, Overview tab, Info |
-| `traceweave-diagram-themes.png` | A formatted diagram: box themes, notes under class and method names, line styles | README, Overview tab, Info |
+| `traceweave-diagram-connect-flow.png` | **Connect the Flow to…** in the Flow Diagram: Main → BookingService → Travel, with the lines that make the calls | README, Overview tab, Info |
 | `traceweave-diagram-format-box.png` | The Format Box window: themes, section and border colors, text formats, the note and the preview | README, Info |
 | `traceweave-diagram-color-picker.png` | The color picker popup: Auto, suggested colors, the color grid, recent colors and `#RRGGBB` | README, Info |
 | `traceweave-diagram-format-line.png` | The Line window: pattern, width, shape, arrow and color with the preview | README, Info |
 | `traceweave-diagram-sequence.png` | An image made by Copy Sequence PNG: participants, numbered calls and returns | README, Info |
+| `traceweave-debug-data.png` | The Debug Data tab: the Flow button, the saved values by flow and line, and a value's fields | README, Overview tab, Info |
+| `traceweave-compare.png` | The Compare window: two values side by side, OLD / NEW, what differs marked | README, Overview tab, Info |
 
 To add a screenshot, put the file in `src/main/resources/images/` and add it to this table, to the README section it belongs to, to `FlowCarousel.SLIDES` (the Info carousel) and, if it should be on the Overview tab, to `src/main/plugin-description.html`.
 
@@ -634,7 +681,9 @@ Classes used only inside their package stay package-private; what another packag
 
 
 
-`src/test` holds JUnit 5 tests for everything that doesn't need a running IDE: the Markdown diagrams and line tables, the Original Log, reading JSP / JavaScript / TLD files (with sample files in `src/test/resources/fixtures`), JSP → Java and JavaScript calls, the Recycle Bin and undo, flows and their order, copy formats, labels, file types and highlighting, and the Flow Diagram (building it from a flow, Apply, the History, layout without overlaps, lines around boxes, formats, themes and Reset Theme, and the PNG images).
+`src/test` holds JUnit 5 tests for everything that doesn't need a running IDE: the Markdown diagrams and line tables, the Original Log, reading JSP / JavaScript / TLD files (with sample files in `src/test/resources/fixtures`), JSP → Java and JavaScript calls, the Recycle Bin and undo, flows and their order, copy formats, labels, file types and highlighting, and the Flow Diagram (building it from a flow, Save, the History, left-to-right layout without overlaps, lines around boxes, formats, themes and Reset Theme, and the PNG images), Debug Data (saved values, compare, flows and their names).
+
+`FlowCallPathTest` runs IntelliJ's own Java parser (the IntelliJ test framework) on a small travel-booking project to check **Connect the Flow**: which calls it follows from a line, or from a whole method, to another method.
 
 ```shell
 .\gradlew.bat test

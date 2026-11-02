@@ -451,6 +451,23 @@ class FlowDiagramTest {
     }
 
     @Test
+    void closingTheDiagramDropsEveryEmptyFlowButKeepsOne() {
+        FlowStore store = new FlowStore();
+        store.addAll(flow(), false);
+        String full = store.getActiveFlowName();
+        store.newFlow("Flow 2 – BookingService", List.of());
+        store.newFlow("Flow 2 + Flow 2 – BookingService", List.of());
+        assertEquals(2, store.dropEmptyFlows());
+        assertEquals(List.of(full), store.getFlowNames());
+        assertEquals(flow(), store.getEntries(), "the flow with lines stays, with its lines");
+
+        FlowStore empty = new FlowStore();
+        empty.newFlow("Another", List.of());
+        empty.dropEmptyFlows();
+        assertEquals(1, empty.getFlowNames().size(), "one flow is always left");
+    }
+
+    @Test
     void diagramLinesAreNeverTheSameAsCodeLines() {
         FlowStore store = new FlowStore();
         FlowEntry a = line("A.java", "A", "a()", 0, FlowDiagram.NEW_METHOD_TEXT);
@@ -976,5 +993,21 @@ class FlowDiagramTest {
         d.resetLooks();
         assertNull(main.projectFill);
         assertNull(main.projectFormat);
+    }
+
+    @Test
+    void autoLayoutSendsEveryCallLeftToRight() {
+        FlowDiagram d = FlowDiagram.of(List.of(), Set.of());
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        FlowDiagram.Box a = d.addUnknownClass("Main", 0, 0), b = d.addUnknownClass("DestinationService", 0, 0),
+                c = d.addUnknownClass("Travel", 0, 0);
+        FlowDiagram.Method am = d.addUnknownMethod(a, "main()"), bm = d.addUnknownMethod(b, "search()"),
+                cm = d.addUnknownMethod(c, "getDestination()");
+        d.connect(am.id, bm.id);
+        d.connect(bm.id, cm.id);
+        d.connect(am.id, cm.id); // called directly too: it still goes after DestinationService
+        painter.autoLayout(d);
+        assertTrue(a.x < b.x, "Main before DestinationService");
+        assertTrue(b.x < c.x, "DestinationService before Travel: no call goes right to left");
     }
 }

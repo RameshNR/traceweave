@@ -202,7 +202,7 @@ public final class FlowDiagramPainter {
 
     /** "custom" for a class that isn't in the code, "added" for one picked from the code in this diagram. */
     private static String boxTag(FlowDiagram.Box b) {
-        return b.isUnknown() ? "custom" : b.picked ? "added" : "";
+        return b.isUnknown() ? "custom" : b.picked && !b.moved ? "added" : "";
     }
 
     /** True when the point is on the class name part of the box (not its methods). */
@@ -1026,7 +1026,7 @@ public final class FlowDiagramPainter {
         if (isCustom(m)) return "custom";
         int n = m.lineCount();
         String count = n == 1 ? "1 line" : n + " lines";
-        return m.picked.isEmpty() ? count : count + " (+" + m.picked.size() + ")";
+        return m.picked.isEmpty() || m.moved ? count : count + " (+" + m.picked.size() + ")";
     }
 
     // ---------- tags (Bug, Important, Question) ----------
@@ -1068,8 +1068,14 @@ public final class FlowDiagramPainter {
         FlowDiagram.Line look = d.line(l);
         Color color = selected ? p.selection() : look.color() != null ? look.color()
                 : touchesCustom(d, l) ? p.custom() : l.manual() ? p.manualCall() : p.codeCall();
-        g.setColor(color);
         float width = look.width().width + (selected ? 1f : 0f);
+        if (selected) { // a glow under the selected call, so it stands out whatever its color and pattern
+            Color s = p.selection();
+            g.setColor(new Color(s.getRed(), s.getGreen(), s.getBlue(), 90));
+            g.setStroke(new BasicStroke(width + 7, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g.draw(route.path());
+        }
+        g.setColor(color);
         drawLine(g, route.path(), look.pattern(), l.manual(), width, p.background());
         arrowHead(g, route.before(), route.tip(), look.arrow(), width);
         g.setStroke(new BasicStroke(1f));

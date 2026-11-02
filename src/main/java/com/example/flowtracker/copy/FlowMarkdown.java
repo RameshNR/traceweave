@@ -143,7 +143,8 @@ public final class FlowMarkdown {
     }
 
     /** A method in the diagrams, with the participant (file + class) it belongs to. */
-    private record Node(String key, String participant, String participantLabel, String fileName, String method) {}
+    private record Node(String key, String participant, String participantLabel, String fileName, String method,
+                        String project) {}
 
     /**
      * The Mermaid diagram(s). Lines outside methods (fields, imports) are left out. Code that never calls
@@ -155,7 +156,8 @@ public final class FlowMarkdown {
         Map<String, Node> nodes = new LinkedHashMap<>(); // flow order
         for (Run r : runs) {
             if (FlowFormat.isClassLevel(r.method) || nodes.containsKey(r.key())) continue;
-            nodes.put(r.key(), new Node(r.key(), r.fileUrl + "#" + r.className, participantLabel(r), r.fileName, r.method));
+            nodes.put(r.key(), new Node(r.key(), r.fileUrl + "#" + r.className, participantLabel(r), r.fileName, r.method,
+                    r.project));
         }
         if (nodes.size() < 2) return;
 
@@ -219,8 +221,10 @@ public final class FlowMarkdown {
         for (Node n : group) {
             String id = "m" + (ids.size() + 1);
             ids.put(n.key, id);
-            md.append("    ").append(id).append("[\"").append(mermaid(n.fileName)).append("<br/><b>")
-                    .append(mermaid(n.method)).append("</b>\"]\n");
+            // the project on top (as the project band of a box in the Flow Diagram), then the file and the method
+            md.append("    ").append(id).append("[\"")
+                    .append(n.project.isEmpty() ? "" : "📦 " + mermaid(n.project) + "<br/>")
+                    .append(mermaid(n.fileName)).append("<br/><b>").append(mermaid(n.method)).append("</b>\"]\n");
         }
         for (Node n : group) {
             for (String callee : calls.getOrDefault(n.key, List.of())) {
@@ -284,16 +288,18 @@ public final class FlowMarkdown {
     }
 
     /**
-     * Participant title: the file name with its extension ("BookingService.java", "travel.js"), plus the
-     * class when it isn't the file's main class ("BookingService.java · Booking").
+     * Participant title: the project on top (when the line has one), then the file name with its extension
+     * ("BookingService.java", "travel.js"), plus the class when it isn't the file's main class
+     * ("BookingService.java · Booking").
      */
     private static String participantLabel(Run r) {
+        String top = r.project.isEmpty() ? "" : "📦 " + r.project + "<br/>";
         String base = FlowLang.baseName(r.fileName);
         String cls = r.className;
         if (cls == null || cls.isBlank() || cls.equals("-") || cls.equals(base) || cls.equals(base + "Kt")) {
-            return r.fileName;
+            return top + r.fileName;
         }
-        return r.fileName + " \u00b7 " + (cls.startsWith(base + ".") ? cls.substring(base.length() + 1) : cls);
+        return top + r.fileName + " \u00b7 " + (cls.startsWith(base + ".") ? cls.substring(base.length() + 1) : cls);
     }
 
     /**

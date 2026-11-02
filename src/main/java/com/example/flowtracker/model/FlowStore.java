@@ -37,6 +37,8 @@ public final class FlowStore implements PersistentStateComponent<FlowStore.State
         public List<FlowEntry> entries = new ArrayList<>();
         /** Its Flow Diagram's look: box positions, colors, text formats, notes and lines (see FlowDiagram#looks). */
         public List<FlowDiagramLook> diagram = new ArrayList<>();
+        /** Its color (e.g. "#3574F0"), shown on its Flow Diagram tab; "" = none chosen yet. */
+        public String color = "";
 
         public Flow() {}
 
@@ -194,6 +196,28 @@ public final class FlowStore implements PersistentStateComponent<FlowStore.State
         return added.size();
     }
 
+    /**
+     * Puts lines right after another line of the flow (e.g. the calls found between two lines), as one undoable step,
+     * in their order. Lines already in the flow are skipped. Returns how many were added.
+     */
+    public int insertAfter(FlowEntry anchor, List<FlowEntry> entries, String label) {
+        int at = lines().indexOf(anchor);
+        if (at < 0) return 0;
+        List<FlowEntry> added = new ArrayList<>();
+        List<Integer> positions = new ArrayList<>();
+        for (FlowEntry e : entries) {
+            if (contains(e.fileUrl, e.line) || added.stream().anyMatch(a -> a.line == e.line && a.fileUrl.equals(e.fileUrl))) continue;
+            int pos = at + 1 + added.size();
+            lines().add(pos, e);
+            positions.add(pos);
+            added.add(e);
+        }
+        if (added.isEmpty()) return 0;
+        record(new Change(label, true, added, positions, null));
+        fire();
+        return added.size();
+    }
+
     public void remove(Collection<FlowEntry> toRemove) {
         Change c = removal(toRemove, null);
         if (c == null) return;
@@ -239,6 +263,37 @@ public final class FlowStore implements PersistentStateComponent<FlowStore.State
     /** The active flow's Flow Diagram look (box positions, colors, formats, notes, lines). */
     public List<FlowDiagramLook> getDiagramLooks() {
         return new ArrayList<>(active().diagram);
+    }
+
+    /** Where a flow is in the list (-1 when there is none of that name). */
+    public int indexOfFlow(String name) {
+        return getFlowNames().indexOf(name);
+    }
+
+    /** A flow's lines (a copy; empty when there is none of that name). */
+    public List<FlowEntry> getEntriesOf(String name) {
+        int i = indexOfFlow(name);
+        return i < 0 ? List.of() : new ArrayList<>(state.flows.get(i).entries);
+    }
+
+    /** A flow's Flow Diagram look (a copy). */
+    public List<FlowDiagramLook> getDiagramLooksOf(String name) {
+        int i = indexOfFlow(name);
+        return i < 0 ? List.of() : new ArrayList<>(state.flows.get(i).diagram);
+    }
+
+    /** A flow's color ("" when none was chosen). */
+    public String getFlowColor(String name) {
+        int i = indexOfFlow(name);
+        String c = i < 0 ? null : state.flows.get(i).color;
+        return c == null ? "" : c;
+    }
+
+    public void setFlowColor(String name, String color) {
+        int i = indexOfFlow(name);
+        if (i < 0) return;
+        state.flows.get(i).color = color == null ? "" : color;
+        fire();
     }
 
     /** Keeps the diagram's look without an undo step (e.g. the layout of a diagram opened for the first time). */
@@ -380,10 +435,74 @@ public final class FlowStore implements PersistentStateComponent<FlowStore.State
     }
 
     public void renameFlow(String name) {
-        if (name == null || name.isBlank() || name.strip().equals(active().name)) return;
-        active().name = uniqueName(name);
+        active();
+        renameFlowAt(state.activeFlow, name);
+    }
+
+    /** Renames any flow (by its place in the list); who keeps data by flow name (Debug Data) is told. */
+    public void renameFlowAt(int index, String name) {
+        if (index < 0 || index >= state.flows.size() || name == null || name.isBlank()) return;
+        Flow f = state.flows.get(index);
+        if (name.strip().equals(f.name)) return;
+        String old = f.name;
+        f.name = uniqueName(name);
+        for (java.util.function.BiConsumer<String, String> l : renameListeners) l.accept(old, f.name);
         fire();
     }
+
+    /**
+     * Deletes several flows (each to the Recycle Bin). When all of them go, one flow stays, emptied (there is always
+     * a flow).
+     */
+    public void deleteFlows(Collection<String> names) {
+        for (String n : new ArrayList<>(names)) {
+            int i = indexOfFlow(n);
+            if (i >= 0) deleteFlowAt(i);
+        }
+    }
+
+    /**
+     * Takes away a flow that was never used (made in the Flow Diagram and closed while still empty): no Recycle Bin
+     * item, no undo. Does nothing when it has lines or is the only flow.
+     */
+    public void dropEmptyFlow(String name) {
+        int i = indexOfFlow(name);
+        if (i < 0 || state.flows.size() <= 1 || !state.flows.get(i).entries.isEmpty()) return;
+        Flow shown = active();
+        state.flows.remove(i);
+        state.activeFlow = shown.name.equals(name) ? Math.min(i, state.flows.size() - 1) : state.flows.indexOf(shown);
+        if (shown.name.equals(name)) resetForNewFlow();
+        fire();
+    }
+
+    /**
+     * Takes away every flow without lines (e.g. tabs of the Flow Diagram that were never saved), as
+     * {@link #dropEmptyFlow} does; the only flow left stays even when it is empty.
+     *
+     * @return how many were taken away
+     */
+    public int dropEmptyFlows() {
+        int n = 0;
+        for (String name : new ArrayList<>(getFlowNames())) {
+            int before = state.flows.size();
+            dropEmptyFlow(name);
+            if (state.flows.size() < before) n++;
+        }
+        return n;
+    }
+
+    /** Deletes any flow (by its place in the list), like {@link #deleteFlow()} (it goes to the Recycle Bin). */
+    public void deleteFlowAt(int index) {
+        if (index < 0 || index >= state.flows.size()) return;
+        switchFlow(index);
+        deleteFlow();
+    }
+
+    private final List<java.util.function.BiConsumer<String, String>> renameListeners = new CopyOnWriteArrayList<>();
+
+    /** Told (old name, new name) when a flow is renamed. */
+    public void addRenameListener(java.util.function.BiConsumer<String, String> l) { renameListeners.add(l); }
+    public void removeRenameListener(java.util.function.BiConsumer<String, String> l) { renameListeners.remove(l); }
 
     /**
      * Deletes the active flow (it goes to the Recycle Bin). The last flow is never deleted: it is emptied

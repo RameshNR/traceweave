@@ -8,6 +8,32 @@
     <!-- <description> comes from src/main/plugin-description.html (see build.gradle.kts). -->
 
     <change-notes><![CDATA[
+<h3>1.3.2</h3>
+<ul>
+  <li>Flow Diagram tabs: one tab per flow, like a browser's. + opens a new or saved flow; right-click a tab to rename
+      its flow, color it, connect it with another tab, close it or delete its flow. Empty flows are deleted when the
+      window closes.</li>
+  <li>Flow Diagram: select several classes (Ctrl+click, Ctrl+A), copy, cut and paste them, or move / copy them to
+      another tab (or a new one). Moved classes leave orange link boxes (⇄ in “the other tab”) on both sides, and a
+      tab with both combined opens, connected where the code makes the calls.</li>
+  <li>Connect the Flow: right-click a method in the Flow Diagram → Connect the Flow to…, or select two lines in the
+      Flow tab → Connect the Flow Between These Lines. The calls between them are read from the code and added (e.g.
+      main() → bookTrip(), both lines that call getDestination() → getDestination()).</li>
+  <li>Flow Diagram buttons: Close · Save · Reset, with Close All, Don't Save and Close All, Save and Close All, and
+      Save All in their ▾ menus. Auto Layout puts every call left to right. Dashed lines only for calls connected by
+      hand; a selected call glows.</li>
+  <li>Flow Diagram code panel: + adds a line, − takes one out (not a line whose call is drawn to another box);
+      double-click opens the line in the editor, Ctrl+click goes to a name's code. Fixed: the code panel stayed
+      green and empty in IntelliJ IDEA 2026.2.</li>
+  <li>Debug Data: a Flow button with the flows (as in the Flow tab), a Settings button, names for lines, delete
+      flows, and the Flow tab's look. Flows are shared with the Flow tab (new, selected, deleted), names are not.
+      Its shortcuts (Delete, Ctrl+C, F2, Ctrl+D, Ctrl+F...) work again.</li>
+  <li>Compare: Open File… and Export… (Old, New, the differences); OLD and NEW are clearly marked. Comparing pasted
+      data or files shows the result in the same window.</li>
+  <li>Delete Flows… deletes several flows at once. Exported files start with the project's name. The Markdown
+      diagrams name each file's project.</li>
+  <li>New Flow Diagram and Grouped View icons.</li>
+</ul>
 <h3>1.3.1</h3>
 <ul>
   <li>The plugin ID is <code>io.github.rameshnr.flowtracker</code> again (1.3.0 had a new one), so TraceWeave

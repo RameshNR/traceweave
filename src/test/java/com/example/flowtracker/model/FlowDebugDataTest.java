@@ -434,4 +434,51 @@ class FlowDebugDataTest {
         assertEquals("\"ooty\" -> {Integer@1155} 12", edited.children.get(0).children.get(0).value);
         assertEquals("2600.0", edited.children.get(0).children.get(1).children.get(1).value);
     }
+
+    @Test
+    void renamingAFlowRenamesItsValuesAndLineNames() {
+        FlowStore flows = new FlowStore();
+        FlowDebugStore store = new FlowDebugStore();
+        flows.addRenameListener(store::renameFlow);
+        String first = flows.getActiveFlowName();
+        FlowSnapshot s = snapshot(first, "12.50");
+        store.add(s);
+        store.setLineName(FlowDebugStore.lineKey(s), "before payment");
+        flows.renameFlowAt(0, "Booking bug");
+        assertEquals("Booking bug", s.flowName);
+        assertEquals("before payment", store.getLineName(FlowDebugStore.lineKey(s)), "the line keeps its name");
+        assertEquals("", store.getLineName(first + "|" + s.fileUrl + "|" + s.line));
+    }
+
+    @Test
+    void flowNamesInDebugDataAndTheFlowTabAreNotRenamedTogether() {
+        FlowStore flows = new FlowStore();
+        FlowDebugStore store = new FlowDebugStore();
+        flows.addRenameListener(store::flowRenamedInFlowTab); // as the Debug Data panel does
+        String first = flows.getActiveFlowName();
+        FlowSnapshot s = snapshot(first, "12.50");
+        store.add(s);
+
+        flows.renameFlowAt(0, "Booking bug"); // in the Flow tab
+        assertEquals("Booking bug", s.flowName, "the values stay with the flow");
+        assertEquals(first, store.title("Booking bug"), "Debug Data keeps showing its own name");
+
+        store.setTitle("Booking bug", "Payment values"); // in Debug Data
+        assertEquals("Payment values", store.title("Booking bug"));
+        assertEquals(List.of("Booking bug"), flows.getFlowNames(), "the Flow tab keeps its name");
+
+        flows.renameFlowAt(0, "Booking bug 2");
+        assertEquals("Payment values", store.title("Booking bug 2"));
+        store.setTitle("Booking bug 2", "Booking bug 2"); // the same name again: nothing of its own
+        assertEquals("Booking bug 2", store.title("Booking bug 2"));
+    }
+
+    @Test
+    void exportedFilesStartWithTheirProjects() {
+        assertEquals("carSearch", FlowProjects.camel("car-search"));
+        assertEquals("hotelBooking", FlowProjects.camel("Hotel Booking"));
+        assertEquals("travelBooking", FlowProjects.camel("TravelBooking"));
+        assertEquals("carSearch_Flow 1.flow.json", FlowProjects.prefixed("carSearch", "Flow 1.flow.json"));
+        assertEquals("a_b_c.json", FlowProjects.prefixed("a", "b/c.json"));
+    }
 }

@@ -696,7 +696,7 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         // The arrows stick to the visible right edge, so scrolling must repaint instead of shifting pixels.
         scroll.getViewport().setScrollMode(JViewport.SIMPLE_SCROLL_MODE);
 
-        CardPanel card = new CardPanel();
+        FlowCard card = new FlowCard();
         card.add(scroll, BorderLayout.CENTER);
 
         RootPanel rootPanel = new RootPanel(copyProvider, deleteProvider);
@@ -898,30 +898,6 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         g.setColor(FlowTheme.FG_MUTED);
         int x = Math.max(JBUI.scale(8), (tree.getWidth() - fm.stringWidth(text)) / 2);
         g.drawString(text, x, JBUI.scale(40));
-    }
-
-    /** Rounded surface that holds the tree. */
-    private static final class CardPanel extends JPanel {
-        CardPanel() {
-            super(new BorderLayout());
-            setOpaque(false);
-            setBorder(JBUI.Borders.empty(6));
-        }
-
-        @Override
-        protected void paintComponent(Graphics g) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                int arc = JBUI.scale(14);
-                g2.setColor(FlowTheme.CARD_BG);
-                g2.fillRoundRect(0, 0, getWidth(), getHeight(), arc, arc);
-                g2.setColor(FlowTheme.CARD_BORDER);
-                g2.draw(new RoundRectangle2D.Float(0.5f, 0.5f, getWidth() - 1f, getHeight() - 1f, arc, arc));
-            } finally {
-                g2.dispose();
-            }
-        }
     }
 
     // ================= moving nodes =================
@@ -1481,6 +1457,45 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
     // ================= selection / clipboard =================
 
     /** Selected line entries; selecting a file or method node selects every line under it. */
+    /**
+     * Connect: the calls that lead from one line to the other (A → B → C → D → E) are found in the code, and the
+     * lines that make them are put between the two, as one step Undo takes back. Tries the other direction too.
+     */
+    static void connectLines(Project project, FlowStore store, FlowEntry first, FlowEntry second) {
+        if (com.intellij.openapi.project.DumbService.isDumb(project)) {
+            notify(project, "The IDE is still indexing: connect the lines when it is done.", NotificationType.INFORMATION);
+            return;
+        }
+        new com.intellij.openapi.progress.Task.Backgroundable(project, "Finding the calls between the two lines", true) {
+            private com.example.flowtracker.code.FlowCallPath.Result result;
+            private FlowEntry from = first;
+
+            @Override
+            public void run(@NotNull com.intellij.openapi.progress.ProgressIndicator indicator) {
+                result = FlowCompat.read(() -> com.example.flowtracker.code.FlowCallPath.between(project, first, second));
+                if (result.lines() == null) { // maybe the second line calls the first
+                    com.example.flowtracker.code.FlowCallPath.Result back =
+                            FlowCompat.read(() -> com.example.flowtracker.code.FlowCallPath.between(project, second, first));
+                    if (back.lines() != null) {
+                        result = back;
+                        from = second;
+                    }
+                }
+            }
+
+            @Override
+            public void onSuccess() {
+                if (result.lines() == null) {
+                    FlowToolWindowFactory.notify(project, result.message(), NotificationType.WARNING);
+                    return;
+                }
+                int n = store.insertAfter(from, result.lines(), "Connect " + from.fileName + ":" + from.line);
+                FlowToolWindowFactory.notify(project, result.message() + (n == 0 ? " The lines in between are in the flow already."
+                        : " Added " + n + (n == 1 ? " line" : " lines") + " between them (Undo takes them out)."), NotificationType.INFORMATION);
+            }
+        }.queue();
+    }
+
     private static List<FlowEntry> selectedEntries(JTree tree, FlowStore store) {
         TreePath[] paths = tree.getSelectionPaths();
         if (paths == null) return Collections.emptyList();
@@ -1538,6 +1553,11 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         group.addSeparator();
         group.add(menuAction("Copy " + what, AllIcons.Actions.Copy, true,
                 () -> copyToClipboard(textFor(store, selectedEntries(tree, store)))));
+        List<FlowEntry> picked = selectedEntries(tree, store);
+        if (picked.size() == 2) {
+            group.add(menuAction("Connect the Flow Between These Lines", FlowTheme.ICON_CONNECT, true,
+                    () -> connectLines(project, store, picked.get(0), picked.get(1))));
+        }
         if (line != null) {
             group.add(menuAction(line.note == null || line.note.isBlank() ? "Add Note\u2026" : "Edit Note\u2026",
                     AllIcons.Actions.Edit, true, editNote));
@@ -1602,16 +1622,13 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
             String name = askFlowName(project, "Rename Flow", start);
             if (name != null) store.renameFlow(name);
         }));
-        items.add(new FlowMenuPopup.Item("Delete Flow", AllIcons.Actions.GC, true, () -> {
-            int lines = store.getEntries().size();
-            String what = names.size() > 1
-                    ? "Delete the flow \u201c" + store.getActiveFlowName() + "\u201d"
-                    : "Empty the flow \u201c" + store.getActiveFlowName() + "\u201d";
-            int answer = Messages.showYesNoDialog(project,
-                    what + (lines == 1 ? " (1 line)?" : " (" + lines + " lines)?")
-                            + "\n\nIt goes to the Recycle Bin, so you can restore it from Settings \u2192 Recycle Bin.",
-                    names.size() > 1 ? "Delete Flow" : "Empty Flow", Messages.getQuestionIcon());
-            if (answer == Messages.YES) store.deleteFlow();
+        // deleted in the Flow tab and Debug Data together (empty: at once; else one confirmation for both)
+        items.add(new FlowMenuPopup.Item("Delete Flow", AllIcons.Actions.GC, true,
+                () -> FlowDeleting.delete(project, List.of(store.getActiveFlowName()), FlowDeleting.From.FLOW_TAB)));
+        items.add(new FlowMenuPopup.Item("Delete Flows\u2026", FlowTheme.ICON_DELETE, true, () -> {
+            List<String> picked = FlowDeleteFlows.ask(project, store.getFlowNames(),
+                    f -> FlowDeleting.details(project, f, FlowDeleting.From.FLOW_TAB), "They are deleted in Debug Data too.");
+            if (picked != null && !picked.isEmpty()) FlowDeleting.delete(project, picked, FlowDeleting.From.FLOW_TAB);
         }));
         items.add(null);
         items.add(new FlowMenuPopup.Item("Export Flow\u2026", FlowTheme.ICON_EXPORT, !store.getEntries().isEmpty(),
@@ -1649,7 +1666,10 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         FileSaverDescriptor descriptor = FlowCompat.saverDescriptor("Export Flow",
                 "Save this flow as a file you can commit or send to a teammate", "json");
         VirtualFileWrapper target = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project)
-                .save(projectDir(project), FlowTransfer.fileNameFor(store.getActiveFlowName()));
+                .save(projectDir(project), com.example.flowtracker.model.FlowProjects.prefixed(
+                        com.example.flowtracker.model.FlowProjects.exportPrefix(project,
+                                store.getEntries().stream().map(e -> e.projectName).toList()),
+                        FlowTransfer.fileNameFor(store.getActiveFlowName())));
         if (target == null) return;
         try {
             FlowTransfer.write(project, store.getActiveFlowName(), store.getEntries(), store.getDiagramLooks(),

@@ -31,4 +31,14 @@ public class FlowEntry {
         this.line = line;
         this.text = text;
     }
+
+    /** A copy (e.g. a line pasted into another flow), with its note, tag, project and connected calls. */
+    public FlowEntry copy() {
+        FlowEntry c = new FlowEntry(fileName, fileUrl, className, methodName, line, text);
+        c.note = note;
+        c.projectName = projectName;
+        c.tag = tag;
+        c.calls = new java.util.ArrayList<>(calls);
+        return c;
+    }
 }

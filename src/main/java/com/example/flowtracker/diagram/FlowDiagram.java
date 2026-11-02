@@ -73,6 +73,8 @@ public final class FlowDiagram {
          */
         @Nullable Color fill, headerFill, border;
         @Nullable Format title, fileFormat, methodsFormat;
+        /** Moved or copied here from another tab: shown like the class it was there (no "added" badge). */
+        boolean moved;
         /** The project band's own look (null = like the class section): background, border, text format and color. */
         @Nullable Color projectFill, projectBorder;
         @Nullable Format projectFormat;
@@ -154,6 +156,8 @@ public final class FlowDiagram {
         final boolean unknown;
         /** Lines picked in the code, not in the flow yet. */
         final List<FlowEntry> picked = new ArrayList<>();
+        /** Saved lines taken out in the code view ("file url#line", 1-based): they leave the flow on Apply. */
+        final Set<String> dropped = new HashSet<>();
         /** The name's format (null = the usual one), and a note under the name ("" = none). */
         @Nullable Format format;
         String note = "";
@@ -161,6 +165,8 @@ public final class FlowDiagram {
         /** Its lines' tag ({@link FlowTag#id}, "" = none); with {@code tagSet} the diagram gives it to all its lines on Apply. */
         String tag = "";
         boolean tagSet;
+        /** Moved or copied here from another tab: its line count shows without "(+n)". */
+        boolean moved;
 
         Method(String id, @Nullable String origKey, String name, int saved, boolean unknown) {
             this.id = id;
@@ -170,11 +176,13 @@ public final class FlowDiagram {
             this.unknown = unknown;
         }
 
-        int lineCount() { return saved + picked.size(); }
+        int lineCount() { return saved - dropped.size() + picked.size(); }
 
         Method copy() {
             Method m = new Method(id, origKey, name, saved, unknown);
             m.picked.addAll(picked);
+            m.dropped.addAll(dropped);
+            m.moved = moved;
             m.copyLook(this);
             m.tag = tag;
             m.tagSet = tagSet;
@@ -500,9 +508,17 @@ public final class FlowDiagram {
 
     /** Connects a method to one it calls. Returns false for a call to itself or one that exists already. */
     boolean connect(String fromMethod, String toMethod) {
+        return connect(fromMethod, toMethod, true);
+    }
+
+    /**
+     * @param manual false for a call the code makes (copied from another tab, where the code analysis found it): drawn
+     *               as a code call (solid), not as one connected by hand (dashed)
+     */
+    boolean connect(String fromMethod, String toMethod, boolean manual) {
         if (fromMethod.equals(toMethod) || method(fromMethod) == null || method(toMethod) == null) return false;
         for (Link l : links) if (l.from().equals(fromMethod) && l.to().equals(toMethod)) return false;
-        links.add(new Link(fromMethod, toMethod, true, null));
+        links.add(new Link(fromMethod, toMethod, manual, null));
         return true;
     }
 
@@ -528,7 +544,8 @@ public final class FlowDiagram {
         for (Box b : boxes) {
             sb.append(b.id).append('=').append(b.name).append('@').append(b.fileName).append('@').append(b.projectName).append('{');
             for (Method m : b.methods) {
-                sb.append(m.id).append('=').append(m.name).append('+').append(m.picked.size()).append('#').append(m.tag).append(';');
+                sb.append(m.id).append('=').append(m.name).append('+').append(m.picked.size()).append('-').append(m.dropped)
+                        .append('#').append(m.tag).append(';');
             }
             sb.append('}');
         }
@@ -913,22 +930,43 @@ public final class FlowDiagram {
             calls.computeIfAbsent(from, k -> new LinkedHashSet<>()).add(to);
             called.add(to);
         }
-        List<Box> queue = new ArrayList<>();
-        for (Box b : boxes) {
-            if (!called.contains(b)) { depth.put(b, 0); queue.add(b); }
-        }
-        for (int i = 0; i < queue.size(); i++) {
-            Box b = queue.get(i);
-            for (Box next : calls.getOrDefault(b, Set.of())) {
-                if (!depth.containsKey(next)) { depth.put(next, depth.get(b) + 1); queue.add(next); }
+        // A box's column is the LONGEST call path to it, so every call goes from left to right (a class called
+        // directly and through another one is placed after that other one). Cycles can't all go right: the walk
+        // stops after as many rounds as there are boxes.
+        for (Box b : boxes) depth.put(b, 0);
+        for (int round = 0; round < boxes.size(); round++) {
+            boolean moved = false;
+            for (Map.Entry<Box, Set<Box>> e : calls.entrySet()) {
+                int d = depth.get(e.getKey()) + 1;
+                for (Box next : e.getValue()) {
+                    if (d > depth.get(next) && d < boxes.size()) {
+                        depth.put(next, d);
+                        moved = true;
+                    }
+                }
             }
+            if (!moved) break;
         }
-        for (Box b : boxes) depth.putIfAbsent(b, 0); // only reachable through a cycle
 
         Map<Integer, List<Box>> columns = new java.util.TreeMap<>();
         for (Box b : boxes) columns.computeIfAbsent(depth.get(b), k -> new ArrayList<>()).add(b);
+        // callers of each box, to put a column's boxes next to the boxes that call them (fewer crossing lines)
+        Map<Box, List<Box>> callers = new IdentityHashMap<>();
+        calls.forEach((from, tos) -> tos.forEach(to -> callers.computeIfAbsent(to, k -> new ArrayList<>()).add(from)));
         double x = margin;
         for (List<Box> column : columns.values()) {
+            column.sort(Comparator.comparingDouble((Box b) -> {
+                List<Box> cs = callers.getOrDefault(b, List.of());
+                double sum = 0;
+                int n = 0;
+                for (Box c : cs) {
+                    if (depth.get(c) < depth.get(b)) {
+                        sum += c.y;
+                        n++;
+                    }
+                }
+                return n == 0 ? Double.MAX_VALUE / 2 + boxes.indexOf(b) : sum / n;
+            }));
             double y = margin, widest = 0;
             for (Box b : column) {
                 b.x = x;
@@ -1078,6 +1116,7 @@ public final class FlowDiagram {
             if (!FlowFormat.isClassLevel(FlowFormat.methodLabel(e))) {
                 m = methodByKey.get(FlowSync.methodKey(e));
                 if (m == null) continue;
+                if (m.dropped.contains(e.fileUrl + "#" + e.line)) continue; // taken out in the code view
             }
             FlowEntry now = e;
             String cls = targetClass(box, e);

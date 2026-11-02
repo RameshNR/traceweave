@@ -73,6 +73,17 @@ public final class FlowCapture {
 
         // Already added? Do nothing (no duplicates).
         if (FlowStore.get(project).contains(vf.getUrl(), line + 1)) return null;
+        return lineEntry(project, doc, line);
+    }
+
+    /**
+     * The saved line for a 0-based line of a file, also when the flow has it already (to find the code around lines
+     * of the flow, e.g. Connect the Flow); null for an empty line or an unsupported file.
+     */
+    public static @Nullable FlowEntry lineEntry(Project project, Document doc, int line) {
+        if (line < 0 || line >= doc.getLineCount()) return null;
+        VirtualFile vf = FileDocumentManager.getInstance().getFile(doc);
+        if (vf == null || !FlowLang.isSupported(vf)) return null;
 
         int start = doc.getLineStartOffset(line);
         int end = doc.getLineEndOffset(line);

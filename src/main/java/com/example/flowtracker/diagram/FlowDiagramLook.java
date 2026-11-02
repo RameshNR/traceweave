@@ -50,6 +50,18 @@ public class FlowDiagramLook {
 
     public FlowDiagramLook() {}
 
+    /** A copy (e.g. placed somewhere else in a combined flow). */
+    FlowDiagramLook copyLook() {
+        FlowDiagramLook c = new FlowDiagramLook();
+        c.fileUrl = fileUrl; c.className = className; c.method = method;
+        c.toFileUrl = toFileUrl; c.toClass = toClass; c.toMethod = toMethod;
+        c.placed = placed; c.x = x; c.y = y;
+        c.fill = fill; c.header = header; c.border = border; c.format = format; c.fileFormat = fileFormat;
+        c.methodFormat = methodFormat; c.note = note; c.noteFormat = noteFormat; c.line = line; c.noteStyle = noteStyle;
+        c.projectFill = projectFill; c.projectBorder = projectBorder; c.projectFormat = projectFormat;
+        return c;
+    }
+
     boolean isLink() { return !toMethod.isEmpty(); }
     boolean isMethod() { return !isLink() && !method.isEmpty(); }
     boolean isBox() { return method.isEmpty(); }

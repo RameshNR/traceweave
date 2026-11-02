@@ -51,6 +51,11 @@ final class FlowMenuPopup {
 
     /** null = a separator. */
     static void show(FlowStore store, JComponent anchor, List<Item> items) {
+        show(store, anchor, items, n -> n);
+    }
+
+    /** @param label the name to show for a flow (Debug Data shows its own names) */
+    static void show(FlowStore store, JComponent anchor, List<Item> items, java.util.function.Function<String, String> label) {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBackground(FlowTheme.CARD_BG);
@@ -80,7 +85,7 @@ final class FlowMenuPopup {
         };
         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         list.setBackground(FlowTheme.CARD_BG);
-        list.setCellRenderer(new FlowRenderer(store));
+        list.setCellRenderer(new FlowRenderer(store, label));
         Runnable reload = () -> {
             model.clear();
             store.getAllFlows().forEach(model::addElement);
@@ -220,9 +225,12 @@ final class FlowMenuPopup {
         private final JLabel count = new JLabel();
         private boolean selected;
 
-        FlowRenderer(FlowStore store) {
+        private final java.util.function.Function<String, String> label;
+
+        FlowRenderer(FlowStore store, java.util.function.Function<String, String> label) {
             super(new BorderLayout(JBUI.scale(8), 0));
             this.store = store;
+            this.label = label;
             setBorder(JBUI.Borders.empty(5, 8, 5, 26)); // room on the right for the handle
             name.setIconTextGap(JBUI.scale(6));
             count.setFont(JBUI.Fonts.smallFont());
@@ -235,7 +243,7 @@ final class FlowMenuPopup {
                                                       int index, boolean isSelected, boolean hasFocus) {
             selected = isSelected;
             boolean active = index == store.getActiveFlowIndex();
-            name.setText(flow.name);
+            name.setText(label.apply(flow.name));
             name.setIcon(active ? AllIcons.Actions.Checked : EmptyIcon.ICON_16);
             name.setFont(JBUI.Fonts.label().deriveFont(active ? Font.BOLD : Font.PLAIN));
             name.setForeground(FlowTheme.FG);

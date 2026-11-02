@@ -10,6 +10,7 @@ import com.example.flowtracker.model.FlowLook;
 import com.example.flowtracker.model.FlowStore;
 import com.example.flowtracker.model.FlowTag;
 import com.example.flowtracker.ui.FlowButton;
+import com.example.flowtracker.ui.FlowMenus;
 import com.example.flowtracker.ui.FlowSettingsPopup;
 import com.example.flowtracker.ui.FlowTheme;
 import com.example.flowtracker.ui.FlowToolbar;
@@ -98,11 +99,38 @@ public final class FlowDiagramDialog {
      * open (or minimized) already, it comes to the front instead, with its unsaved changes.
      */
     public static void open(Project project) {
-        FlowDiagramDialog open = OPEN.get(project);
-        if (open != null && !open.isDisposed()) {
-            open.bringBack();
+        FlowDiagramHost host = FlowDiagramHost.of(project);
+        if (host != null) {
+            host.bringBack();
+            FlowDiagramDialog open = host.pageOf(FlowStore.get(project).getActiveFlowName());
+            if (open != null) {
+                host.select(open);
+                return;
+            }
+        }
+        load(project, null);
+    }
+
+    /** Opens a flow in a tab of the window (it becomes the active flow). */
+    static void openFlow(Project project, String flow) {
+        FlowStore store = FlowStore.get(project);
+        int i = store.indexOfFlow(flow);
+        if (i < 0) return;
+        if (i != store.getActiveFlowIndex()) store.switchFlow(i);
+        FlowDiagramHost host = FlowDiagramHost.of(project);
+        FlowDiagramDialog open = host == null ? null : host.pageOf(flow);
+        if (open != null) {
+            host.select(open);
             return;
         }
+        load(project, null);
+    }
+
+    /**
+     * Makes a page for the active flow (once its calls are known) and shows it: in place of {@code replace} (the same
+     * flow reloaded after Apply or Cancel), else in a new tab (the window opens if needed).
+     */
+    private static void load(Project project, @Nullable FlowDiagramDialog replace) {
         // Clicks while it opens do nothing.
         Long since = OPENING.get(project);
         if (since != null && System.currentTimeMillis() - since < OPENING_TIMEOUT_MS) return;
@@ -111,7 +139,7 @@ public final class FlowDiagramDialog {
         List<FlowEntry> entries = store.getEntries();
         FlowSync.Calls known = store.getCalls();
         if (!known.links().isEmpty() || entries.size() < 2) {
-            show(project, store, entries, known); // the calls the panel found for these lines: no waiting
+            show(project, store, entries, known, replace); // the calls the panel found for these lines: no waiting
             return;
         }
         FlowSync.callsFor(project, List.of(entries), calls -> {
@@ -119,7 +147,7 @@ public final class FlowDiagramDialog {
                 OPENING.remove(project);
                 return;
             }
-            show(project, store, entries, FlowSync.withManual(calls.get(0), entries));
+            show(project, store, entries, FlowSync.withManual(calls.get(0), entries), replace);
         });
     }
 
@@ -127,15 +155,16 @@ public final class FlowDiagramDialog {
     private static final java.util.Map<Project, Long> OPENING = new java.util.concurrent.ConcurrentHashMap<>();
     private static final long OPENING_TIMEOUT_MS = 60_000;
 
-    /** The open Flow Diagram of each project (it doesn't block the IDE, so it can stay open while you work). */
-    private static final java.util.Map<Project, FlowDiagramDialog> OPEN = new java.util.concurrent.ConcurrentHashMap<>();
-
-    private static void show(Project project, FlowStore store, List<FlowEntry> entries, FlowSync.Calls calls) {
+    private static void show(Project project, FlowStore store, List<FlowEntry> entries, FlowSync.Calls calls,
+                             @Nullable FlowDiagramDialog replace) {
         try {
             FlowDiagramDialog d = new FlowDiagramDialog(project, store, entries, calls);
-            OPEN.put(project, d);
-            Disposer.register(d.getDisposable(), () -> OPEN.remove(project, d));
-            d.show();
+            d.build();
+            FlowDiagramHost host = FlowDiagramHost.of(project);
+            if (host == null) FlowDiagramHost.open(project, d);
+            else if (replace != null) host.replace(replace, d); // reloaded after Apply or Cancel: the same tab
+            else host.add(d);
+            if (host != null) host.bringBack();
         } finally {
             OPENING.remove(project);
         }
@@ -147,8 +176,54 @@ public final class FlowDiagramDialog {
      * A window in the IDE's style (IntelliJ's own title bar, with Minimize, Maximize and Close) that doesn't block the
      * IDE. Close asks like Cancel when there are changes.
      */
-    private @Nullable com.example.flowtracker.ui.FlowWindow window;
+    private @Nullable FlowDiagramHost host;
     private final JPanel root = new JPanel(new BorderLayout());
+
+    JPanel root() {
+        return root;
+    }
+
+    String flowName() {
+        return flowName;
+    }
+
+    /** The page's toolbar (Select, Connect, Add File…, Settings): the window shows the selected tab's above the tabs. */
+    private @Nullable JComponent pageToolbar;
+
+    @Nullable JComponent toolbar() {
+        return pageToolbar;
+    }
+
+    /** The flow was renamed (on its tab). */
+    void renamed(String name) {
+        flowName = name;
+    }
+
+    /** True when the diagram has changes that aren't applied. */
+    boolean hasChanges() {
+        return !applied && (!Objects.equals(diagram.signature(), openSignature) || history.position != openPosition
+                || !diagram.sameAs(openDiagram));
+    }
+
+    boolean hasClasses() {
+        return !diagram.boxes.isEmpty();
+    }
+
+    /** Apply without reloading (closing the tab right after). */
+    boolean applyNow() {
+        return applyChanges();
+    }
+
+    void attach(FlowDiagramHost host) {
+        this.host = host;
+    }
+
+    /** The page is gone (the window closed, or another page took its place). */
+    void disposePage() {
+        if (disposed) return;
+        disposed = true;
+        Disposer.dispose(disposable);
+    }
     private final com.intellij.openapi.Disposable disposable = Disposer.newDisposable("TraceWeave Flow Diagram");
     private boolean disposed;
 
@@ -160,37 +235,46 @@ public final class FlowDiagramDialog {
         return disposed;
     }
 
-    /** Lays the window out and shows it: the diagram, and Apply / Cancel at the bottom right. */
-    private void show() {
-        javax.swing.JButton apply = new javax.swing.JButton("Apply");
-        javax.swing.JButton cancel = new javax.swing.JButton("Cancel");
-        apply.addActionListener(e -> doOKAction());
-        cancel.addActionListener(e -> doCancelAction());
+    /**
+     * Lays the page out: the diagram, and Close · Save · Reset at the bottom right. Close and Save have a ▾ menu
+     * (above them) for all the tabs: Close All, Don't Save and Close All, Save and Close All; Save All.
+     */
+    private void build() {
+        FlowButton close = new FlowButton("Close", null, FlowButton.Style.OUTLINE);
+        FlowButton save = new FlowButton("Save", null, FlowButton.Style.PRIMARY);
+        FlowButton reset = new FlowButton("Reset", null, FlowButton.Style.OUTLINE);
+        close.setToolTipText("Close this tab (asks first when it has changes not saved); ▾ for all the tabs");
+        save.setToolTipText("Save the diagram to its flow; the tab stays open. ▾ Save All: every tab");
+        reset.setToolTipText("Drop the changes made since the last Save; the tab stays open");
+        close.addActionListener(e -> doCancelAction());
+        save.addActionListener(e -> doOKAction());
+        reset.addActionListener(e -> dropChanges());
+        close.setDropDown("Close all the tabs", () -> FlowMenus.above(close,
+                new String[]{"Close All", "Don't Save and Close All", "Save and Close All"},
+                new Runnable[]{
+                        () -> { if (host != null) host.closeAll(); },
+                        () -> { if (host != null) host.closeAllWithoutSaving(); },
+                        () -> { if (host != null) host.saveAndCloseAll(); }}));
+        save.setDropDown("Save every tab", () -> FlowMenus.above(save, new String[]{"Save All"},
+                new Runnable[]{() -> { if (host != null) host.saveAll(); }}));
         JPanel buttons = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, JBUI.scale(8), 0));
-        buttons.add(apply);
-        buttons.add(cancel);
+        buttons.add(close);
+        buttons.add(save);
+        buttons.add(reset);
         buttons.setBorder(JBUI.Borders.emptyTop(8));
         root.add(createCenterPanel(), BorderLayout.CENTER);
         root.add(buttons, BorderLayout.SOUTH);
         root.setBorder(JBUI.Borders.empty(10, 12, 10, 12));
-        window = new com.example.flowtracker.ui.FlowWindow(project, "TraceWeave.FlowDiagram", "Flow Diagram – " + flowName, root,
-                this::mayClose);
-        window.whenClosed(() -> {
-            disposed = true;
-            Disposer.dispose(disposable);
-        });
-        window.show();
+    }
+
+    /** The page is on screen. */
+    void shown() {
         canvas.requestFocusInWindow();
         refresh();
     }
 
-    /** Shows the window again (also when it is minimized) and puts it in front. */
-    private void bringBack() {
-        if (window != null) window.bringBack();
-    }
-
     private void close() {
-        if (window != null) window.close();
+        if (host != null) host.remove(this);
     }
 
     private enum Tool { SELECT, CONNECT }
@@ -198,7 +282,7 @@ public final class FlowDiagramDialog {
     private final Project project;
     private final FlowStore store;
     private final List<FlowEntry> entriesAtOpen;
-    private final String flowName;
+    private String flowName;
     private final FlowDiagramPainter painter = new FlowDiagramPainter(JBUI.Fonts.label());
 
     /** This window's copy of the flow's history; stored back on Apply. */
@@ -360,7 +444,7 @@ public final class FlowDiagramDialog {
         side.add(historyTitle, BorderLayout.NORTH);
         side.add(new JBScrollPane(historyList, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
                 ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER), BorderLayout.CENTER);
-        JBLabel hint = new JBLabel("<html>Click a step to go back to it; Apply uses the selected step. "
+        JBLabel hint = new JBLabel("<html>Click a step to go back to it; Save uses the selected step. "
                 + "✔ marks applied steps. The History stays while the IDE runs.</html>");
         hint.setForeground(FlowTheme.FG_MUTED);
         hint.setFont(JBUI.Fonts.smallFont());
@@ -369,6 +453,9 @@ public final class FlowDiagramDialog {
 
         code = new FlowDiagramCode(project);
         Disposer.register(getDisposable(), code);
+        code.setLineAdder(this::addLineFromCode);
+        code.setLineRemover(this::removeLineFromCode);
+        code.setFlowLines(this::flowLinesOf);
         code.setVisible(false); // shown while a method is selected
         JBSplitter drawingAndCode = new JBSplitter(true, 0.68f);
         drawingAndCode.setFirstComponent(drawing);
@@ -382,7 +469,7 @@ public final class FlowDiagramDialog {
         status.setBorder(JBUI.Borders.emptyTop(6));
 
         JPanel panel = new JPanel(new BorderLayout());
-        panel.add(toolbar, BorderLayout.NORTH);
+        pageToolbar = toolbar; // shown by the window above its tabs
         panel.add(split, BorderLayout.CENTER);
         panel.add(status, BorderLayout.SOUTH);
         panel.setPreferredSize(new Dimension(JBUI.scale(1180), JBUI.scale(820)));
@@ -404,6 +491,10 @@ public final class FlowDiagramDialog {
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "delete", this::deleteSelection);
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, 0), "delete2", this::deleteSelection);
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_F2, 0), "rename", this::renameSelection);
+        bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK), "copy", () -> copyPicked(false));
+        bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_X, InputEvent.CTRL_DOWN_MASK), "cut", () -> copyPicked(true));
+        bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_V, InputEvent.CTRL_DOWN_MASK), "paste", this::pasteClipboard);
+        bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_A, InputEvent.CTRL_DOWN_MASK), "selectAll", this::selectAll);
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, InputEvent.CTRL_DOWN_MASK), "zoomIn", () -> zoomBy(1, null));
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_PLUS, InputEvent.CTRL_DOWN_MASK), "zoomIn2", () -> zoomBy(1, null));
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_ADD, InputEvent.CTRL_DOWN_MASK), "zoomIn3", () -> zoomBy(1, null));
@@ -502,12 +593,269 @@ public final class FlowDiagramDialog {
         code.showMethod(name, b.fileName, b.fileUrl, codeLines(m));
     }
 
+    // ---------- the calls between two methods ----------
+
+    /** Connect the Flow to…: pick the method the flow should reach; the calls in between are looked up in the code. */
+    private void pickPathEnd(FlowDiagram.Method from) {
+        List<FlowDiagram.Method> others = new ArrayList<>();
+        for (FlowDiagram.Box b : diagram.boxes) for (FlowDiagram.Method m : b.methods) if (m != from && !b.isUnknown()) others.add(m);
+        PATH_LOG.info("Connect the Flow to…: from " + label(from) + ", " + others.size() + " methods to pick");
+        if (others.isEmpty()) {
+            tell("Add the class and method the flow should reach first (Add File / Add Function), "
+                    + "then right-click " + label(from) + " → Connect the Flow to…", false);
+            return;
+        }
+        com.intellij.openapi.ui.popup.JBPopupFactory.getInstance().createPopupChooserBuilder(others)
+                .setTitle("Connect " + label(from) + " to…")
+                .setRenderer(new com.intellij.ui.SimpleListCellRenderer<FlowDiagram.Method>() {
+                    @Override public void customize(@NotNull javax.swing.JList<? extends FlowDiagram.Method> l, FlowDiagram.Method m, int i,
+                                                    boolean sel, boolean focus) {
+                        setText(label(m));
+                        setIcon(FlowTheme.ICON_METHOD);
+                    }
+                })
+                .setItemChosenCallback(to -> findPath(from, to))
+                .createPopup().showInCenterOf(canvas);
+    }
+
+    /** A flow line of a method: its first line in the flow (or picked here). */
+    private @Nullable FlowEntry firstLine(FlowDiagram.Method m) {
+        FlowDiagram.Box b = diagram.boxOf(m.id);
+        List<Integer> lines = codeLines(m);
+        if (b == null || lines.isEmpty()) return null;
+        return FlowCompat.read(() -> FlowCodeSearch.lineEntry(project, b.fileUrl, lines.get(0)));
+    }
+
+    /**
+     * Looks up the code from one method to another (in the background) and adds it to the diagram. Each of the first
+     * method's flow lines is tried as the start (what it starts is followed); the closest way wins.
+     */
+    private void findPath(FlowDiagram.Method from, FlowDiagram.Method to) {
+        FlowDiagram.Box fb = diagram.boxOf(from.id);
+        List<FlowEntry> starts = new ArrayList<>();
+        if (fb != null) {
+            for (int line : codeLines(from)) {
+                FlowEntry s = FlowCompat.read(() -> FlowCodeSearch.lineEntry(project, fb.fileUrl, line));
+                if (s != null) starts.add(s);
+            }
+        }
+        FlowEntry e = firstLine(to);
+        PATH_LOG.info("Connect " + label(from) + " → " + label(to) + ": " + starts.size() + " start lines, end " + e);
+        if (starts.isEmpty() || e == null) {
+            tell("Both methods need lines in the code to connect them (" + label(from) + ": " + starts.size()
+                    + " lines, " + label(to) + ": " + (e == null ? "none" : "1") + ").", false);
+            return;
+        }
+        tell("Looking in the code for the calls from " + label(from) + " to " + label(to) + "…", true);
+        new com.intellij.openapi.progress.Task.Backgroundable(project, "Finding the calls between two methods", true) {
+            private com.example.flowtracker.code.FlowCallPath.Result result;
+
+            @Override
+            public void run(@NotNull com.intellij.openapi.progress.ProgressIndicator indicator) {
+                // a method connected to a method: all of it is looked at (its first call that leads there wins),
+                // not only the code after one of its flow lines
+                result = FlowCompat.read(() -> com.example.flowtracker.code.FlowCallPath.betweenMethods(project, starts, e));
+                PATH_LOG.info("  " + result.message() + " cost " + result.cost()
+                        + (result.lines() == null ? "" : " " + result.lines().stream().map(x -> x.fileName + ":" + x.line).toList()));
+            }
+
+            @Override
+            public void onSuccess() {
+                if (isDisposed()) return;
+                if (result == null || result.lines() == null) {
+                    tell(result == null ? "No way was found." : result.message(), false);
+                    return;
+                }
+                addPath(from, to, result.lines(), result.message());
+            }
+
+            @Override
+            public void onThrowable(@NotNull Throwable error) {
+                PATH_LOG.warn("Connect the Flow failed", error);
+                if (!isDisposed()) tell("Couldn't read the code between them: " + error, false);
+            }
+        }.queue();
+    }
+
+    /** The calls' lines become methods (boxes added where needed), connected from {@code from} to {@code to}. */
+    private void addPath(FlowDiagram.Method from, FlowDiagram.Method to, List<FlowEntry> lines, String message) {
+        FlowDiagram.Box start = diagram.boxOf(from.id);
+        double x = start == null ? 40 : start.x + painter.width(start) + 80, y = start == null ? 40 : start.y + 60;
+        FlowDiagram.Method prev = from;
+        int added = 0;
+        for (FlowEntry e : lines) {
+            String name = e.methodName == null || e.methodName.isEmpty() ? "[fields]" : e.methodName;
+            FlowDiagram.Box box = null;
+            for (FlowDiagram.Box b : diagram.boxes) {
+                if (e.fileUrl.equals(b.fileUrl) && (box == null || b.origClass.equals(e.className))) box = b;
+            }
+            if (box == null) {
+                box = diagram.addKnownClass(e.fileUrl, e.fileName, e.projectName == null ? "" : e.projectName, e.className, null, x, y);
+                x += 60;
+                y += 40;
+            }
+            FlowDiagram.Method m = null;
+            for (FlowDiagram.Method x2 : box.methods) if (x2.name.equals(name)) m = x2;
+            if (m == null || !codeLines(m).contains(e.line - 1)) {
+                m = diagram.addKnownMethod(box, name, List.of(e));
+                added++;
+            }
+            if (m != prev) diagram.connect(prev.id, m.id, false); // calls the code makes: solid
+            prev = m;
+        }
+        if (prev != to) diagram.connect(prev.id, to.id, false);
+        diagram.autoLayout(painter.measure(), 180, 50, 40); // the new way reads left to right
+        changed("Connect " + label(from) + " to " + label(to));
+        tell(message + (added == 0 ? "" : " Added " + added + (added == 1 ? " line" : " lines") + " (Save saves them to the flow)."), true);
+    }
+
+    /** The flow's lines of a file (0-based): the flow's own and the ones picked here. */
+    private List<Integer> flowLinesOf(String url) {
+        java.util.TreeSet<Integer> lines = new java.util.TreeSet<>();
+        Set<String> dropped = new HashSet<>();
+        for (FlowDiagram.Box b : diagram.boxes) for (FlowDiagram.Method m : b.methods) dropped.addAll(m.dropped);
+        for (FlowEntry e : entriesAtOpen) {
+            if (e.line > 0 && url.equals(e.fileUrl) && !dropped.contains(e.fileUrl + "#" + e.line)) lines.add(e.line - 1);
+        }
+        for (FlowDiagram.Box b : diagram.boxes) {
+            for (FlowDiagram.Method m : b.methods) for (FlowEntry e : m.picked) if (e.line > 0 && url.equals(e.fileUrl)) lines.add(e.line - 1);
+        }
+        return new ArrayList<>(lines);
+    }
+
+    /**
+     * "+" next to a line number in the code view: the line joins the flow, in its method's box (as Add Function would
+     * add it; Apply saves it). A file without a box in the diagram has to be added first (Add File).
+     */
+    private void addLineFromCode(String url, int line) {
+        if (flowLinesOf(url).contains(line)) {
+            say("Line " + (line + 1) + " is in the flow already.");
+            return;
+        }
+        FlowEntry e = FlowCompat.read(() -> FlowCodeSearch.entry(project, url, line));
+        if (e == null) {
+            say("That line can't be added (it isn't code of the project).");
+            return;
+        }
+        FlowDiagram.Box box = null;
+        for (FlowDiagram.Box b : diagram.boxes) {
+            if (!url.equals(b.fileUrl)) continue;
+            if (box == null || b.origClass.equals(e.className)) box = b;
+        }
+        if (box == null) {
+            say(e.fileName + " has no box in this diagram yet: add it with Add File, then add the line.");
+            return;
+        }
+        String name = e.methodName == null || e.methodName.isEmpty() ? "[fields]" : e.methodName;
+        FlowDiagram.Method m = diagram.addKnownMethod(box, name, List.of(e));
+        select(box, m, null);
+        changed("Add line " + (line + 1) + " to " + box.name + "." + m.name);
+        say("Added line " + (line + 1) + " to " + box.name + "." + m.name + " (Save saves it to the flow).");
+    }
+
+    /**
+     * "−" next to a flow line in the code view: the line leaves its method (Apply takes it out of the flow). Not when
+     * the line makes a call that is drawn to another box, or when it is the last line of a method that is connected
+     * to other boxes: then the reason is returned (shown under the code).
+     */
+    private @Nullable String removeLineFromCode(String url, int line) {
+        FlowDiagram.Box box = null;
+        FlowDiagram.Method m = null;
+        for (FlowDiagram.Box b : diagram.boxes) {
+            if (!url.equals(b.fileUrl) || isLink(b)) continue;
+            for (FlowDiagram.Method x : b.methods) {
+                if (codeLines(x).contains(line)) {
+                    box = b;
+                    m = x;
+                }
+            }
+        }
+        if (m == null) return "Line " + (line + 1) + " isn't a line of a method in this diagram.";
+        FlowDiagram.Method method = m;
+        FlowDiagram.Box home = box;
+        // the calls this line makes, as "Class.method"
+        Set<String> calls = callsOnLine(url, line);
+        for (FlowDiagram.Link l : diagram.links) {
+            if (!l.from().equals(method.id)) continue;
+            FlowDiagram.Method t = diagram.method(l.to());
+            FlowDiagram.Box tb = diagram.boxOf(l.to());
+            if (t == null || tb == null || tb == home) continue;
+            String name = baseName(t.name);
+            if (calls.contains(simpleName(tb.origClass) + "." + name) || calls.contains(tb.name + "." + name)) {
+                return "Line " + (line + 1) + " can't be taken out: it calls " + tb.name + "." + t.name + ", which is connected "
+                        + "to the " + tb.name + " box. Remove that call (or the " + tb.name + " box) first.";
+            }
+        }
+        if (codeLines(method).size() == 1) {
+            for (FlowDiagram.Link l : diagram.links) {
+                boolean out = l.from().equals(method.id), in = l.to().equals(method.id);
+                if (!out && !in) continue;
+                FlowDiagram.Box other = diagram.boxOf(out ? l.to() : l.from());
+                if (other == null || other == home) continue;
+                return "Line " + (line + 1) + " can't be taken out: it is the last line of " + label(method) + ", which is connected "
+                        + (out ? "to " : "from ") + label(diagram.method(out ? l.to() : l.from()))
+                        + ". Remove that connection (or the method) first.";
+            }
+        }
+        FlowEntry picked = null;
+        for (FlowEntry e : method.picked) if (e.line == line + 1 && url.equals(e.fileUrl)) picked = e;
+        if (picked != null) method.picked.remove(picked);
+        else method.dropped.add(url + "#" + (line + 1));
+        changed("Remove line " + (line + 1) + " from " + label(method));
+        say("Line " + (line + 1) + " is taken out of " + label(method) + " (Save saves it; Undo brings it back).");
+        return null;
+    }
+
+    /** The methods the code of a line calls ("Class.method"), with the rest of its statement when it goes on. */
+    private Set<String> callsOnLine(String url, int line) {
+        Set<String> out = FlowCompat.read(() -> {
+            Set<String> found = new HashSet<>();
+            com.intellij.openapi.vfs.VirtualFile vf = com.intellij.openapi.vfs.VirtualFileManager.getInstance().findFileByUrl(url);
+            com.intellij.openapi.editor.Document doc = vf == null ? null
+                    : com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(vf);
+            com.intellij.psi.PsiFile psi = vf == null ? null : com.intellij.psi.PsiManager.getInstance(project).findFile(vf);
+            if (doc == null || psi == null || line < 0 || line >= doc.getLineCount()) return found;
+            String text = doc.getText(new com.intellij.openapi.util.TextRange(doc.getLineStartOffset(line), doc.getLineEndOffset(line)));
+            int at = doc.getLineStartOffset(line) + (text.length() - text.stripLeading().length());
+            com.intellij.psi.PsiElement el = psi.findElementAt(at);
+            com.intellij.psi.PsiStatement st = com.intellij.psi.util.PsiTreeUtil.getParentOfType(el, com.intellij.psi.PsiStatement.class, false);
+            com.intellij.psi.PsiElement scope = st;
+            if (st == null || doc.getLineNumber(st.getTextRange().getStartOffset()) != line) {
+                // a field, or a line inside a longer statement: only that line's code
+                scope = com.intellij.psi.util.PsiTreeUtil.getParentOfType(el, com.intellij.psi.PsiField.class, false);
+            }
+            if (scope == null) return found;
+            for (com.intellij.psi.PsiCall c : com.intellij.psi.util.PsiTreeUtil.findChildrenOfType(scope, com.intellij.psi.PsiCall.class)) {
+                // the statement's own calls (an if's condition, not the calls in its body)
+                if (st != null && scope == st
+                        && com.intellij.psi.util.PsiTreeUtil.getParentOfType(c, com.intellij.psi.PsiStatement.class, true) != st) continue;
+                com.intellij.psi.PsiMethod target = c.resolveMethod();
+                com.intellij.psi.PsiClass cls = target == null ? null : target.getContainingClass();
+                if (cls != null) found.add(cls.getName() + "." + target.getName());
+            }
+            return found;
+        });
+        return out == null ? Set.of() : out;
+    }
+
+    private static String baseName(String method) {
+        int p = method.indexOf('(');
+        return (p < 0 ? method : method.substring(0, p)).strip();
+    }
+
+    private static String simpleName(String cls) {
+        String s = cls == null ? "" : cls;
+        return s.substring(Math.max(s.lastIndexOf('.'), s.lastIndexOf('$')) + 1);
+    }
+
     /** The method's lines in the flow and the ones picked for it here (0-based, in file order). */
     private List<Integer> codeLines(FlowDiagram.Method m) {
         java.util.TreeSet<Integer> lines = new java.util.TreeSet<>();
         if (m.origKey != null) {
             for (FlowEntry e : entriesAtOpen) {
-                if (e.line > 0 && m.origKey.equals(FlowSync.methodKey(e))) lines.add(e.line - 1);
+                if (e.line > 0 && m.origKey.equals(FlowSync.methodKey(e)) && !m.dropped.contains(e.fileUrl + "#" + e.line)) {
+                    lines.add(e.line - 1);
+                }
             }
         }
         for (FlowEntry e : m.picked) if (e.line > 0) lines.add(e.line - 1);
@@ -559,6 +907,518 @@ public final class FlowDiagramDialog {
 
     private void say(String text) {
         status.setText(text);
+    }
+
+    private static final com.intellij.openapi.diagnostic.Logger PATH_LOG =
+            com.intellij.openapi.diagnostic.Logger.getInstance("TraceWeave.ConnectFlow");
+
+    /** A message that must be seen (the status line too): a balloon at the top of the diagram for a few seconds. */
+    private void tell(String text, boolean ok) {
+        say(text);
+        if (!canvas.isShowing()) return;
+        com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+                .createHtmlTextBalloonBuilder(com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(text),
+                        ok ? com.intellij.openapi.ui.MessageType.INFO : com.intellij.openapi.ui.MessageType.WARNING, null)
+                .setFadeoutTime(ok ? 4000 : 8000)
+                .setHideOnClickOutside(true)
+                .createBalloon()
+                .show(new com.intellij.ui.awt.RelativePoint(canvas, new java.awt.Point(canvas.getVisibleRect().x + canvas.getVisibleRect().width / 2, canvas.getVisibleRect().y + JBUI.scale(30))),
+                        com.intellij.openapi.ui.popup.Balloon.Position.below);
+    }
+
+    // ---------- several classes: select, copy, cut, paste, move to another tab ----------
+
+    /** Classes picked with Ctrl+click (besides the selection), by box id. */
+    private final java.util.LinkedHashSet<String> multi = new java.util.LinkedHashSet<>();
+
+    /** A call's look: its note, the note's style and the line's style. */
+    record CallLook(String note, FlowDiagram.NoteStyle noteStyle, FlowDiagram.Line line, boolean manual) {}
+
+    /**
+     * Copied classes: their files, methods and lines, positions, the calls between them (with their notes and line
+     * styles), and their calls to (and from) classes that weren't copied.
+     */
+    record Clip(List<BoxCopy> boxes, List<LinkCopy> links, List<Outside> outside) {}
+    record BoxCopy(String name, String fileUrl, String fileName, String projectName, String origClass, boolean unknown,
+                   double x, double y, List<MethodCopy> methods, @Nullable FlowDiagram.Box look) {
+        BoxCopy(String name, String fileUrl, String fileName, String projectName, String origClass, boolean unknown,
+                double x, double y, List<MethodCopy> methods) {
+            this(name, fileUrl, fileName, projectName, origClass, unknown, x, y, methods, null);
+        }
+    }
+    record MethodCopy(String name, boolean unknown, List<FlowEntry> lines, String tag, boolean tagSet, String note,
+                      @Nullable FlowDiagram.Format format, @Nullable FlowDiagram.Format noteFormat) {
+        MethodCopy(String name, boolean unknown, List<FlowEntry> lines) {
+            this(name, unknown, lines, "", false, "", null, null);
+        }
+    }
+
+    private MethodCopy methodCopy(FlowDiagram.Method m) {
+        return new MethodCopy(m.name, m.unknown && m.picked.isEmpty(), methodEntries(m), m.tag, m.tagSet, m.note, m.format, m.noteFormat);
+    }
+    record LinkCopy(int fromBox, int fromMethod, int toBox, int toMethod, CallLook look) {}
+    /** A call between a copied method ({box, method}) and a method that wasn't copied (class name, method name). */
+    record Outside(int box, int method, String otherClass, String otherMethod, boolean outgoing, double otherX, double otherY,
+                   CallLook look, BoxCopy other, MethodCopy otherM) {}
+    /** A call by class and method names (between tabs), with its look. */
+    record NamedCall(String fromClass, String fromMethod, String toClass, String toMethod, CallLook look) {}
+
+    /** Where classes that were moved here stood in the tab they came from (to put them back in a combined tab). */
+    private final java.util.Map<String, double[]> homes = new java.util.HashMap<>();
+
+    /** The classes selected: the Ctrl+clicked ones and the selected one. */
+    private List<FlowDiagram.Box> pickedBoxes() {
+        List<FlowDiagram.Box> out = new ArrayList<>();
+        for (String id : multi) {
+            FlowDiagram.Box b = diagram.box(id);
+            if (b != null) out.add(b);
+        }
+        FlowDiagram.Box sel = selectedBox();
+        if (sel != null && !out.contains(sel)) out.add(sel);
+        return out;
+    }
+
+    /** A method's lines: the flow's own and the ones picked here (copies). */
+    private List<FlowEntry> methodEntries(FlowDiagram.Method m) {
+        List<FlowEntry> out = new ArrayList<>();
+        if (m.origKey != null) for (FlowEntry e : entriesAtOpen) if (m.origKey.equals(FlowSync.methodKey(e))) out.add(e.copy());
+        for (FlowEntry e : m.picked) out.add(e.copy());
+        return out;
+    }
+
+    private CallLook lookOf(FlowDiagram.Link l) {
+        return new CallLook(diagram.callNote(l), diagram.noteStyle(l), diagram.line(l), l.manual());
+    }
+
+    /** Connects two methods (unless they are already) and gives the call its note and styles. */
+    private void connect(FlowDiagram.Method from, FlowDiagram.Method to, @Nullable CallLook look) {
+        if (from == null || to == null || from == to) return;
+        // a call the code makes stays a code call (solid); only calls connected by hand are drawn dashed
+        boolean manual = look == null || look.manual();
+        diagram.connect(from.id, to.id, manual);
+        if (look == null) return;
+        FlowDiagram.Link l = new FlowDiagram.Link(from.id, to.id, manual, null);
+        if (!look.note().isEmpty() && diagram.callNote(l).isEmpty()) diagram.setCallNote(l, look.note());
+        if (!look.noteStyle().equals(FlowDiagram.NoteStyle.DEFAULT)) diagram.setNoteStyle(l, look.noteStyle());
+        if (!look.line().equals(FlowDiagram.Line.DEFAULT)) diagram.setLine(l, look.line());
+    }
+
+    private Clip copyOf(List<FlowDiagram.Box> boxes) {
+        List<BoxCopy> out = new ArrayList<>();
+        for (FlowDiagram.Box b : boxes) {
+            List<MethodCopy> ms = new ArrayList<>();
+            for (FlowDiagram.Method m : b.methods) ms.add(methodCopy(m));
+            out.add(new BoxCopy(b.name, b.fileUrl, b.fileName, b.projectName == null ? "" : b.projectName, b.origClass,
+                    b.isUnknown(), b.x, b.y, ms, b.copy()));
+        }
+        List<LinkCopy> links = new ArrayList<>();
+        List<Outside> outside = new ArrayList<>();
+        for (FlowDiagram.Link l : diagram.links) {
+            int[] from = place(boxes, l.from()), to = place(boxes, l.to());
+            if (from != null && to != null) {
+                links.add(new LinkCopy(from[0], from[1], to[0], to[1], lookOf(l)));
+            } else if (from != null || to != null) {
+                FlowDiagram.Method other = diagram.method(from != null ? l.to() : l.from());
+                FlowDiagram.Box ob = other == null ? null : diagram.boxOf(other.id);
+                if (ob != null) {
+                    int[] in = from != null ? from : to;
+                    MethodCopy om = methodCopy(other);
+                    BoxCopy obc = new BoxCopy(ob.name, ob.fileUrl, ob.fileName, ob.projectName == null ? "" : ob.projectName,
+                            ob.origClass, ob.isUnknown(), ob.x, ob.y, List.of(om));
+                    outside.add(new Outside(in[0], in[1], ob.name, other.name, from != null, ob.x, ob.y, lookOf(l), obc, om));
+                }
+            }
+        }
+        return new Clip(out, links, outside);
+    }
+
+    /** Where a method is among copied boxes: {box, method}, or null when it isn't copied. */
+    private @Nullable int[] place(List<FlowDiagram.Box> boxes, String methodId) {
+        for (int i = 0; i < boxes.size(); i++) {
+            List<FlowDiagram.Method> ms = boxes.get(i).methods;
+            for (int j = 0; j < ms.size(); j++) if (ms.get(j).id.equals(methodId)) return new int[]{i, j};
+        }
+        return null;
+    }
+
+    /** Every class of this tab (to move them to another tab when it closes). */
+    Clip copyAll() {
+        return copyOf(new ArrayList<>(diagram.boxes));
+    }
+
+    /** Where pasted classes go. */
+    enum Place { RIGHT, BELOW, AS_THEY_WERE }
+
+    void paste(Clip clip, String label) {
+        paste(clip, label, Place.RIGHT);
+    }
+
+    /** Pastes copied classes (a step of this tab's History; Apply saves their lines to its flow). Returns the boxes made. */
+    List<FlowDiagram.Box> paste(Clip clip, String label, Place where) {
+        List<FlowDiagram.Box> boxesMade = new ArrayList<>();
+        if (clip == null || clip.boxes().isEmpty()) return boxesMade;
+        double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE;
+        for (BoxCopy c : clip.boxes()) {
+            minX = Math.min(minX, c.x());
+            minY = Math.min(minY, c.y());
+        }
+        double maxX = 40, maxY = 40;
+        for (FlowDiagram.Box b : diagram.boxes) {
+            maxX = Math.max(maxX, b.x + painter.width(b) + 60);
+            maxY = Math.max(maxY, b.y + painter.height(b) + 120);
+        }
+        List<List<FlowDiagram.Method>> made = new ArrayList<>();
+        multi.clear();
+        for (BoxCopy c : clip.boxes()) {
+            double x = switch (where) {
+                case AS_THEY_WERE -> c.x();
+                case BELOW -> 40 + (c.x() - minX);
+                default -> maxX + (c.x() - minX);
+            };
+            double y = switch (where) {
+                case AS_THEY_WERE -> c.y();
+                case BELOW -> (diagram.boxes.isEmpty() ? 40 : maxY) + (c.y() - minY);
+                default -> 40 + (c.y() - minY);
+            };
+            FlowDiagram.Box box = c.unknown() ? diagram.addUnknownClass(c.name(), c.fileName(), x, y)
+                    : diagram.addKnownClass(c.fileUrl(), c.fileName(), c.projectName(), c.origClass(), null, x, y);
+            if (c.look() != null) box.copyLook(c.look()); // colors, note, text formats, project style
+            box.moved = true;
+            List<FlowDiagram.Method> ms = new ArrayList<>();
+            for (MethodCopy m : c.methods()) {
+                FlowDiagram.Method nm = m.unknown() || m.lines().isEmpty() ? diagram.addUnknownMethod(box, m.name())
+                        : diagram.addKnownMethod(box, m.name(), m.lines());
+                nm.moved = true;
+                if (m.tagSet || !m.tag().isEmpty()) diagram.setMethodTag(nm, m.tag().isEmpty() ? null : m.tag());
+                if (!m.note().isEmpty()) nm.note = m.note();
+                if (m.format() != null) nm.format = m.format();
+                if (m.noteFormat() != null) nm.noteFormat = m.noteFormat();
+                ms.add(nm);
+            }
+            made.add(ms);
+            boxesMade.add(box);
+            multi.add(box.id);
+        }
+        for (LinkCopy l : clip.links()) connect(made.get(l.fromBox()).get(l.fromMethod()), made.get(l.toBox()).get(l.toMethod()), l.look());
+        int kept = 0;
+        for (Outside o : clip.outside()) { // calls to classes this tab has too (not link boxes: those are made apart)
+            FlowDiagram.Method here = made.get(o.box()).get(o.method()), there = realMethod(o.otherClass(), o.otherMethod());
+            if (here == null || there == null || here == there) continue;
+            if (o.outgoing()) connect(here, there, o.look());
+            else connect(there, here, o.look());
+            kept++;
+        }
+        changed(label + " (" + clip.boxes().size() + (clip.boxes().size() == 1 ? " class)" : " classes)"));
+        say("Pasted " + clip.boxes().size() + (clip.boxes().size() == 1 ? " class" : " classes")
+                + (kept == 0 ? "" : ", with " + kept + (kept == 1 ? " call" : " calls") + " to classes here")
+                + ". Save saves them to “" + flowName + "”.");
+        return boxesMade;
+    }
+
+    /** A method of a real class here (not a link box) by the class's and the method's names. */
+    private @Nullable FlowDiagram.Method realMethod(String className, String methodName) {
+        for (FlowDiagram.Box b : diagram.boxes) {
+            if (isLink(b) || !b.name.equals(className)) continue;
+            for (FlowDiagram.Method m : b.methods) if (m.name.equals(methodName)) return m;
+        }
+        return null;
+    }
+
+    private void copyPicked(boolean cut) {
+        List<FlowDiagram.Box> boxes = pickedBoxes();
+        if (boxes.isEmpty()) {
+            say("Select classes first (Ctrl+click to pick several, Ctrl+A for all).");
+            return;
+        }
+        FlowDiagramHost.clipboard = copyOf(boxes);
+        if (cut) removeBoxes(boxes, "Cut");
+        say((cut ? "Cut " : "Copied ") + boxes.size() + (boxes.size() == 1 ? " class" : " classes")
+                + ". Ctrl+V pastes them here or in another tab.");
+    }
+
+    private void pasteClipboard() {
+        if (FlowDiagramHost.clipboard == null) {
+            say("Nothing copied yet: select classes and press Ctrl+C (or Ctrl+X).");
+            return;
+        }
+        paste(FlowDiagramHost.clipboard, "Paste");
+    }
+
+    private void removeBoxes(List<FlowDiagram.Box> boxes, String what) {
+        for (FlowDiagram.Box b : boxes) diagram.removeClass(b);
+        multi.clear();
+        selection = FlowDiagramPainter.Selection.NONE;
+        changed(what + " " + boxes.size() + (boxes.size() == 1 ? " class" : " classes"));
+    }
+
+    /** Copy (or move) the selected classes to another tab. */
+    private void sendTo(FlowDiagramDialog target, boolean move) {
+        List<FlowDiagram.Box> boxes = pickedBoxes();
+        if (boxes.isEmpty() || host == null) return;
+        send(boxes, target, move, false);
+        if (!move) host.select(target); // a move shows the combined tab it opens
+    }
+
+    /**
+     * The classes go to (or are copied to) another tab. Where they are connected to classes that stay here, link
+     * boxes show it on both sides, with the calls (and their notes):
+     * <ul>
+     * <li>here, a moved class leaves a link box in its place: the class's name, "⇄ in “the other tab”" under it,
+     * the moved methods, framed in the other tab's color;</li>
+     * <li>there, each class here that calls (or is called by) them gets a link box: callers before the moved classes,
+     * the ones they call after them, framed in this tab's color.</li>
+     * </ul>
+     * Moving also opens a tab with both combined.
+     * @param fresh the target is a new tab (it is laid out after)
+     */
+    private void send(List<FlowDiagram.Box> boxes, FlowDiagramDialog target, boolean move, boolean fresh) {
+        Clip clip = copyOf(boxes);
+        List<FlowDiagram.Box> pasted = target.paste(clip, (move ? "Moved from " : "Copied from ") + flowName,
+                fresh ? Place.AS_THEY_WERE : Place.RIGHT);
+
+        for (BoxCopy c : clip.boxes()) target.homes.put(c.name(), new double[]{c.x(), c.y()});
+        // the calls between the classes that go and the ones that stay (not the ones the target tab has itself)
+        List<Outside> across = new ArrayList<>();
+        for (Outside o : clip.outside()) if (target.realMethod(o.otherClass(), o.otherMethod()) == null) across.add(o);
+        if (move) removeBoxes(boxes, "Move to " + target.flowName() + ":");
+        if (!across.isEmpty()) {
+            if (move) leaveLinkBoxes(clip, across, target.flowName());
+            target.receiveLinkBoxes(clip, across, flowName, pasted);
+        }
+        if (fresh) target.layOutAround(pasted);
+        if (move && host != null && !across.isEmpty()) host.combine(this, target);
+    }
+
+    /** Link boxes are the classes themselves (with their code), marked "⇄ in “the tab”" in their note. */
+    static final String LINK = "⇄ in ";
+    /** The frame of a link box (a class that is in another tab). */
+    static final java.awt.Color LINK_COLOR = new java.awt.Color(0xE5A83B);
+
+    static boolean isLink(FlowDiagram.Box b) {
+        return b.note != null && b.note.startsWith(LINK);
+    }
+
+    /**
+     * A link box (one per class and tab): the class from the code (click its methods to see their code), with
+     * "⇄ in “the other tab”" under its name, framed in the other tab's color.
+     */
+    private FlowDiagram.Box linkBox(BoxCopy cls, String tab, String colorOf, double x, double y) {
+        String mark = LINK + "“" + tab + "”";
+        for (FlowDiagram.Box b : diagram.boxes) if (isLink(b) && b.name.equals(cls.name()) && mark.equals(b.note)) return b;
+        FlowDiagram.Box box = cls.unknown() ? diagram.addUnknownClass(cls.name(), cls.fileName(), x, y)
+                : diagram.addKnownClass(cls.fileUrl(), cls.fileName(), cls.projectName(), cls.origClass(), null, x, y);
+        box.note = mark;
+        box.moved = true; // not "added": it is a class of the other tab
+        // always the link orange (on both sides): a tab's own color can be the selection blue, which hides it
+        box.border = LINK_COLOR;
+        return box;
+    }
+
+    private FlowDiagram.Method linkMethod(FlowDiagram.Box box, MethodCopy m) {
+        for (FlowDiagram.Method x : box.methods) if (x.name.equals(m.name())) return x;
+        FlowDiagram.Method made = m.unknown() || m.lines().isEmpty() || box.isUnknown() ? diagram.addUnknownMethod(box, m.name())
+                : diagram.addKnownMethod(box, m.name(), m.lines());
+        made.moved = true;
+        return made;
+    }
+
+    /** Here: each moved class becomes a link box in its place, connected as the class was. */
+    private void leaveLinkBoxes(Clip clip, List<Outside> across, String otherTab) {
+        for (Outside o : across) {
+            BoxCopy moved = clip.boxes().get(o.box());
+            FlowDiagram.Box box = linkBox(moved, otherTab, flowName, moved.x(), moved.y());
+            FlowDiagram.Method lm = linkMethod(box, moved.methods().get(o.method()));
+            FlowDiagram.Method stay = realMethod(o.otherClass(), o.otherMethod());
+            if (stay == null) continue;
+            if (o.outgoing()) connect(lm, stay, o.look());
+            else connect(stay, lm, o.look());
+        }
+        changed("Link to the tab " + otherTab);
+    }
+
+    /** There: the classes of the other tab that call (or are called by) the moved ones, as link boxes around them. */
+    void receiveLinkBoxes(Clip clip, List<Outside> across, String otherTab, List<FlowDiagram.Box> pasted) {
+        double left = Double.MAX_VALUE, right = 0, top = Double.MAX_VALUE;
+        for (FlowDiagram.Box b : pasted) {
+            left = Math.min(left, b.x);
+            right = Math.max(right, b.x + painter.width(b));
+            top = Math.min(top, b.y);
+        }
+        int callers = 0, called = 0;
+        for (Outside o : across) {
+            FlowDiagram.Method here = realMethod(clip.boxes().get(o.box()).name(), clip.boxes().get(o.box()).methods().get(o.method()).name());
+            if (here == null) continue;
+            boolean callsIn = !o.outgoing(); // the other class calls the moved one: it goes before it
+            FlowDiagram.Box existing = null;
+            for (FlowDiagram.Box b : diagram.boxes) if (isLink(b) && b.name.equals(o.otherClass())) existing = b;
+            double x = callsIn ? Math.max(40, left - 360) : right + 120;
+            double y = top + (callsIn ? callers : called) * 150;
+            FlowDiagram.Box box = existing != null ? existing : linkBox(o.other(), otherTab, otherTab, x, y);
+            if (existing == null) {
+                if (callsIn) callers++;
+                else called++;
+            }
+            FlowDiagram.Method lm = linkMethod(box, o.otherM());
+            if (callsIn) connect(lm, here, o.look());
+            else connect(here, lm, o.look());
+        }
+        changed("Link to the tab " + otherTab);
+    }
+
+    /** A new tab: callers on the left, the moved classes, then what they call (call order, left to right). */
+    void layOutAround(List<FlowDiagram.Box> pasted) {
+        diagram.autoLayout(painter.measure(), 180, 50, 40); // wide gaps: the arrows' notes fit between the boxes
+        changed("Auto layout");
+    }
+
+    /** Every class but the link boxes (to combine tabs). */
+    Clip copyReal() {
+        List<FlowDiagram.Box> real = new ArrayList<>();
+        for (FlowDiagram.Box b : diagram.boxes) if (!isLink(b)) real.add(b);
+        return copyOf(real);
+    }
+
+    /** The calls through link boxes, as the real classes are named (a link box has its class's name), with their looks. */
+    List<NamedCall> linkCalls() {
+        List<NamedCall> out = new ArrayList<>();
+        for (FlowDiagram.Link l : diagram.links) {
+            FlowDiagram.Box fb = diagram.boxOf(l.from()), tb = diagram.boxOf(l.to());
+            FlowDiagram.Method fm = diagram.method(l.from()), tm = diagram.method(l.to());
+            if (fb == null || tb == null || fm == null || tm == null || !(isLink(fb) || isLink(tb))) continue;
+            out.add(new NamedCall(fb.name, fm.name, tb.name, tm.name, lookOf(l)));
+        }
+        return out;
+    }
+
+    /** Where a class moved here stood in the tab it came from (null when it wasn't moved here). */
+    @Nullable double[] homeOf(String className) {
+        return homes.get(className);
+    }
+
+    /** Connects two real classes' methods by name (the calls of combined tabs), with the call's look. */
+    void connectByName(NamedCall c) {
+        connect(realMethod(c.fromClass(), c.fromMethod()), realMethod(c.toClass(), c.toMethod()), c.look());
+    }
+
+    void changedAfterCombine(String label) {
+        changed(label);
+    }
+
+    /**
+     * This tab shows two tabs combined: the first one's classes as they are, the second one's where they stood
+     * before they were moved there (else under the first one's), and the calls between them, with their notes.
+     */
+    void combineFrom(FlowDiagramDialog a, FlowDiagramDialog b) {
+        if (!a.homes.isEmpty() && b.homes.isEmpty()) { // b is where the classes came from: its layout is the base
+            FlowDiagramDialog t = a;
+            a = b;
+            b = t;
+        }
+        List<FlowDiagram.Box> first = paste(a.copyReal(), "From " + a.flowName(), Place.AS_THEY_WERE);
+        double below = 40;
+        for (FlowDiagram.Box x : first) below = Math.max(below, x.y + painter.height(x) + 120);
+        Clip second = b.copyReal();
+        double minY = Double.MAX_VALUE;
+        for (BoxCopy c : second.boxes()) if (b.homeOf(c.name()) == null) minY = Math.min(minY, c.y());
+        List<BoxCopy> placed = new ArrayList<>();
+        for (BoxCopy c : second.boxes()) {
+            double[] home = b.homeOf(c.name());
+            double x = home != null ? home[0] : c.x(), y = home != null ? home[1] : below + (c.y() - minY);
+            placed.add(new BoxCopy(c.name(), c.fileUrl(), c.fileName(), c.projectName(), c.origClass(), c.unknown(), x, y,
+                    c.methods(), c.look()));
+        }
+        List<FlowDiagram.Box> back = paste(new Clip(placed, second.links(), second.outside()), "From " + b.flowName(), Place.AS_THEY_WERE);
+        for (FlowDiagram.Box x : back) if (b.homeOf(x.name) != null) x.border = null; // back in place: no "moved" frame
+        List<NamedCall> calls = new ArrayList<>(a.linkCalls());
+        calls.addAll(b.linkCalls());
+        for (NamedCall c : calls) connectByName(c); // their notes and styles, where the code makes the call
+        multi.clear();
+        diagram.autoLayout(painter.measure(), 180, 50, 40);
+        changed("Connect " + a.flowName() + " and " + b.flowName());
+        connectFromCode(() -> {
+            diagram.autoLayout(painter.measure(), 180, 50, 40);
+            changed("Auto layout");
+        });
+    }
+
+    /**
+     * Draws the calls the code really makes between this tab's methods (read from the code in the background, as
+     * when a flow opens; whatever was copied, cut or pasted): a call is drawn only where the code makes it.
+     */
+    void connectFromCode(Runnable after) {
+        List<FlowEntry> all = new ArrayList<>();
+        java.util.Map<String, FlowDiagram.Method> byKey = new java.util.HashMap<>();
+        for (FlowDiagram.Box b : diagram.boxes) {
+            if (isLink(b)) continue;
+            for (FlowDiagram.Method m : b.methods) {
+                for (FlowEntry e : methodEntries(m)) {
+                    all.add(e);
+                    byKey.putIfAbsent(FlowSync.methodKey(e), m);
+                }
+            }
+        }
+        if (all.size() < 2) {
+            after.run();
+            return;
+        }
+        say("Looking in the code for the calls between the classes…");
+        FlowSync.callsFor(project, List.of(all), found -> {
+            if (isDisposed()) return;
+            int n = 0;
+            CallLook code = new CallLook("", FlowDiagram.NoteStyle.DEFAULT, FlowDiagram.Line.DEFAULT, false);
+            for (String link : found.get(0).links()) {
+                String[] ends = link.split(" -> ", 2);
+                if (ends.length < 2) continue;
+                FlowDiagram.Method from = byKey.get(ends[0]), to = byKey.get(ends[1]);
+                if (from == null || to == null || from == to) continue;
+                boolean there = false;
+                for (FlowDiagram.Link l : diagram.links) there |= l.from().equals(from.id) && l.to().equals(to.id);
+                if (!there) {
+                    connect(from, to, code);
+                    n++;
+                }
+            }
+            say(n == 0 ? "The calls between the classes are drawn." : "Found " + n + (n == 1 ? " call" : " calls") + " in the code.");
+            after.run();
+        });
+    }
+
+    /** Move / Copy to a new tab: a new flow (named after this one) with the classes, laid out in full view. */
+    private void sendToNewTab(boolean move) {
+        List<FlowDiagram.Box> boxes = pickedBoxes();
+        if (boxes.isEmpty() || host == null) return;
+        Clip clip = copyOf(boxes);
+        String name = store.uniqueName(flowName + " – " + (boxes.size() == 1 ? boxes.get(0).name : boxes.size() + " classes"));
+        FlowDiagramHost h = host;
+        String from = flowName;
+        store.newFlow(name, List.of());
+        String made = store.getActiveFlowName();
+        h.madeHere(made);
+        openFlow(project, made);
+        FlowDiagramDialog target = h.pageOf(made);
+        if (target == null) return;
+        h.activate(this);
+        send(boxes, target, move, true);
+        if (!move) h.select(target); // a move shows the combined tab it opens
+    }
+
+    /** Lays every class out and shows them all (zoom to fit). */
+    void fitAll() {
+        painter.autoLayout(diagram);
+        changed("Auto layout");
+        Rectangle2D all = painter.extent(diagram);
+        java.awt.Rectangle view = canvas.getVisibleRect();
+        if (all.getWidth() > 0 && view.width > 0) {
+            double z = Math.min(1, Math.min(view.width / (all.getWidth() + 40), view.height / (all.getHeight() + 40)));
+            setZoom(Math.max(0.33, z), null);
+        }
+    }
+
+    private void selectAll() {
+        multi.clear();
+        for (FlowDiagram.Box b : diagram.boxes) multi.add(b.id);
+        canvas.repaint();
+        say(multi.size() + " classes selected: Ctrl+C / Ctrl+X copy or cut them, Delete removes them.");
     }
 
     private @Nullable FlowDiagram.Box selectedBox() {
@@ -760,7 +1620,7 @@ public final class FlowDiagramDialog {
         select(custom, null, null);
         changed("Rename class " + old + " to " + name + " (custom)");
         say("There is no class " + name + " in the project: it is a custom class now (not in the code). "
-                + "Its methods are custom methods; their code lines leave the flow on Apply.");
+                + "Its methods are custom methods; their code lines leave the flow on Save.");
     }
 
     /** Tags a method in the diagram; its lines get the tag on Apply (one undoable History step). */
@@ -769,8 +1629,8 @@ public final class FlowDiagramDialog {
         diagram.setMethodTag(m, tagId);
         FlowTag t = FlowTag.byId(tagId);
         changed((t == null ? "No tag on " : "Tag " + t.label + ": ") + (b == null ? "" : b.name + ".") + m.name);
-        say(t == null ? "The tag is removed from the method's lines on Apply."
-                : "On Apply, every line of " + m.name + " is tagged " + t.label + " in the TraceWeave window.");
+        say(t == null ? "The tag is removed from the method's lines on Save."
+                : "On Save, every line of " + m.name + " is tagged " + t.label + " in the TraceWeave window.");
     }
 
     /** Change File Name (custom classes): the file the custom class will be in. */
@@ -828,6 +1688,11 @@ public final class FlowDiagramDialog {
     }
 
     private void deleteSelection() {
+        if (multi.size() > 1 || !multi.isEmpty() && selection.methodId() == null && selection.link() == null) {
+            removeBoxes(pickedBoxes(), "Remove");
+            say("Removed lines go to the Recycle Bin when you apply.");
+            return;
+        }
         FlowDiagram.Link link = selection.link();
         if (link != null) {
             if (!link.manual()) {
@@ -1074,11 +1939,43 @@ public final class FlowDiagramDialog {
     // ---------- apply / cancel ----------
 
     private void doOKAction() {
+        if (applyChanges(true)) load(project, this); // the tab stays, with the flow as it is now
+    }
+
+    /** Save All: saves this tab without asking, and shows it again from its flow. False when it couldn't be saved. */
+    boolean saveForAll() {
+        if (!hasChanges()) return true;
+        if (!applyChanges(false)) return false;
+        load(project, this);
+        return true;
+    }
+
+    /** Save and Close All: saves this tab without asking (it closes after). False when it couldn't be saved. */
+    boolean saveBeforeClosing() {
+        return !hasChanges() || applyChanges(false);
+    }
+
+    /** Don't Save and Close All: its changes are dropped without asking. */
+    void dropWithoutAsking() {
+        applied = true;
+    }
+
+    private boolean applyChanges() {
+        return applyChanges(true);
+    }
+
+    /**
+     * Save: writes the diagram to its flow. False when nothing was written (asked not to, or the flow changed).
+     *
+     * @param ask true to ask first (Save); false when every tab is saved (Save All, Save and Close All)
+     */
+    private boolean applyChanges(boolean ask) {
+        if (host != null) host.activate(this); // the tab's flow is the one written
         List<FlowEntry> now = store.getEntries();
         if (!now.equals(entriesAtOpen)) {
-            Messages.showWarningDialog(canvas, "The flow changed while the diagram was open. Close the diagram and open it again.",
+            Messages.showWarningDialog(canvas, "The flow changed while the diagram was open. Close the tab and open the flow again.",
                     "Flow Diagram");
-            return;
+            return false;
         }
         // The current step may be one from before an earlier Apply: it applies to the lines it was made on.
         FlowDiagram.History.Step step = history.current();
@@ -1091,12 +1988,12 @@ public final class FlowDiagramDialog {
         boolean edited = history.position != openPosition || !diagram.sameAs(openDiagram);
         if (linesChanged || looksChanged && edited) {
             String label = applyLabel();
-            String what = linesChanged ? "Apply the changes to " + flowName + "? Its lines are updated"
+            String what = linesChanged ? "Save the changes to " + flowName + "? Its lines are updated"
                     + (result.removed().isEmpty() ? "" : " (" + result.removed().size()
                     + (result.removed().size() == 1 ? " line goes" : " lines go") + " to the Recycle Bin)") + "; Undo in the flow takes it back."
-                    : "Apply the new look of the diagram to " + flowName + "?";
-            if (Messages.showDialog(canvas, what + "\n\n" + label, "Apply Changes", new String[]{"Apply", "Keep Editing"}, 0,
-                    Messages.getQuestionIcon()) != 0) return;
+                    : "Save the new look of the diagram to " + flowName + "?";
+            if (ask && Messages.showDialog(canvas, what + "\n\n" + label, "Save Changes", new String[]{"Save", "Keep Editing"}, 0,
+                    Messages.getQuestionIcon()) != 0) return false;
             store.applyDiagram(result.entries(), result.removed(), label, looks);
             history.markApplied(store.getEntries());
             FlowCopy.notify(project, label + " applied" + (result.removed().isEmpty() ? ""
@@ -1106,8 +2003,8 @@ public final class FlowDiagramDialog {
             store.setDiagramLooks(looks); // e.g. the first layout of the diagram: nothing to undo
         }
         store.setDiagramHistory(history);
-        applied = true; // closing after Apply: nothing to discard
-        close();
+        applied = true; // the page is replaced: nothing to discard
+        return true;
     }
 
     /** True once Apply saved the diagram (or Cancel was confirmed): closing then doesn't ask again. */
@@ -1120,15 +2017,30 @@ public final class FlowDiagramDialog {
         return "Flow Diagram: back to “" + history.current().label() + "”";
     }
 
-    private void doCancelAction() {
-        if (mayClose()) {
-            applied = true; // already asked: closing doesn't ask again
-            close();
+    /** Cancel: back to the flow as it was last applied (after asking); the window stays open. */
+    private void dropChanges() {
+        boolean changes = !Objects.equals(diagram.signature(), openSignature) || history.position != openPosition
+                || !diagram.sameAs(openDiagram);
+        if (!changes) {
+            say("Nothing to reset: the diagram is as it was last saved.");
+            return;
         }
+        if (Messages.showDialog(canvas, "Drop the changes made since the last Save? The diagram goes back to the flow as it is.",
+                "Reset Changes", new String[]{"Reset", "Keep Editing"}, 1, Messages.getQuestionIcon()) != 0) {
+            return;
+        }
+        applied = true; // nothing to ask about when the page is replaced
+        if (host != null) host.activate(this);
+        load(project, this);
+    }
+
+    /** Close: closes this tab (asking first; the window closes with its last tab). */
+    private void doCancelAction() {
+        if (host != null) host.closePage(this);
     }
 
     /** True when there is nothing to lose, or the user chose to discard the changes. */
-    private boolean mayClose() {
+    boolean mayClose() {
         if (applied) return true;
         if (!Objects.equals(diagram.signature(), openSignature) || history.position != openPosition || !diagram.sameAs(openDiagram)) {
             return Messages.showDialog(canvas, "Discard the changes made in the diagram? The flow stays as it was.",
@@ -1212,6 +2124,16 @@ public final class FlowDiagramDialog {
                 }
                 return;
             }
+            if ((e.isControlDown() || e.isMetaDown()) && hit.box() != null) { // pick several classes
+                FlowDiagram.Box sel = selectedBox();
+                if (multi.isEmpty() && sel != null) multi.add(sel.id);
+                if (!multi.remove(hit.box().id)) multi.add(hit.box().id);
+                repaint();
+                say(multi.size() + (multi.size() == 1 ? " class" : " classes") + " selected: Ctrl+C / Ctrl+X, Delete, "
+                        + "or right-click → Move to Tab.");
+                return;
+            }
+            multi.clear();
             select(hit.box(), hit.method(), hit.link());
             if (hit.box() != null) {
                 dragBox = hit.box();
@@ -1303,6 +2225,7 @@ public final class FlowDiagramDialog {
                         setTool(Tool.CONNECT);
                         say("Now drag from " + label(hit.method()) + " to the method it calls.");
                     });
+                    item(menu, "Connect the Flow to…", FlowTheme.ICON_CONNECT, () -> pickPathEnd(hit.method()));
                     menu.addSeparator();
                 }
                 item(menu, "Format Box (and Note)…", FlowTheme.ICON_FORMAT, () -> {
@@ -1326,10 +2249,38 @@ public final class FlowDiagramDialog {
                 item(menu, "Add File Here…", FlowTheme.ICON_CLASS, () -> addKnownClass(p));
                 item(menu, "Auto Layout", FlowTheme.ICON_LAYOUT, FlowDiagramDialog.this::autoLayout);
             }
+            if (hit.box() != null || !multi.isEmpty() || FlowDiagramHost.clipboard != null) {
+                menu.addSeparator();
+                if (hit.box() != null && !multi.contains(hit.box().id) && !multi.isEmpty()) multi.add(hit.box().id);
+                int n = pickedBoxes().size();
+                String what = n <= 1 ? "Class" : n + " Classes";
+                if (n > 0) {
+                    item(menu, "Copy " + what, AllIcons.Actions.Copy, () -> copyPicked(false));
+                    item(menu, "Cut " + what, AllIcons.Actions.MenuCut, () -> copyPicked(true));
+                }
+                if (FlowDiagramHost.clipboard != null) item(menu, "Paste", AllIcons.Actions.MenuPaste, FlowDiagramDialog.this::pasteClipboard);
+                if (n > 0 && host != null) {
+                    javax.swing.JMenu move = submenu("Move " + what + " to Tab", AllIcons.Actions.Forward);
+                    javax.swing.JMenu copy = submenu("Copy " + what + " to Tab", AllIcons.Actions.Copy);
+                    for (FlowDiagramDialog other : host.pages()) {
+                        if (other == FlowDiagramDialog.this) continue;
+                        subItem(move, other.flowName(), FlowTheme.ICON_FLOWS, () -> sendTo(other, true));
+                        subItem(copy, other.flowName(), FlowTheme.ICON_FLOWS, () -> sendTo(other, false));
+                    }
+                    if (move.getItemCount() > 0) {
+                        move.addSeparator();
+                        copy.addSeparator();
+                    }
+                    subItem(move, "New Tab…", AllIcons.General.Add, () -> sendToNewTab(true));
+                    subItem(copy, "New Tab…", AllIcons.General.Add, () -> sendToNewTab(false));
+                    menu.add(move);
+                    menu.add(copy);
+                }
+            }
             menu.show(this, e.getX(), e.getY());
         }
 
-        /** Tag ▸ Bug / Important / Question / No Tag: given to all the method's lines on Apply. */
+        /** Tag ▸ Bug / Important / Question / No Tag: given to all the method's lines on Save. */
         private javax.swing.JMenu tagMenu(FlowDiagram.Method m) {
             javax.swing.JMenu tags = new javax.swing.JMenu("Tag");
             tags.setIcon(FlowTheme.ICON_TAG);
@@ -1348,8 +2299,28 @@ public final class FlowDiagramDialog {
 
         private JMenuItem item(JPopupMenu menu, String text, Icon icon, Runnable action) {
             JMenuItem it = new JMenuItem(text, icon);
+            it.setBorder(JBUI.Borders.empty(5, 8, 5, 14));
+            it.setIconTextGap(JBUI.scale(8));
             it.addActionListener(ev -> action.run());
             menu.add(it);
+            return it;
+        }
+
+        /** A submenu with the same look as the menu's items. */
+        private javax.swing.JMenu submenu(String text, Icon icon) {
+            javax.swing.JMenu m = new javax.swing.JMenu(text);
+            m.setIcon(icon);
+            m.setBorder(JBUI.Borders.empty(5, 8, 5, 14));
+            m.setIconTextGap(JBUI.scale(8));
+            return m;
+        }
+
+        private JMenuItem subItem(javax.swing.JMenu m, String text, @Nullable Icon icon, Runnable action) {
+            JMenuItem it = new JMenuItem(text, icon);
+            it.setBorder(JBUI.Borders.empty(5, 8, 5, 14));
+            it.setIconTextGap(JBUI.scale(8));
+            it.addActionListener(ev -> action.run());
+            m.add(it);
             return it;
         }
 
@@ -1374,6 +2345,17 @@ public final class FlowDiagramDialog {
                 }
                 g.scale(zoom(), zoom());
                 painter.paint(g, diagram, palette, selection);
+                if (!multi.isEmpty()) { // the classes picked with Ctrl+click
+                    g.setColor(palette.selection());
+                    g.setStroke(new java.awt.BasicStroke(2f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND, 10,
+                            new float[]{6, 4}, 0));
+                    for (String id : multi) {
+                        FlowDiagram.Box b = diagram.box(id);
+                        if (b == null) continue;
+                        Rectangle2D r = painter.bounds(b);
+                        g.draw(new java.awt.geom.RoundRectangle2D.Double(r.getX() - 5, r.getY() - 5, r.getWidth() + 10, r.getHeight() + 10, 16, 16));
+                    }
+                }
                 if (draftFrom != null && draftTo != null && diagram.boxOf(draftFrom.id) != null) {
                     FlowDiagram.Box b = diagram.boxOf(draftFrom.id);
                     Rectangle2D r = painter.rowBounds(b, Math.max(0, b.methods.indexOf(draftFrom)));

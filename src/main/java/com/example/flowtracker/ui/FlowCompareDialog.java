@@ -62,7 +62,8 @@ public final class FlowCompareDialog {
     private List<FlowValueDiff.Row> all;
     private final List<FlowValueDiff.Row> shown = new ArrayList<>();
     private String leftTitle, rightTitle;
-    private final JPanel chips = new JPanel(new FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0));
+    /** The counts: they wrap onto another line when the window is narrow instead of being cut off. */
+    private final JPanel chips = new JPanel(new com.intellij.util.ui.WrapLayout(FlowLayout.LEFT, JBUI.scale(8), JBUI.scale(4)));
     private @Nullable JBTable table;
     private String view = "TREE";
     private final Model model = new Model();
@@ -107,6 +108,23 @@ public final class FlowCompareDialog {
     /** @param leftSnap the saved value on the left, or null (then edits stay in this window); likewise rightSnap */
     public static void show(@Nullable Project project, String title, @Nullable FlowSnapshot leftSnap, FlowValue left, String leftTitle,
                             @Nullable FlowSnapshot rightSnap, FlowValue right, String rightTitle) {
+        FlowWindow[] window = {null};
+        Built built = build(project, title, leftSnap, left, leftTitle, rightSnap, right, rightTitle, "Close", () -> window[0].close());
+        window[0] = new FlowWindow(project, "TraceWeave.Compare", title, built.root(), null);
+        window[0].whenClosed(() -> Disposer.dispose(built.disposable()));
+        window[0].show();
+    }
+
+    /** The Compare view, to put in a window; dispose {@code disposable} when it is taken away. */
+    public record Built(JComponent root, Disposable disposable) {}
+
+    /**
+     * The Compare view without a window of its own (e.g. in the Compare Pasted Data window).
+     *
+     * @param closeLabel the label of the button that closes it ("Close", "Back to Edit")
+     */
+    public static Built build(@Nullable Project project, String title, @Nullable FlowSnapshot leftSnap, FlowValue left, String leftTitle,
+                              @Nullable FlowSnapshot rightSnap, FlowValue right, String rightTitle, String closeLabel, Runnable onClose) {
         FlowCompareDialog d = new FlowCompareDialog(project, title, left, leftTitle, right, rightTitle);
         d.leftSnap = leftSnap;
         d.rightSnap = rightSnap;
@@ -135,8 +153,16 @@ public final class FlowCompareDialog {
         swap.setToolTipText("Make the other side the new data (Ctrl+Shift+X): what was added shows as removed, and so on");
         swap.addActionListener(e -> d.swap());
         buttons.add(swap);
+        javax.swing.JButton openFile = new javax.swing.JButton("Open File…");
+        openFile.setToolTipText("Compare with a file: put a .json or .flowdebug.json file on the Old or the New side");
+        openFile.addActionListener(e -> d.fileMenu(openFile));
+        buttons.add(openFile);
+        javax.swing.JButton export = new javax.swing.JButton("Export…");
+        export.setToolTipText("Save the Old data, the New data or the differences to a file");
+        export.addActionListener(e -> d.exportMenu(export));
+        buttons.add(export);
         javax.swing.JButton copy = new javax.swing.JButton("Copy Differences");
-        javax.swing.JButton close = new javax.swing.JButton("Close");
+        javax.swing.JButton close = new javax.swing.JButton(closeLabel);
         buttons.add(copy);
         buttons.add(close);
         JPanel bottom = new JPanel(new BorderLayout());
@@ -157,15 +183,10 @@ public final class FlowCompareDialog {
         root.getActionMap().put("traceweave.swap", new javax.swing.AbstractAction() {
             @Override public void actionPerformed(java.awt.event.ActionEvent e) { d.swap(); }
         });
-        FlowWindow window = new FlowWindow(project, "TraceWeave.Compare", title, root, null);
-        window.whenClosed(() -> Disposer.dispose(d.disposable));
-        d.window = window;
         copy.addActionListener(e -> FlowCopy.toClipboard(d.differencesText()));
-        close.addActionListener(e -> window.close());
-        window.show();
+        close.addActionListener(e -> onClose.run());
+        return new Built(root, d.disposable);
     }
-
-    private @Nullable FlowWindow window;
 
     private static void key(JComponent root, javax.swing.KeyStroke stroke, String name, Runnable run) {
         root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(stroke, "traceweave." + name);
@@ -270,7 +291,12 @@ public final class FlowCompareDialog {
         made.add("TREE");
         JPanel panel = new JPanel(new BorderLayout());
         panel.add(top, BorderLayout.NORTH);
-        panel.add(cards, BorderLayout.CENTER);
+        JPanel viewsAndSides = new JPanel(new BorderLayout(0, JBUI.scale(6)));
+        sides.setOpaque(false);
+        fillSides();
+        viewsAndSides.add(sides, BorderLayout.NORTH);
+        viewsAndSides.add(cards, BorderLayout.CENTER);
+        panel.add(viewsAndSides, BorderLayout.CENTER);
         showView("TREE");
         panel.setPreferredSize(new Dimension(JBUI.scale(960), JBUI.scale(560)));
         return panel;
@@ -320,6 +346,32 @@ public final class FlowCompareDialog {
 
     private void fillChips() {
         fillChips(all, false);
+        fillSides();
+    }
+
+    /** Which side is which, over every view (Tree, JSON, Text): OLD on the left, NEW on the right. */
+    private final JPanel sides = new JPanel(new java.awt.GridLayout(1, 2, JBUI.scale(12), 0));
+
+    private void fillSides() {
+        sides.removeAll();
+        JPanel l = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        JPanel r = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        l.setOpaque(false);
+        r.setOpaque(false);
+        l.add(new Chip("OLD  ·  " + leftTitle, REMOVED, REMOVED_MARK));
+        r.add(new Chip("NEW  ·  " + rightTitle, ADDED, ADDED_MARK));
+        sides.add(l);
+        sides.add(r);
+        sides.revalidate();
+        sides.repaint();
+    }
+
+    private static String hex(Color c) {
+        return String.format("#%06X", c.getRGB() & 0xFFFFFF);
+    }
+
+    private static String esc(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     /** The counts of a comparison; {@code pending}: of edits not saved yet (typed or pasted in JSON / Text). */
@@ -402,7 +454,7 @@ public final class FlowCompareDialog {
             da.getDocument().addDocumentListener(typed, disposable);
             db.getDocument().addDocumentListener(typed, disposable);
             shownTexts.put(view, new String[]{a, b});
-            diff.setRequest(new SimpleDiffRequest(title, da, db, "Old · " + leftTitle, "New · " + rightTitle));
+            diff.setRequest(new SimpleDiffRequest(title, da, db, "OLD  ·  " + leftTitle, "NEW  ·  " + rightTitle));
             diff.getComponent().setName(view);
             cards.add(diff.getComponent(), view);
         }
@@ -698,6 +750,147 @@ public final class FlowCompareDialog {
         refreshAll();
     }
 
+    // ---------- files ----------
+
+    private void fileMenu(JComponent anchor) {
+        menuAbove(anchor, new String[]{"As the Old Data…", "As the New Data…"},
+                new Runnable[]{() -> openFile(true), () -> openFile(false)});
+    }
+
+    /** A small menu above its button (the buttons are at the bottom of the window), with room around each option. */
+    private static void menuAbove(JComponent anchor, String[] labels, Runnable[] actions) {
+        FlowMenus.above(anchor, labels, actions);
+    }
+
+    /**
+     * A file on one side: JSON (read into fields), or a .flowdebug.json export (one of its saved values). The side
+     * is then the file's data (it isn't a saved value any more: edits stay in this window).
+     */
+    private void openFile(boolean onLeft) {
+        com.intellij.openapi.vfs.VirtualFile file = com.intellij.openapi.fileChooser.FileChooser.chooseFile(
+                com.intellij.openapi.fileChooser.FileChooserDescriptorFactory.createSingleFileDescriptor("json") // .json and .flowdebug.json
+                        .withTitle("Compare with a File").withDescription("A .json file, or a .flowdebug.json file exported from Debug Data"),
+                project, null);
+        if (file == null) return;
+        String text;
+        try {
+            text = new String(file.contentsToByteArray(), file.getCharset());
+        } catch (java.io.IOException ex) {
+            com.intellij.openapi.ui.Messages.showErrorDialog(cards, "Couldn't read " + file.getName() + ": " + ex.getMessage(), "Open File");
+            return;
+        }
+        FlowValue value = null;
+        String name = file.getName();
+        try {
+            List<FlowSnapshot> saved = com.example.flowtracker.model.FlowDebugTransfer.fromJson(text, List.of());
+            if (!saved.isEmpty()) {
+                FlowSnapshot pick = saved.get(0);
+                if (saved.size() > 1) {
+                    // several saved values in the file: pick one, then it goes on the side
+                    String fileName = file.getName();
+                    com.intellij.openapi.ui.popup.JBPopupFactory.getInstance().createPopupChooserBuilder(saved)
+                            .setTitle(fileName + ": which saved value?")
+                            .setRenderer(new com.intellij.ui.SimpleListCellRenderer<FlowSnapshot>() {
+                                @Override public void customize(@NotNull javax.swing.JList<? extends FlowSnapshot> l, FlowSnapshot s, int i,
+                                                                boolean sel, boolean focus) {
+                                    setText(s.name + "  ·  " + s.where());
+                                }
+                            })
+                            .setItemChosenCallback(s -> putOnSide(onLeft, s.value, fileName + " · " + s.name, fileName))
+                            .createPopup().showInCenterOf(cards);
+                    return;
+                }
+                value = pick.value;
+                name = file.getName() + " · " + pick.name;
+            }
+        } catch (java.io.IOException | RuntimeException notDebugData) {
+            // not an export of Debug Data: read it as JSON
+        }
+        if (value == null) value = FlowValueText.fromJson(onLeft ? left.name : right.name, text);
+        if (value == null) {
+            com.intellij.openapi.ui.Messages.showErrorDialog(cards, file.getName() + " isn't JSON. To compare other text (XML, a log), "
+                    + "use Compare with nothing selected in Debug Data and paste it.", "Open File");
+            return;
+        }
+        putOnSide(onLeft, value, name, file.getName());
+    }
+
+    /** The file's data on one side (it isn't a saved value any more: edits stay in this window). */
+    private void putOnSide(boolean onLeft, FlowValue value, String name, String fileName) {
+        value = value.copy();
+        value.name = onLeft ? left.name : right.name;
+        if (onLeft) {
+            leftSnap = null;
+            leftTitle = name;
+        } else {
+            rightSnap = null;
+            rightTitle = name;
+        }
+        if (table != null) {
+            table.getColumnModel().getColumn(2).setHeaderValue(model.getColumnName(2));
+            table.getColumnModel().getColumn(3).setHeaderValue(model.getColumnName(3));
+            table.getTableHeader().repaint();
+        }
+        change(onLeft ? value : left.copy(), onLeft ? right.copy() : value, (onLeft ? "Old" : "New") + ": opened " + fileName);
+    }
+
+    private void exportMenu(JComponent anchor) {
+        menuAbove(anchor, new String[]{"Old Data as JSON…", "New Data as JSON…", "The Differences as Text…",
+                        "Both Sides and the Differences…"},
+                new Runnable[]{() -> export("old"), () -> export("new"), () -> export("diff"), () -> export("all")});
+    }
+
+    /** Saves a side, the differences, or all three (named after the project and what is compared). */
+    private void export(String what) {
+        if (project == null) return;
+        String base = title.replaceFirst("^Compare ", "").replaceAll("[^\\w.-]+", "_");
+        String prefix = com.example.flowtracker.model.FlowProjects.exportPrefix(project, projectsCompared());
+        if (what.equals("all")) {
+            com.intellij.openapi.vfs.VirtualFile dir = com.intellij.openapi.fileChooser.FileChooser.chooseFile(
+                    com.intellij.openapi.fileChooser.FileChooserDescriptorFactory.createSingleFolderDescriptor()
+                            .withTitle("Export the Comparison").withDescription("Pick a folder: three files are saved there"),
+                    project, null);
+            if (dir == null) return;
+            java.nio.file.Path folder = java.nio.file.Path.of(dir.getPath());
+            try {
+                write(folder.resolve(com.example.flowtracker.model.FlowProjects.prefixed(prefix, base + "-old.json")), FlowValueText.valueJson(left, true));
+                write(folder.resolve(com.example.flowtracker.model.FlowProjects.prefixed(prefix, base + "-new.json")), FlowValueText.valueJson(right, true));
+                write(folder.resolve(com.example.flowtracker.model.FlowProjects.prefixed(prefix, base + "-differences.txt")), differencesText());
+                editHint.setText("Saved the old and new data and the differences in " + dir.getName() + ".");
+            } catch (java.io.IOException ex) {
+                com.intellij.openapi.ui.Messages.showErrorDialog(cards, "Couldn't write the files: " + ex.getMessage(), "Export");
+            }
+            return;
+        }
+        boolean diff = what.equals("diff");
+        String ext = diff ? "txt" : "json";
+        String file = base + (what.equals("old") ? "-old" : what.equals("new") ? "-new" : "-differences") + "." + ext;
+        com.intellij.openapi.vfs.VirtualFileWrapper target = com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
+                .createSaveFileDialog(com.example.flowtracker.compat.FlowCompat.saverDescriptor("Export",
+                        diff ? "Save the differences as text" : "Save this side as JSON", ext), project)
+                .save(com.example.flowtracker.model.FlowProjects.prefixed(prefix, file));
+        if (target == null) return;
+        try {
+            write(target.getFile().toPath(), diff ? differencesText() : FlowValueText.valueJson(what.equals("old") ? left : right, true));
+            editHint.setText("Saved " + target.getFile().getName() + ".");
+        } catch (java.io.IOException ex) {
+            com.intellij.openapi.ui.Messages.showErrorDialog(cards, "Couldn't write the file: " + ex.getMessage(), "Export");
+        }
+    }
+
+    private static void write(java.nio.file.Path path, String text) throws java.io.IOException {
+        java.nio.file.Files.writeString(path, text, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /** The projects of the compared saved values (for the exported files' names). */
+    private List<String> projectsCompared() {
+        List<String> out = new ArrayList<>();
+        for (FlowSnapshot s : new FlowSnapshot[]{leftSnap, rightSnap}) {
+            if (s != null && project != null) out.add(com.example.flowtracker.model.FlowProjects.ofUrl(project, s.fileUrl));
+        }
+        return out;
+    }
+
     /** Everything compared and shown again after a change. */
     private void refreshAll() {
         all = FlowValueDiff.compare(left, right);
@@ -762,7 +955,12 @@ public final class FlowCompareDialog {
     private final class Model extends AbstractTableModel {
         @Override public int getRowCount() { return shown.size(); }
         @Override public int getColumnCount() { return 4; }
-        @Override public String getColumnName(int c) { return c == 0 ? "" : c == 1 ? "Name" : c == 2 ? "Old · " + leftTitle : "New · " + rightTitle; }
+        @Override public String getColumnName(int c) {
+            if (c == 0) return "";
+            if (c == 1) return "Name";
+            return c == 2 ? "<html><b><font color='" + hex(REMOVED_MARK) + "'>OLD</font></b> &nbsp;" + esc(leftTitle) + "</html>"
+                    : "<html><b><font color='" + hex(ADDED_MARK) + "'>NEW</font></b> &nbsp;" + esc(rightTitle) + "</html>";
+        }
         @Override public Object getValueAt(int r, int c) { return shown.get(r); }
     }
 
