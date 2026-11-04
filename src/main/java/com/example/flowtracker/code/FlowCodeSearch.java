@@ -198,6 +198,43 @@ public final class FlowCodeSearch {
     /** A file of the project: where it is and which project it belongs to. */
     public record FileHit(String url, String fileName, String path, String projectName) {}
 
+    /** Files to offer before anything is typed: open in the editor, opened lately, and the project's other code files. */
+    public record Suggestions(List<FileHit> open, List<FileHit> recent, List<FileHit> other) {}
+
+    public static Suggestions suggestions(Project project, int limit) {
+        java.util.Set<VirtualFile> seen = new java.util.HashSet<>();
+        com.intellij.openapi.roots.ProjectFileIndex index = com.intellij.openapi.roots.ProjectFileIndex.getInstance(project);
+        java.util.function.Predicate<VirtualFile> wanted = f -> f != null && f.isValid() && !f.isDirectory() && FlowLang.isSupported(f)
+                && index.isInContent(f) && seen.add(f);
+        List<FileHit> open = new ArrayList<>();
+        for (VirtualFile f : com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).getOpenFiles()) {
+            if (wanted.test(f)) open.add(hit(project, f));
+        }
+        List<FileHit> recent = new ArrayList<>();
+        List<VirtualFile> history = new ArrayList<>(List.of(com.intellij.openapi.fileEditor.impl.EditorHistoryManager.getInstance(project).getFiles()));
+        java.util.Collections.reverse(history); // the latest first
+        for (VirtualFile f : history) {
+            if (recent.size() >= 20) break;
+            if (wanted.test(f)) recent.add(hit(project, f));
+        }
+        List<VirtualFile> rest = new ArrayList<>();
+        index.iterateContent(f -> {
+            if (!f.isDirectory() && FlowLang.isSupported(f) && !seen.contains(f) && !index.isInTestSourceContent(f)) rest.add(f);
+            return rest.size() < limit * 4;
+        });
+        rest.sort(Comparator.comparing(VirtualFile::getName, String.CASE_INSENSITIVE_ORDER));
+        List<FileHit> other = new ArrayList<>();
+        for (VirtualFile f : rest) {
+            if (other.size() >= limit) break;
+            if (wanted.test(f)) other.add(hit(project, f));
+        }
+        return new Suggestions(open, recent, other);
+    }
+
+    private static FileHit hit(Project project, VirtualFile f) {
+        return new FileHit(f.getUrl(), f.getName(), relativePath(project, f), FlowProjects.nameFor(project, f));
+    }
+
     /**
      * Files of the project whose file name (or one of whose classes) matches the search text, best matches first:
      * names starting with the text, then shorter names.

@@ -95,6 +95,9 @@ final class FlowCodePicker {
     /** The list row that takes the typed name as a custom class: its class name and the file it will be in. */
     private record Custom(String className, String fileName) {}
 
+    /** A heading in the file list (before anything is typed: open, recent, in the project): it can't be picked. */
+    private record Heading(String text) {}
+
     /** What the method picker returns: a method of the class's code, or the name typed for a custom method. */
     record MethodChoice(@Nullable FlowCodeSearch.MethodHit hit, @Nullable String customName) {
         boolean isCustom() { return hit == null; }
@@ -164,6 +167,7 @@ final class FlowCodePicker {
             Disposer.register(getDisposable(), debounce::stop);
             init();
             updateOk();
+            showSuggestions(); // nothing typed yet: the files at hand
         }
 
         @Override
@@ -179,6 +183,13 @@ final class FlowCodePicker {
             list.setCellRenderer(new ColoredListCellRenderer<>() {
                 @Override
                 protected void customizeCellRenderer(@NotNull JList<?> l, Object value, int index, boolean selected, boolean focus) {
+                    if (value instanceof Heading h) {
+                        setIcon(null);
+                        setBorder(JBUI.Borders.empty(index == 0 ? 2 : 8, 2, 2, 2));
+                        append(h.text(), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
+                        return;
+                    }
+                    setBorder(JBUI.Borders.empty(1, 10, 1, 2));
                     if (value instanceof Custom c) {
                         setIcon(FlowTheme.ICON_CLASS_UNKNOWN);
                         append(c.fileName(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
@@ -193,7 +204,14 @@ final class FlowCodePicker {
                     if (!f.projectName().isEmpty()) append("  [" + f.projectName() + "]", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
                 }
             });
-            list.addListSelectionListener(e -> updateOk());
+            list.addListSelectionListener(e -> {
+                // a heading isn't a file: the row after it is meant
+                if (list.getSelectedValue() instanceof Heading && list.getSelectedIndex() + 1 < model.size()) {
+                    list.setSelectedIndex(list.getSelectedIndex() + 1);
+                    return;
+                }
+                updateOk();
+            });
             list.addMouseListener(new MouseAdapter() {
                 @Override public void mouseClicked(MouseEvent e) {
                     if (e.getClickCount() == 2 && list.getSelectedValue() != null) doOKAction();
@@ -207,7 +225,7 @@ final class FlowCodePicker {
             status.setText(hint());
             JPanel panel = new JPanel(new BorderLayout(0, JBUI.scale(6)));
             panel.add(search, BorderLayout.NORTH);
-            panel.add(new JBScrollPane(list), BorderLayout.CENTER);
+            panel.add(com.example.flowtracker.ui.FlowScroll.wheel(new JBScrollPane(list)), BorderLayout.CENTER);
             panel.add(status, BorderLayout.SOUTH);
             panel.setPreferredSize(new Dimension(JBUI.scale(640), JBUI.scale(420)));
             return panel;
@@ -221,13 +239,49 @@ final class FlowCodePicker {
 
         private void move(int delta) {
             if (model.isEmpty()) return;
-            int i = Math.max(0, Math.min(model.size() - 1, list.getSelectedIndex() + delta));
+            int i = list.getSelectedIndex();
+            for (int k = 0; k < model.size(); k++) {
+                i = Math.max(0, Math.min(model.size() - 1, i + delta));
+                if (!(model.get(i) instanceof Heading)) break;
+                if (i == 0 || i == model.size() - 1) delta = -delta; // a heading at an end: back the other way
+            }
             list.setSelectedIndex(i);
             list.ensureIndexIsVisible(i);
         }
 
+        /** Before anything is typed: the files open in the editor, the ones opened lately, then the project's others. */
+        private void showSuggestions() {
+            int gen = ++generation;
+            hits = List.of();
+            status.setText(DumbService.isDumb(project) ? "Waiting for indexing to finish…" : "Loading files…");
+            ReadAction.nonBlocking(() -> FlowCodeSearch.suggestions(project, 60))
+                    .inSmartMode(project)
+                    .expireWith(getDisposable())
+                    .finishOnUiThread(ModalityState.stateForComponent(list), sug -> {
+                        if (gen != generation || !search.getText().isBlank()) return;
+                        model.clear();
+                        group("OPEN IN THE EDITOR", sug.open());
+                        group("RECENTLY OPENED", sug.recent());
+                        group("IN THE PROJECT", sug.other());
+                        if (model.size() > 1) list.setSelectedIndex(1);
+                        updateOk();
+                        status.setText(hint());
+                    })
+                    .submit(AppExecutorUtil.getAppExecutorService());
+        }
+
+        private void group(String title, List<FlowCodeSearch.FileHit> files) {
+            if (files.isEmpty()) return;
+            model.addElement(new Heading(title));
+            files.forEach(model::addElement);
+        }
+
         private void runSearch() {
             String q = search.getText();
+            if (q.isBlank()) {
+                showSuggestions();
+                return;
+            }
             int gen = ++generation;
             Pattern p = FlowCodeSearch.pattern(q);
             if (p == null) {
@@ -269,6 +323,7 @@ final class FlowCodePicker {
 
         /** Shows the classes found and, last, the typed name as a custom class; keeps the selection when it can. */
         private void fill() {
+            if (search.getText().isBlank()) return; // the suggestions stay until something is typed
             Object was = list.getSelectedValue();
             model.clear();
             hits.forEach(model::addElement);
@@ -282,7 +337,7 @@ final class FlowCodePicker {
 
         private void updateOk() {
             Object v = list.getSelectedValue();
-            setOKActionEnabled(v != null);
+            setOKActionEnabled(v != null && !(v instanceof Heading));
             setOKButtonText(v instanceof Custom ? okText.equals("Add") ? "Add Custom Class" : "Use Custom Class" : okText);
         }
 
@@ -329,7 +384,7 @@ final class FlowCodePicker {
             JPanel panel = new JPanel(new BorderLayout(0, JBUI.scale(6)));
             JBLabel hint = new JBLabel("This file has " + list.getModel().getSize() + " classes. Pick the one to add:");
             panel.add(hint, BorderLayout.NORTH);
-            panel.add(new JBScrollPane(list), BorderLayout.CENTER);
+            panel.add(com.example.flowtracker.ui.FlowScroll.wheel(new JBScrollPane(list)), BorderLayout.CENTER);
             panel.setPreferredSize(new Dimension(JBUI.scale(420), JBUI.scale(280)));
             return panel;
         }
@@ -395,7 +450,7 @@ final class FlowCodePicker {
             status.setForeground(UIUtil.getContextHelpForeground());
             JPanel panel = new JPanel(new BorderLayout(0, JBUI.scale(6)));
             panel.add(filter, BorderLayout.NORTH);
-            panel.add(new JBScrollPane(list), BorderLayout.CENTER);
+            panel.add(com.example.flowtracker.ui.FlowScroll.wheel(new JBScrollPane(list)), BorderLayout.CENTER);
             panel.add(status, BorderLayout.SOUTH);
             panel.setPreferredSize(new Dimension(JBUI.scale(520), JBUI.scale(380)));
             return panel;
@@ -494,7 +549,7 @@ final class FlowCodePicker {
             hint.setForeground(UIUtil.getContextHelpForeground());
             JPanel panel = new JPanel(new BorderLayout(0, JBUI.scale(6)));
             panel.add(hint, BorderLayout.NORTH);
-            panel.add(new JBScrollPane(list), BorderLayout.CENTER);
+            panel.add(com.example.flowtracker.ui.FlowScroll.wheel(new JBScrollPane(list)), BorderLayout.CENTER);
             panel.setPreferredSize(new Dimension(JBUI.scale(760), JBUI.scale(Math.min(560, 120 + lines.size() * 22))));
             return panel;
         }

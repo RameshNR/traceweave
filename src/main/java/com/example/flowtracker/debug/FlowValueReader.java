@@ -66,10 +66,9 @@ public final class FlowValueReader {
      * null when the frame has no such variable.
      */
     public static void readVariable(XStackFrame frame, String name, Consumer<FlowValue> done) {
-        frame.computeChildren(new XCompositeNode() {
+        frame.computeChildren(node(new Object() {
             private boolean found, ended;
 
-            @Override
             public void addChildren(@NotNull XValueChildrenList children, boolean last) {
                 for (int i = 0; i < children.size() && !found; i++) {
                     if (!children.getName(i).equals(name)) continue;
@@ -85,16 +84,15 @@ public final class FlowValueReader {
                 ApplicationManager.getApplication().invokeLater(() -> done.accept(null));
             }
 
-            @SuppressWarnings("deprecation") // abstract in every supported IDE, so it has to be there
-            @Override public void tooManyChildren(int remaining) { none(); }
-            @Override public void tooManyChildren(int remaining, @NotNull Runnable addNextChildren) { none(); }
-            @Override public void setAlreadySorted(boolean alreadySorted) {}
-            @Override public void setErrorMessage(@NotNull String errorMessage) { none(); }
-            @Override public void setErrorMessage(@NotNull String errorMessage, @Nullable XDebuggerTreeNodeHyperlink link) { none(); }
-            @Override public void setMessage(@NotNull String message, @Nullable Icon icon, @NotNull SimpleTextAttributes attributes,
+            public void tooManyChildren(int remaining) { none(); }
+            public void tooManyChildren(int remaining, @NotNull Runnable addNextChildren) { none(); }
+            public void setAlreadySorted(boolean alreadySorted) {}
+            public void setErrorMessage(@NotNull String errorMessage) { none(); }
+            public void setErrorMessage(@NotNull String errorMessage, @Nullable XDebuggerTreeNodeHyperlink link) { none(); }
+            public void setMessage(@NotNull String message, @Nullable Icon icon, @NotNull SimpleTextAttributes attributes,
                                              @Nullable XDebuggerTreeNodeHyperlink link) {}
-            @Override public boolean isObsolete() { return found || ended; }
-        });
+            public boolean isObsolete() { return found || ended; }
+        }));
     }
 
     /** One read: counts what is still being asked, and finishes once nothing is (or the time is up). */
@@ -141,7 +139,7 @@ public final class FlowValueReader {
                 if (finished || depth <= 0 || values >= MAX_VALUES) return;
                 pending++;
             }
-            container.computeChildren(new ChildrenNode(this, target, depth));
+            container.computeChildren(node(new ChildrenNode(this, target, depth)));
         }
 
         synchronized boolean roomFor(FlowValue parent) {
@@ -219,7 +217,8 @@ public final class FlowValueReader {
                 target.value = value.length() > MAX_TEXT ? value.substring(0, MAX_TEXT) + "…" : value;
                 first = !presented;
                 presented = true;
-                expand = hasChildren && !expanded;
+                // a String (its text, not the bytes inside it), a boxed number, a date…: the value as shown, no children
+                expand = hasChildren && !expanded && !isPlain(target.type);
                 if (expand) expanded = true;
             }
             job.answered();
@@ -236,8 +235,8 @@ public final class FlowValueReader {
         }
     }
 
-    /** Receives a value's children from the debugger, possibly in several parts. */
-    private static final class ChildrenNode implements XCompositeNode {
+    /** Receives a value's children from the debugger, possibly in several parts (given to it through {@link #node}). */
+    private static final class ChildrenNode { // given to the debugger through node(…)
         private final Job job;
         private final FlowValue target;
         private final int depth;
@@ -249,7 +248,6 @@ public final class FlowValueReader {
             this.depth = depth;
         }
 
-        @Override
         public void addChildren(@NotNull XValueChildrenList children, boolean last) {
             job.answered();
             for (int i = 0; i < children.size(); i++) {
@@ -266,14 +264,11 @@ public final class FlowValueReader {
             if (last) end();
         }
 
-        @SuppressWarnings("deprecation") // abstract in every supported IDE, so it has to be there
-        @Override
         public void tooManyChildren(int remaining) {
             more(remaining);
             end();
         }
 
-        @Override
         public void tooManyChildren(int remaining, @NotNull Runnable addNextChildren) {
             tooManyChildren(remaining); // the first part is enough: no more children are asked for
         }
@@ -288,10 +283,8 @@ public final class FlowValueReader {
             }
         }
 
-        @Override
         public void setAlreadySorted(boolean alreadySorted) {}
 
-        @Override
         public void setErrorMessage(@NotNull String errorMessage) {
             synchronized (job) {
                 if (target.value.isEmpty()) target.value = errorMessage;
@@ -299,12 +292,10 @@ public final class FlowValueReader {
             end();
         }
 
-        @Override
         public void setErrorMessage(@NotNull String errorMessage, @Nullable XDebuggerTreeNodeHyperlink link) {
             setErrorMessage(errorMessage);
         }
 
-        @Override
         public void setMessage(@NotNull String message, @Nullable Icon icon, @NotNull SimpleTextAttributes attributes,
                                @Nullable XDebuggerTreeNodeHyperlink link) {}
 
@@ -316,13 +307,66 @@ public final class FlowValueReader {
             job.settle();
         }
 
-        @Override
         public boolean isObsolete() {
             return job.finished();
         }
     }
 
+    /**
+     * The debugger's {@link XCompositeNode} for an object that has its methods (addChildren, tooManyChildren,
+     * setErrorMessage...): each call goes to the object's method of the same name and parameters; the interface's
+     * other methods do what it says by default. Made at run time, so the plugin doesn't implement the interface
+     * itself: its {@code tooManyChildren(int)} is abstract in IntelliJ IDEA 2023.1 but deprecated in later versions,
+     * and implementing it would use deprecated API there.
+     */
+    static XCompositeNode node(Object handler) {
+        java.util.Map<java.lang.reflect.Method, java.lang.reflect.Method> found = new java.util.concurrent.ConcurrentHashMap<>();
+        java.lang.reflect.Method none;
+        try {
+            none = Object.class.getMethod("hashCode");
+        } catch (NoSuchMethodException e) {
+            throw new IllegalStateException(e);
+        }
+        java.lang.reflect.Method missing = none; // marks "the object has no such method"
+        return (XCompositeNode) java.lang.reflect.Proxy.newProxyInstance(XCompositeNode.class.getClassLoader(),
+                new Class<?>[]{XCompositeNode.class}, (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "equals": if (method.getParameterCount() == 1) return proxy == args[0]; break;
+                        case "hashCode": if (method.getParameterCount() == 0) return System.identityHashCode(proxy); break;
+                        case "toString": if (method.getParameterCount() == 0) return "TraceWeave node " + handler; break;
+                        default: break;
+                    }
+                    java.lang.reflect.Method target = found.computeIfAbsent(method, m -> {
+                        for (Class<?> c = handler.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                            try {
+                                java.lang.reflect.Method own = c.getDeclaredMethod(m.getName(), m.getParameterTypes());
+                                own.setAccessible(true);
+                                return own;
+                            } catch (NoSuchMethodException ignored) {
+                                // look in the superclass
+                            }
+                        }
+                        return missing;
+                    });
+                    if (target != missing) {
+                        try {
+                            return target.invoke(handler, args);
+                        } catch (java.lang.reflect.InvocationTargetException e) {
+                            throw e.getCause();
+                        }
+                    }
+                    if (method.isDefault()) return java.lang.reflect.InvocationHandler.invokeDefault(proxy, method, args);
+                    Class<?> r = method.getReturnType();
+                    return r == boolean.class ? Boolean.FALSE : r.isPrimitive() && r != void.class ? 0 : null;
+                });
+    }
+
     /** A value's text as the Variables view writes it (strings in quotes). */
+    /** True for a type read as its text only (a String's bytes, an Integer's value field… mean nothing to people). */
+    static boolean isPlain(@Nullable String type) {
+        return com.example.flowtracker.model.FlowValueShape.isPlainType(type);
+    }
+
     static String text(XValuePresentation p) {
         StringBuilder sb = new StringBuilder();
         p.renderValue(new XValuePresentation.XValueTextRenderer() {

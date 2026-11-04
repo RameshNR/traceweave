@@ -210,6 +210,13 @@ public final class FlowDiagram {
     final Map<String, String> callNotes = new HashMap<>();
     /** How notes on calls are drawn, when not the usual way, by {@link #lineKey}. */
     final Map<String, NoteStyle> noteStyles = new HashMap<>();
+    /**
+     * Lines routed by hand (dragged), by line key: their lanes, in order from the caller: the x of a vertical piece,
+     * the y of the next horizontal piece, the x of the next vertical one… (the ends follow the boxes).
+     */
+    final Map<String, List<Double>> routes = new HashMap<>();
+    /** Notes dragged along their line, by line key: where (0 = the line's start, 1 = its end). */
+    final Map<String, Double> notePlaces = new HashMap<>();
     private int nextId;
 
     // ---------- building ----------
@@ -264,6 +271,152 @@ public final class FlowDiagram {
         return d;
     }
 
+    /**
+     * Ids for what {@link #synced} adds, shared by every step of a history, so the same new class or method has the
+     * same id in each (Undo / Redo across the steps then keeps it).
+     */
+    static final class IdPool {
+        private int next;
+        private final Map<String, String> ids = new HashMap<>();
+
+        IdPool(int start) {
+            next = start;
+        }
+
+        String id(String key, String prefix) {
+            return ids.computeIfAbsent(prefix + "\n" + key, k -> prefix + (++next));
+        }
+
+        int last() {
+            return next;
+        }
+    }
+
+    /** The highest id number this diagram has given (for an {@link IdPool} that won't reuse one). */
+    int lastId() {
+        return nextId;
+    }
+
+    /**
+     * This diagram after the flow's lines changed outside it (lines added in the Flow window, removed or undone
+     * there): the classes and methods of new lines are added (each new class to the right of a class that calls
+     * it), methods whose lines are all gone leave, and line counts follow. What was done in the diagram (moves,
+     * looks, notes, custom classes, picked lines, calls connected by hand) stays.
+     *
+     * @param newBase the lines the diagram is on now (its old ones without the removed lines, plus the added ones)
+     * @param added   the lines new in the flow
+     * @param calls   the flow's calls (code and manual), as {@link FlowSync#link} keys
+     */
+    FlowDiagram synced(List<FlowEntry> newBase, List<FlowEntry> added, Set<String> calls, IdPool pool,
+                       Measure measure, double gap) {
+        FlowDiagram d = copy();
+        FlowDiagram fresh = of(newBase, calls);
+        Map<String, Method> freshByKey = new HashMap<>();
+        for (Box fb : fresh.boxes) for (Method fm : fb.methods) freshByKey.put(fm.origKey, fm);
+        Set<String> addedKeys = new HashSet<>(), addedClasses = new HashSet<>(), baseClasses = new HashSet<>();
+        for (FlowEntry e : added) {
+            addedKeys.add(FlowSync.methodKey(e));
+            addedClasses.add(classKey(e));
+        }
+        for (FlowEntry e : newBase) baseClasses.add(classKey(e));
+
+        // Methods of the flow: their new line count, or gone with their last line (kept when lines were picked here).
+        for (Box b : d.boxes) {
+            for (int i = b.methods.size() - 1; i >= 0; i--) {
+                Method m = b.methods.get(i);
+                if (m.origKey == null) continue;
+                Method f = freshByKey.get(m.origKey);
+                if (f == null && m.picked.isEmpty()) {
+                    b.methods.remove(i);
+                    d.dropLinks(m.id);
+                } else if (f == null || f.saved != m.saved || f.unknown != m.unknown) {
+                    Method n = new Method(m.id, m.origKey, m.name, f == null ? 0 : f.saved, f == null ? m.unknown : f.unknown);
+                    n.picked.addAll(m.picked);
+                    n.dropped.addAll(m.dropped);
+                    n.copyLook(m);
+                    n.tag = m.tag;
+                    n.tagSet = m.tagSet;
+                    n.moved = m.moved;
+                    b.methods.set(i, n);
+                }
+            }
+        }
+        // Classes of the flow with nothing left in it.
+        d.boxes.removeIf(b -> !b.picked && !b.isUnknown() && b.methods.isEmpty() && b.header.isEmpty()
+                && !baseClasses.contains(b.fileUrl + "\n" + b.origClass));
+
+        // New lines: their class (when the diagram hasn't got it) and their method.
+        Set<String> have = new HashSet<>();
+        for (Box b : d.boxes) for (Method m : b.methods) if (m.origKey != null) have.add(m.origKey);
+        List<Box> newBoxes = new ArrayList<>();
+        for (Box fb : fresh.boxes) {
+            String ck = fb.fileUrl + "\n" + fb.origClass;
+            Box target = null;
+            for (Box b : d.boxes) {
+                if (b.fileUrl.equals(fb.fileUrl) && b.origClass.equals(fb.origClass)) target = b;
+            }
+            List<Method> adding = new ArrayList<>();
+            for (Method fm : fb.methods) if (addedKeys.contains(fm.origKey) && !have.contains(fm.origKey)) adding.add(fm);
+            if (target == null && adding.isEmpty() && !addedClasses.contains(ck)) continue;
+            if (target == null) {
+                target = new Box(pool.id(ck, "c"), fb.fileUrl, fb.fileName, fb.projectName, fb.origClass, fb.name, false);
+                d.boxes.add(target);
+                newBoxes.add(target);
+            }
+            for (Method fm : adding) {
+                Method m = new Method(pool.id(fm.origKey, "m"), fm.origKey, fm.name, fm.saved, fm.unknown);
+                m.tag = fm.tag;
+                target.methods.add(m);
+                have.add(fm.origKey);
+            }
+        }
+        d.nextId = Math.max(d.nextId, pool.last());
+
+        // Calls: those found in the code, and the ones connected by hand on the new lines.
+        Map<String, String> idByKey = new HashMap<>();
+        for (Box b : d.boxes) for (Method m : b.methods) if (m.origKey != null) idByKey.put(m.origKey, m.id);
+        Map<String, String> freshKeyOf = new HashMap<>();
+        for (Box fb : fresh.boxes) for (Method fm : fb.methods) freshKeyOf.put(fm.id, fm.origKey);
+        for (Link l : fresh.links) {
+            String fromKey = freshKeyOf.get(l.from()), toKey = freshKeyOf.get(l.to());
+            if (l.manual() && !addedKeys.contains(fromKey) && !addedKeys.contains(toKey)) continue; // removed here: stays so
+            String from = idByKey.get(fromKey), to = idByKey.get(toKey);
+            if (from == null || to == null || from.equals(to)) continue;
+            boolean exists = false;
+            for (Link x : d.links) exists |= x.from().equals(from) && x.to().equals(to);
+            if (!exists) d.links.add(new Link(from, to, l.manual(), l.holder()));
+        }
+
+        // New classes: to the right of a class that calls them, else after all the others.
+        double right = 0, top = Double.MAX_VALUE;
+        for (Box b : d.boxes) {
+            if (newBoxes.contains(b)) continue;
+            right = Math.max(right, b.x + measure.width(b));
+            top = Math.min(top, b.y);
+        }
+        if (top == Double.MAX_VALUE) top = gap;
+        double nextY = top;
+        Set<Box> placed = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Box nb : newBoxes) {
+            Box caller = null;
+            for (Link l : d.links) {
+                Box from = d.boxOf(l.from()), to = d.boxOf(l.to());
+                if (to == nb && from != null && from != nb && (!newBoxes.contains(from) || placed.contains(from))) caller = from;
+            }
+            placed.add(nb);
+            if (caller != null) {
+                nb.x = caller.x + measure.width(caller) + gap * 3;
+                nb.y = caller.y;
+            } else {
+                nb.x = right + gap * 3;
+                nb.y = nextY;
+                nextY += measure.height(nb) + gap;
+            }
+        }
+        if (!newBoxes.isEmpty()) d.spreadOut(measure, gap, null);
+        return d;
+    }
+
     /** File + class of a line: the lines of one box. */
     private static String classKey(FlowEntry e) {
         return e.fileUrl + "\n" + e.className;
@@ -288,6 +441,8 @@ public final class FlowDiagram {
         d.lines.putAll(lines);
         d.callNotes.putAll(callNotes);
         d.noteStyles.putAll(noteStyles);
+        d.routes.putAll(routes);
+        d.notePlaces.putAll(notePlaces);
         return d;
     }
 
@@ -528,6 +683,8 @@ public final class FlowDiagram {
         lines.remove(lineKey(link));
         callNotes.remove(lineKey(link));
         noteStyles.remove(lineKey(link));
+        routes.remove(lineKey(link));
+        notePlaces.remove(lineKey(link));
         return true;
     }
 
@@ -536,6 +693,8 @@ public final class FlowDiagram {
         lines.keySet().removeIf(k -> k.startsWith(methodId + ">") || k.endsWith(">" + methodId));
         callNotes.keySet().removeIf(k -> k.startsWith(methodId + ">") || k.endsWith(">" + methodId));
         noteStyles.keySet().removeIf(k -> k.startsWith(methodId + ">") || k.endsWith(">" + methodId));
+        routes.keySet().removeIf(k -> k.startsWith(methodId + ">") || k.endsWith(">" + methodId));
+        notePlaces.keySet().removeIf(k -> k.startsWith(methodId + ">") || k.endsWith(">" + methodId));
     }
 
     /** Text that changes only when something that {@link #apply} writes back changes (not box positions). */
@@ -668,6 +827,53 @@ public final class FlowDiagram {
         }
     }
 
+    /** Where along its line a dragged note is (0 to 1), or null when it finds its own place. */
+    @Nullable Double notePlace(Link l) {
+        return notePlaces.get(lineKey(l));
+    }
+
+    void setNotePlace(Link l, @Nullable Double t) {
+        if (t == null) notePlaces.remove(lineKey(l));
+        else notePlaces.put(lineKey(l), Math.max(0.02, Math.min(0.98, t)));
+    }
+
+    private static @Nullable Double parsePlace(@Nullable String s) {
+        if (s == null || s.isBlank()) return null;
+        try {
+            return Double.parseDouble(s.strip());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** The lanes of a line routed by hand, or null when it is routed by itself. */
+    @Nullable List<Double> route(Link l) {
+        return routes.get(lineKey(l));
+    }
+
+    /** A line's own route (null or empty: back to routing by itself). */
+    void setRoute(Link l, @Nullable List<Double> lanes) {
+        if (lanes == null || lanes.isEmpty()) routes.remove(lineKey(l));
+        else routes.put(lineKey(l), List.copyOf(lanes));
+    }
+
+    static String encodeRoute(List<Double> lanes) {
+        StringBuilder sb = new StringBuilder();
+        for (double v : lanes) sb.append(sb.length() == 0 ? "" : ",").append(Math.round(v));
+        return sb.toString();
+    }
+
+    static @Nullable List<Double> decodeRoute(@Nullable String s) {
+        if (s == null || s.isBlank()) return null;
+        List<Double> out = new ArrayList<>();
+        try {
+            for (String v : s.split(",")) out.add(Double.parseDouble(v.strip()));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        return out;
+    }
+
     static String lineKey(Link l) {
         return l.from() + ">" + l.to();
     }
@@ -778,6 +984,8 @@ public final class FlowDiagram {
                 .append(v.color() == null ? "" : hex(v.color())).append(';'));
         new java.util.TreeMap<>(callNotes).forEach((k, v) -> sb.append(k).append('"').append(v).append(';'));
         new java.util.TreeMap<>(noteStyles).forEach((k, v) -> sb.append(k).append('%').append(v.encode()).append(';'));
+        new java.util.TreeMap<>(routes).forEach((k, v) -> sb.append(k).append('~').append(encodeRoute(v)).append(';'));
+        new java.util.TreeMap<>(notePlaces).forEach((k, v) -> sb.append(k).append('@').append(Math.round(v * 1000)).append(';'));
         return sb.toString();
     }
 
@@ -822,7 +1030,10 @@ public final class FlowDiagram {
             String note = callNote(link);
             Box fb = boxOf(link.from()), tb = boxOf(link.to());
             NoteStyle style = noteStyle(link);
-            if (line.equals(Line.DEFAULT) && note.isEmpty() && style.equals(NoteStyle.DEFAULT) || fb == null || tb == null) continue;
+            List<Double> route = route(link);
+            Double place = notePlace(link);
+            if (line.equals(Line.DEFAULT) && note.isEmpty() && style.equals(NoteStyle.DEFAULT) && route == null && place == null
+                    || fb == null || tb == null) continue;
             FlowDiagramLook l = target(fb, method(link.from()));
             FlowDiagramLook to = target(tb, method(link.to()));
             l.toFileUrl = to.fileUrl;
@@ -832,6 +1043,8 @@ public final class FlowDiagram {
             l.border = line.color() == null ? "" : hex(line.color());
             l.note = note;
             l.noteStyle = style.encode();
+            l.route = route == null ? "" : encodeRoute(route);
+            l.noteAt = place == null ? "" : String.valueOf(Math.round(place * 1000) / 1000.0);
             out.add(l);
         }
         return out;
@@ -885,6 +1098,8 @@ public final class FlowDiagram {
                 setLine(link, Line.decode(l.line, parseColor(l.border)));
                 setCallNote(link, l.note);
                 setNoteStyle(link, NoteStyle.decode(l.noteStyle));
+                setRoute(link, decodeRoute(l.route));
+                setNotePlace(link, parsePlace(l.noteAt));
             }
         }
     }
@@ -914,6 +1129,11 @@ public final class FlowDiagram {
     interface Measure {
         double width(Box b);
         double height(Box b);
+
+        /** How far down from the box's top the middle of its method row is (where arrows start and end). */
+        default double rowCenter(Box b, int index) {
+            return height(b) / 2;
+        }
     }
 
     /**
@@ -955,27 +1175,38 @@ public final class FlowDiagram {
         calls.forEach((from, tos) -> tos.forEach(to -> callers.computeIfAbsent(to, k -> new ArrayList<>()).add(from)));
         double x = margin;
         for (List<Box> column : columns.values()) {
-            column.sort(Comparator.comparingDouble((Box b) -> {
-                List<Box> cs = callers.getOrDefault(b, List.of());
+            // where each box wants to be: the method a call reaches level with the row that calls it (straight
+            // arrows); called from several rows, between them; not called from the left: after the others
+            Map<Box, Double> wanted = new IdentityHashMap<>();
+            for (Box b : column) {
                 double sum = 0;
                 int n = 0;
-                for (Box c : cs) {
-                    if (depth.get(c) < depth.get(b)) {
-                        sum += c.y;
-                        n++;
-                    }
+                for (Link l : links) {
+                    Box from = boxOf(l.from()), to = boxOf(l.to());
+                    if (to != b || from == null || from == b || depth.get(from) >= depth.get(b)) continue;
+                    double callerRow = from.y + measure.rowCenter(from, indexOf(from, l.from()));
+                    sum += callerRow - measure.rowCenter(b, indexOf(b, l.to()));
+                    n++;
                 }
-                return n == 0 ? Double.MAX_VALUE / 2 + boxes.indexOf(b) : sum / n;
-            }));
+                wanted.put(b, n == 0 ? Double.NaN : sum / n);
+            }
+            column.sort(Comparator.comparingDouble((Box b) -> Double.isNaN(wanted.get(b)) ? Double.MAX_VALUE / 2 + boxes.indexOf(b) : wanted.get(b)));
             double y = margin, widest = 0;
             for (Box b : column) {
+                double want = wanted.get(b);
                 b.x = x;
-                b.y = y;
-                y += measure.height(b) + gapY;
+                b.y = Double.isNaN(want) ? y : Math.max(y, want); // as wanted, unless the box above is in the way
+                y = b.y + measure.height(b) + gapY;
                 widest = Math.max(widest, measure.width(b));
             }
             x += widest + gapX;
         }
+    }
+
+    /** The place of a method among its box's rows (0 when it isn't there). */
+    private static int indexOf(Box b, String methodId) {
+        for (int i = 0; i < b.methods.size(); i++) if (b.methods.get(i).id.equals(methodId)) return i;
+        return 0;
     }
 
     /**

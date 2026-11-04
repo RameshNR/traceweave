@@ -48,12 +48,17 @@ final class FlowCarousel extends JComponent {
             {"traceweave-flow-diagram.png", "Flow Diagram: edit the flow as boxes and arrows, with a History"},
             {"traceweave-diagram-code-panel.png", "Click a method to see its code; View Full Code shows the whole file"},
             {"traceweave-diagram-connect-flow.png", "Connect the Flow: the calls between two methods, read from the code"},
+            {"traceweave-ways-onscreen.png", "Several ways to connect: hover one to see it on the tab"},
+            {"traceweave-ways-fullscreen.png", "Choose a Way in full screen: the way you hover or click is previewed"},
             {"traceweave-diagram-format-box.png", "Format Box: themes, section colors, text formats and a note"},
             {"traceweave-diagram-color-picker.png", "Pick any color: Auto, suggested, a color grid, recent or #RRGGBB"},
             {"traceweave-diagram-format-line.png", "Line: pattern, width, shape, arrow and color"},
             {"traceweave-diagram-sequence.png", "Copy Sequence PNG: the calls as a sequence diagram image"},
             {"traceweave-debug-data.png", "Debug Data: save debug values by flow and line, find and edit them"},
             {"traceweave-compare.png", "Compare: two values side by side, what differs marked Old and New"},
+            {"traceweave-stop-at-value.png", "Stop at Value: the debugger stops where a value shows up"},
+            {"traceweave-add-stop-at-value.png", "Add Stop at Value: the values to look for and where to look"},
+            {"traceweave-watch-field.png", "Watch a field, an object, a method's variable or what it returns"},
     };
     private static final int AUTO_ADVANCE_MS = 5000;
 

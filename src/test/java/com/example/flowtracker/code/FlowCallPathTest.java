@@ -4,6 +4,7 @@ import com.example.flowtracker.model.FlowEntry;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiFile;
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase;
 
 import java.util.List;
@@ -288,5 +289,407 @@ public class FlowCallPathTest extends LightJavaCodeInsightFixtureTestCase {
                 "BookingService.java:if (!hotelService.reserveRooms(travel.getDestination(), rooms)) {"), got);
         assertEquals(line(main, "bookingService.bookTrip(101").line, r.lines().get(0).line);
         assertEquals(line(booking, "travel.getDestination(), nights").line, r.lines().get(1).line);
+    }
+
+    /**
+     * All the ways from main() to getDestination(): through bookTrip() (the one that carries bookingService, first),
+     * search() and cancelBooking() too, each once, with its own lines.
+     */
+    public void testAllTheWaysTheClosestFirst() {
+        PsiClass main = myFixture.addClass(MAIN);
+        PsiClass travel = myFixture.addClass(TRAVEL);
+        myFixture.addClass(BOOKING);
+        myFixture.addClass(DESTINATION);
+        myFixture.addClass(HOTEL);
+
+        FlowEntry start = line(main, "BookingService bookingService =");
+        FlowEntry end = line(travel, "public String getDestination()");
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), start, end, List.of(start), FlowCallPath.MAX_WAYS,
+                FlowCallPath.Progress.NONE);
+        List<String> chains = w.ways().stream().map(FlowCallPath.Way::chain).toList();
+        assertEquals(w.message(), "Main.main() → BookingService.bookTrip() → Travel.getDestination()", chains.get(0));
+        assertTrue(chains.toString(), chains.contains("Main.main() → DestinationService.search() → Travel.getDestination()"));
+        assertTrue(chains.toString(), chains.contains("Main.main() → BookingService.cancelBooking() → Travel.getDestination()"));
+        assertEquals("every way once", chains.size(), new java.util.HashSet<>(chains).size());
+        FlowCallPath.Way best = w.ways().get(0);
+        assertEquals(List.of("bookingService"), best.carries());
+        assertEquals(3, best.lines().size());
+        assertEquals(2, best.steps().get(1).lines().size()); // bookTrip(): lines 33 and 41
+        assertTrue(w.message(), w.message().startsWith("Found " + chains.size() + " ways"));
+        // the single way the Flow tab takes is the first one
+        assertEquals(best.lines().stream().map(x -> x.fileName + ":" + x.line).toList(),
+                FlowCallPath.betweenMethods(getProject(), List.of(start), end).lines().stream().map(x -> x.fileName + ":" + x.line).toList());
+    }
+
+    /** A call through an interface reaches its implementation (e.g. a Spring bean injected as its interface). */
+    public void testCallsThroughAnInterfaceReachTheImplementation() {
+        PsiClass checkout = myFixture.addClass("""
+                package com.shop;
+                public class Checkout {
+                    private final PaymentGateway gateway;
+                    public Checkout(PaymentGateway gateway) { this.gateway = gateway; }
+                    public void pay(int amount) {
+                        gateway.charge(amount);
+                    }
+                }
+                """);
+        myFixture.addClass("""
+                package com.shop;
+                public interface PaymentGateway { void charge(int amount); }
+                """);
+        myFixture.addClass("""
+                package com.shop;
+                public class CardGateway implements PaymentGateway {
+                    @Override public void charge(int amount) {
+                        Ledger.record(amount);
+                    }
+                }
+                """);
+        PsiClass ledger = myFixture.addClass("""
+                package com.shop;
+                public class Ledger {
+                    public static void record(int amount) {
+                        System.out.println(amount);
+                    }
+                }
+                """);
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), line(checkout, "gateway.charge(amount);"),
+                line(ledger, "System.out.println(amount);"), null, 4, FlowCallPath.Progress.NONE);
+        assertFalse(w.message(), w.ways().isEmpty());
+        FlowCallPath.Way way = w.ways().get(0);
+        assertEquals("Checkout.pay() → CardGateway.charge() → Ledger.record()", way.chain());
+        assertEquals("implements PaymentGateway.charge()", way.steps().get(1).via());
+        assertEquals(List.of("CardGateway.java:Ledger.record(amount);"),
+                way.lines().stream().map(e -> e.fileName + ":" + e.text.strip()).toList());
+    }
+
+    /** A method reference (ids.forEach(this::print)) is followed like a call. */
+    public void testMethodReferencesAreFollowed() {
+        PsiClass report = myFixture.addClass("""
+                package com.shop;
+                import java.util.List;
+                public class Report {
+                    public void run(List<Integer> ids) {
+                        ids.forEach(this::print);
+                    }
+                    void print(Integer id) {
+                        Printer.out(id);
+                    }
+                }
+                """);
+        PsiClass printer = myFixture.addClass("""
+                package com.shop;
+                public class Printer {
+                    public static void out(Object o) {
+                        System.out.println(o);
+                    }
+                }
+                """);
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), line(report, "ids.forEach(this::print);"),
+                line(printer, "System.out.println(o);"), null, 4, FlowCallPath.Progress.NONE);
+        assertFalse(w.message(), w.ways().isEmpty());
+        FlowCallPath.Way way = w.ways().get(0);
+        assertEquals("Report.run() → Report.print() → Printer.out()", way.chain());
+        assertEquals("method reference", way.steps().get(1).via());
+    }
+
+    /** Spring: publishEvent(new BookingCreated()) reaches the @EventListener method of BookingCreated. */
+    public void testSpringEventsReachTheirListeners() {
+        myFixture.addClass("""
+                package org.springframework.context.event;
+                public @interface EventListener {}
+                """);
+        myFixture.addClass("""
+                package org.springframework.context;
+                public interface ApplicationEventPublisher { void publishEvent(Object event); }
+                """);
+        myFixture.addClass("""
+                package com.shop;
+                public class BookingCreated {}
+                """);
+        PsiClass service = myFixture.addClass("""
+                package com.shop;
+                import org.springframework.context.ApplicationEventPublisher;
+                public class BookingFlow {
+                    private final ApplicationEventPublisher events;
+                    public BookingFlow(ApplicationEventPublisher events) { this.events = events; }
+                    public void book() {
+                        events.publishEvent(new BookingCreated());
+                    }
+                }
+                """);
+        myFixture.addClass("""
+                package com.shop;
+                import org.springframework.context.event.EventListener;
+                public class Mailer {
+                    @EventListener
+                    public void onBooking(BookingCreated event) {
+                        Mail.send(event);
+                    }
+                    @EventListener
+                    public void onOther(String other) {}
+                }
+                """);
+        PsiClass mail = myFixture.addClass("""
+                package com.shop;
+                public class Mail {
+                    public static void send(Object what) {
+                        System.out.println(what);
+                    }
+                }
+                """);
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), line(service, "events.publishEvent(new BookingCreated());"),
+                line(mail, "System.out.println(what);"), null, 4, FlowCallPath.Progress.NONE);
+        assertFalse(w.message(), w.ways().isEmpty());
+        FlowCallPath.Way way = w.ways().get(0);
+        assertEquals("BookingFlow.book() → Mailer.onBooking() → Mail.send()", way.chain());
+        assertEquals("Spring event BookingCreated", way.steps().get(1).via());
+    }
+
+    /** Kotlin: the calls of Kotlin functions are followed too (read through UAST). */
+    public void testKotlinCallsAreFollowed() {
+        PsiFile file = myFixture.addFileToProject("com/trip/Trips.kt", """
+                package com.trip
+
+                class Planner(private val hotels: Hotels) {
+                    fun plan(city: String): Double {
+                        val nights = 2
+                        return hotels.price(city, nights)
+                    }
+                }
+
+                class Hotels {
+                    fun price(city: String, nights: Int): Double {
+                        return Rates.rate(city) * nights
+                    }
+                }
+
+                object Rates {
+                    fun rate(city: String): Double {
+                        return 100.0
+                    }
+                }
+                """);
+        Document doc = FileDocumentManager.getInstance().getDocument(file.getVirtualFile());
+        assertNotNull(doc);
+        FlowEntry from = FlowCapture.lineEntry(getProject(), doc, doc.getLineNumber(doc.getText().indexOf("val nights = 2")));
+        FlowEntry to = FlowCapture.lineEntry(getProject(), doc, doc.getLineNumber(doc.getText().indexOf("return 100.0")));
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), from, to, null, 4, FlowCallPath.Progress.NONE);
+        assertFalse(w.message(), w.ways().isEmpty());
+        FlowCallPath.Way way = w.ways().get(0);
+        assertEquals("Planner.plan() → Hotels.price() → Rates.rate()", way.chain());
+        assertEquals(List.of("Trips.kt:return hotels.price(city, nights)", "Trips.kt:return Rates.rate(city) * nights"),
+                way.lines().stream().map(e -> e.fileName + ":" + e.text.strip()).toList());
+    }
+
+    /** A task given to a thread: its run() is followed. */
+    public void testTasksRunInAThreadAreFollowed() {
+        PsiClass job = myFixture.addClass("""
+                package com.shop;
+                public class Nightly {
+                    public void start() {
+                        Thread t = new Thread(new ReportTask());
+                        t.start();
+                    }
+                }
+                """);
+        myFixture.addClass("""
+                package com.shop;
+                public class ReportTask implements Runnable {
+                    @Override public void run() {
+                        Reports.build();
+                    }
+                }
+                """);
+        PsiClass reports = myFixture.addClass("""
+                package com.shop;
+                public class Reports {
+                    public static void build() {
+                        System.out.println("built");
+                    }
+                }
+                """);
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), line(job, "Thread t = new Thread(new ReportTask());"),
+                line(reports, "System.out.println(\"built\");"), null, 4, FlowCallPath.Progress.NONE);
+        assertFalse(w.message(), w.ways().isEmpty());
+        assertEquals("Nightly.start() → ReportTask.run() → Reports.build()", w.ways().get(0).chain());
+        assertEquals("runs in a thread", w.ways().get(0).steps().get(1).via());
+    }
+
+    /** An HTTP call to a path reaches the Spring method that handles it. */
+    public void testApiCallsReachTheirHandlers() {
+        myFixture.addClass("""
+                package org.springframework.web.bind.annotation;
+                public @interface GetMapping { String[] value() default {}; }
+                """);
+        myFixture.addClass("""
+                package org.springframework.web.bind.annotation;
+                public @interface RequestMapping { String[] value() default {}; }
+                """);
+        PsiClass client = myFixture.addClass("""
+                package com.web;
+                public class ReportClient {
+                    private static final String BASE = "http://localhost:8081";
+                    public String report(String city) {
+                        String url = BASE + "/api/travel-report/" + city + "?days=3";
+                        return Http.get(url);
+                    }
+                }
+                """);
+        myFixture.addClass("""
+                package com.web;
+                public class Http { public static String get(String url) { return ""; } }
+                """);
+        PsiClass controller = myFixture.addClass("""
+                package com.web;
+                import org.springframework.web.bind.annotation.GetMapping;
+                import org.springframework.web.bind.annotation.RequestMapping;
+                @RequestMapping("/api")
+                public class ReportController {
+                    @GetMapping("/travel-report/{city}")
+                    public String report(String city) {
+                        return city.toUpperCase();
+                    }
+                    @GetMapping("/other")
+                    public String other() { return ""; }
+                }
+                """);
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), line(client, "String url = BASE"),
+                line(controller, "return city.toUpperCase();"), null, 4, FlowCallPath.Progress.NONE);
+        assertFalse(w.message(), w.ways().isEmpty());
+        assertEquals("ReportClient.report() → ReportController.report()", w.ways().get(0).chain());
+        assertEquals("API call GET /api/travel-report/{city}", w.ways().get(0).steps().get(1).via());
+    }
+
+    /**
+     * The travel sample: TravelApiService.getBooking() gives a lambda to ApiThreadManager.execute(), which runs it in a
+     * worker thread; the lambda calls the API at "/api/bookings/" + reference, handled by BookingController.find().
+     */
+    public void testAnApiCallMadeInATaskForAThreadReachesItsHandler() {
+        myFixture.addClass("""
+                package org.springframework.web.bind.annotation;
+                public @interface GetMapping { String[] value() default {}; }
+                """);
+        myFixture.addClass("""
+                package org.springframework.web.bind.annotation;
+                public @interface PostMapping { String[] value() default {}; }
+                """);
+        myFixture.addClass("""
+                package org.springframework.web.bind.annotation;
+                public @interface RequestMapping { String[] value() default {}; }
+                """);
+        PsiClass manager = myFixture.addClass("""
+                package com.travel.web;
+                import java.util.concurrent.*;
+                public class ApiThreadManager {
+                    private final ExecutorService executor = Executors.newFixedThreadPool(4);
+                    public <T> T execute(Callable<T> apiTask) {
+                        Future<T> future = executor.submit(apiTask);
+                        try {
+                            return future.get(12, TimeUnit.SECONDS);
+                        } catch (Exception e) {
+                            throw new IllegalStateException(e);
+                        }
+                    }
+                }
+                """);
+        PsiClass service = myFixture.addClass("""
+                package com.travel.web;
+                public class TravelApiService {
+                    private final ApiThreadManager threadManager = new ApiThreadManager();
+                    public Object getBooking(String reference) {
+                        return threadManager.execute(() -> get(
+                                "/api/bookings/" + encode(reference)));
+                    }
+                    public Object createBooking(Object booking) {
+                        return threadManager.execute(() -> post("/api/bookings", booking));
+                    }
+                    private Object get(String path) throws Exception { return send(path); }
+                    private Object post(String path, Object body) throws Exception { return send(path); }
+                    private Object send(String path) throws Exception { return path; }
+                    private String encode(String v) { return v; }
+                }
+                """);
+        PsiClass controller = myFixture.addClass("""
+                package com.travel.api;
+                import org.springframework.web.bind.annotation.*;
+                @RequestMapping("/api")
+                public class BookingController {
+                    @PostMapping("/bookings")
+                    public Object create(Object request) {
+                        return "created";
+                    }
+                    @GetMapping("/bookings/{reference}")
+                    public Object find(String reference) {
+                        return reference.trim();
+                    }
+                    @PostMapping("/bookings/{reference}/cancel")
+                    public Object cancel(String reference) {
+                        return "cancelled";
+                    }
+                }
+                """);
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), line(service, "return threadManager.execute(() -> get("),
+                line(controller, "return reference.trim();"), null, 4, FlowCallPath.Progress.NONE);
+        assertFalse(w.message(), w.ways().isEmpty());
+        assertEquals("TravelApiService.getBooking() → BookingController.find()", w.ways().get(0).chain());
+        assertEquals("API call GET /api/bookings/{reference}, in the task given to ApiThreadManager.execute()",
+                w.ways().get(0).steps().get(1).via());
+        assertNotNull(manager);
+    }
+
+    /** HttpServer.createContext("/path", new Handler()): a call to that path reaches Handler.handle(). */
+    public void testHttpServerContextsAreHandlers() {
+        myFixture.addClass("""
+                package com.sun.net.httpserver;
+                public abstract class HttpServer { public abstract Object createContext(String path, Object handler); }
+                """);
+        myFixture.addClass("""
+                package com.reports;
+                public class Main {
+                    public static void main(com.sun.net.httpserver.HttpServer server) {
+                        server.createContext("/api/travel-report", new ReportHandler());
+                    }
+                }
+                """);
+        PsiClass handler = myFixture.addClass("""
+                package com.reports;
+                public class ReportHandler {
+                    public void handle(Object exchange) {
+                        System.out.println(exchange);
+                    }
+                }
+                """);
+        PsiClass page = myFixture.addClass("""
+                package com.web;
+                public class Search {
+                    public void run(String query) {
+                        String apiUrl = "http://localhost:8081/api/travel-report?" + query;
+                        fetch(apiUrl);
+                    }
+                    void fetch(String url) {}
+                }
+                """);
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), line(page, "String apiUrl"),
+                line(handler, "System.out.println(exchange);"), null, 4, FlowCallPath.Progress.NONE);
+        assertFalse(w.message(), w.ways().isEmpty());
+        assertEquals("Search.run() → ReportHandler.handle()", w.ways().get(0).chain());
+    }
+
+    /** Cancel stops the search; progress is told. */
+    public void testTheSearchCanBeStopped() {
+        PsiClass main = myFixture.addClass(MAIN);
+        PsiClass travel = myFixture.addClass(TRAVEL);
+        myFixture.addClass(BOOKING);
+        myFixture.addClass(DESTINATION);
+        myFixture.addClass(HOTEL);
+        FlowEntry start = line(main, "BookingService bookingService =");
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), start, line(travel, "public String getDestination()"),
+                List.of(start), FlowCallPath.MAX_WAYS, new FlowCallPath.Progress() {
+                    @Override public boolean cancelled() { return true; }
+                    @Override public void read(int methods, int ways) {}
+                });
+        assertTrue(w.ways().isEmpty());
+        assertEquals("Stopped before a way was found.", w.message());
     }
 }

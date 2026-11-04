@@ -189,6 +189,56 @@ public final class FlowCopy {
         openScratch(project, name, format(store, picked, store.getEntries(), store.getCalls(), name, true));
     }
 
+    /**
+     * Export as HTML Page: the flow (every flow when Copy All Flows is on) as one .html file anyone can open in a
+     * browser (see {@link FlowHtml}); the notification offers to open it.
+     */
+    public static void exportHtml(Project project, List<FlowEntry> picked) {
+        FlowStore store = FlowStore.get(project);
+        if (store.isCopyAllFlows()) {
+            allFlows(project, true, all -> saveHtml(project, "TraceWeave - all flows", all.text(), allEntries(store)));
+            return;
+        }
+        if (picked.isEmpty()) {
+            notify(project, "Nothing to export: this flow has no lines yet", NotificationType.INFORMATION);
+            return;
+        }
+        String name = store.getActiveFlowName();
+        saveHtml(project, name, format(store, picked, store.getEntries(), store.getCalls(), name, true), picked);
+    }
+
+    private static List<FlowEntry> allEntries(FlowStore store) {
+        List<FlowEntry> out = new java.util.ArrayList<>();
+        for (FlowStore.Flow f : store.getAllFlows()) out.addAll(f.entries);
+        return out;
+    }
+
+    private static void saveHtml(Project project, String title, String markdown, List<FlowEntry> lines) {
+        com.intellij.openapi.fileChooser.FileSaverDescriptor descriptor = com.example.flowtracker.compat.FlowCompat.saverDescriptor(
+                "Export as HTML Page", "A page with the flow's diagram and lines, to open in any browser", "html");
+        String base = FlowTransfer.fileNameFor(title).replace(FlowTransfer.EXTENSION, "") + ".html";
+        String file = com.example.flowtracker.model.FlowProjects.prefixed(com.example.flowtracker.model.FlowProjects.exportPrefix(project,
+                lines.stream().map(e -> e.projectName).toList()), base);
+        VirtualFile dir = project.getBasePath() == null ? null
+                : com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(project.getBasePath());
+        com.intellij.openapi.vfs.VirtualFileWrapper target = com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
+                .createSaveFileDialog(descriptor, project).save(dir, file);
+        if (target == null) return;
+        java.nio.file.Path path = target.getFile().toPath();
+        try {
+            java.nio.file.Files.writeString(path, FlowHtml.page(title, markdown));
+        } catch (java.io.IOException e) {
+            com.intellij.openapi.ui.Messages.showErrorDialog(project, "Couldn't write the page: " + e.getMessage(), "Export as HTML Page");
+            return;
+        }
+        com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshNioFiles(List.of(path), true, false, null);
+        com.intellij.notification.Notification n = NotificationGroupManager.getInstance().getNotificationGroup("TraceWeave")
+                .createNotification("Exported “" + title + "” to " + path.getFileName(), NotificationType.INFORMATION);
+        n.addAction(com.intellij.notification.NotificationAction.createSimpleExpiring("Open in Browser",
+                () -> com.intellij.ide.BrowserUtil.browse(path.toUri().toString())));
+        n.notify(project);
+    }
+
     private static void openScratch(Project project, String name, String text) {
         Language markdown = Language.findLanguageByID("Markdown");
         String fileName = FlowTransfer.fileNameFor(name).replace(FlowTransfer.EXTENSION, "") + ".md";

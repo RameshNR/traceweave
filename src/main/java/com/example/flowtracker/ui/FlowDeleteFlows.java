@@ -41,7 +41,7 @@ public final class FlowDeleteFlows {
         all.addActionListener(e -> boxes.forEach(b -> b.setSelected(all.isSelected())));
         JPanel panel = new JPanel(new BorderLayout(0, JBUI.scale(8)));
         panel.add(all, BorderLayout.NORTH);
-        JBScrollPane scroll = new JBScrollPane(list);
+        JBScrollPane scroll = FlowScroll.wheel(new JBScrollPane(list));
         scroll.setPreferredSize(new Dimension(JBUI.scale(420), JBUI.scale(Math.min(320, 40 + flows.size() * 28))));
         panel.add(scroll, BorderLayout.CENTER);
         JBLabel hint = new JBLabel("<html>They go to the Recycle Bin, so they can be restored."

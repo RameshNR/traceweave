@@ -114,7 +114,13 @@ final class FlowDiagramHost {
         plus.setMaximumSize(plusSize);
         plus.setContentAreaFilled(false);
         plus.setFocusable(false);
-        plus.addActionListener(e -> openFlowMenu(plus));
+        // "+": the saved flows that aren't open in a tab (and New Flow); none of those (or Ctrl+click): a new tab at once
+        plus.addActionListener(e -> {
+            boolean ctrl = (e.getModifiers() & (java.awt.event.ActionEvent.CTRL_MASK | java.awt.event.ActionEvent.META_MASK)) != 0;
+            if (ctrl || closedFlows().isEmpty()) newTab();
+            else openFlowMenu(plus);
+        });
+        plus.setToolTipText("<html>New tab, or open a saved flow that isn't open<br><small>Ctrl+click: a new tab at once</small></html>");
         strip.setOpaque(true);
         strip.setBackground(com.intellij.ui.JBColor.namedColor("EditorTabs.background", com.intellij.util.ui.UIUtil.getPanelBackground()));
         strip.setBorder(JBUI.Borders.empty(4, 10, 0, 10));
@@ -336,31 +342,56 @@ final class FlowDiagramHost {
 
     // ---------- the tab menu ----------
 
+    /**
+     * A tab's menu: its name and color on top, then rename, color, connect with another tab (each shown with its
+     * color), close, and delete (in red), each with its icon and room around it.
+     */
     private void tabMenu(FlowDiagramDialog page, MouseEvent e) {
         JPopupMenu menu = new JPopupMenu();
-        item(menu, "Rename Flow…", () -> renameTab(page));
-        item(menu, "Tab Color…", () -> chooseColor(page));
-        JMenu combine = new JMenu("Connect With (New Tab)");
+        menu.setBorder(JBUI.Borders.empty(6, 2));
+        int lines = store.getEntriesOf(page.flowName()).size();
+        javax.swing.JLabel head = new javax.swing.JLabel("<html><b>" + com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(page.flowName())
+                + "</b><br><small>" + lines + (lines == 1 ? " line" : " lines") + " · " + page.classCount()
+                + (page.classCount() == 1 ? " class" : " classes") + "</small></html>", new DotIcon(colorOf(page.flowName())), javax.swing.SwingConstants.LEFT);
+        head.setIconTextGap(JBUI.scale(8));
+        head.setBorder(JBUI.Borders.empty(4, 14, 8, 14));
+        menu.add(head);
+        menu.addSeparator();
+        item(menu, "Rename Flow…", com.intellij.icons.AllIcons.Actions.Edit, "Rename the tab's flow (Debug Data keeps its own name)",
+                () -> renameTab(page));
+        item(menu, "Tab Color…", new DotIcon(colorOf(page.flowName())), "The color of the tab's bar and dot", () -> chooseColor(page));
+        JMenu combine = new JMenu("Connect With");
+        combine.setIcon(com.example.flowtracker.ui.FlowTheme.ICON_CONNECT);
+        combine.setBorder(JBUI.Borders.empty(7, 14));
         for (FlowDiagramDialog other : pages) {
             if (other == page) continue;
-            JMenuItem it = new JMenuItem(other.flowName());
+            JMenuItem it = new JMenuItem(other.flowName(), new DotIcon(colorOf(other.flowName())));
+            it.setBorder(JBUI.Borders.empty(7, 14));
             it.addActionListener(ev -> combine(page, other));
             combine.add(it);
         }
         combine.setEnabled(combine.getItemCount() > 0);
-        combine.setToolTipText("A new tab with both flows: the calls between them are drawn; the second one is placed under the first");
+        combine.setToolTipText(combine.isEnabled()
+                ? "A new tab with both flows, connected where the code makes the calls"
+                : "Open another tab to connect this one with it");
         menu.add(combine);
         menu.addSeparator();
-        item(menu, "Close Tab", () -> closePage(page));
-        item(menu, "Delete Flow…", () -> deleteFlow(page));
+        item(menu, "Close Tab", com.intellij.icons.AllIcons.Actions.Close, "Close the tab (asks when it has changes that aren't saved)",
+                () -> closePage(page));
+        JMenuItem delete = item(menu, "Delete Flow…", com.example.flowtracker.ui.FlowTheme.ICON_DELETE,
+                "Delete the tab's flow (it goes to the Recycle Bin)", () -> deleteFlow(page));
+        delete.setForeground(new com.intellij.ui.JBColor(0xC94F4F, 0xE06C6C));
         menu.show(e.getComponent(), e.getX(), e.getY());
     }
 
-    private static void item(JPopupMenu menu, String text, Runnable run) {
-        JMenuItem it = new JMenuItem(text);
-        it.setBorder(JBUI.Borders.empty(5, 10));
+    private static JMenuItem item(JPopupMenu menu, String text, @Nullable javax.swing.Icon icon, String tip, Runnable run) {
+        JMenuItem it = new JMenuItem(text, icon);
+        it.setIconTextGap(JBUI.scale(8));
+        it.setBorder(JBUI.Borders.empty(7, 14));
+        it.setToolTipText(tip);
         it.addActionListener(e -> run.run());
         menu.add(it);
+        return it;
     }
 
     /** Deletes the tab's flow (to the Recycle Bin, after asking) and closes its tab. */
@@ -420,14 +451,20 @@ final class FlowDiagramHost {
         FlowDiagramDialog.openFlow(project, store.getActiveFlowName());
     }
 
+    /** The saved flows that have no tab open. */
+    private List<String> closedFlows() {
+        List<String> closed = new ArrayList<>();
+        for (String f : store.getFlowNames()) if (pageOf(f) == null) closed.add(f);
+        return closed;
+    }
+
     private void openFlowMenu(JComponent anchor) {
         JPopupMenu menu = new JPopupMenu();
         JMenuItem fresh = new JMenuItem("New Flow", AllIcons.General.Add);
         fresh.setBorder(JBUI.Borders.empty(5, 10));
         fresh.addActionListener(e -> newTab());
         menu.add(fresh);
-        List<String> closed = new ArrayList<>();
-        for (String f : store.getFlowNames()) if (pageOf(f) == null) closed.add(f);
+        List<String> closed = closedFlows();
         if (!closed.isEmpty()) {
             menu.addSeparator();
             JMenuItem head = new JMenuItem("Open a saved flow:");
@@ -593,5 +630,5 @@ final class FlowDiagramHost {
     }
 
     /** Selected classes copied (or cut) in a tab, to paste in another. Shared by the tabs. */
-    static @Nullable FlowDiagramDialog.Clip clipboard;
+    static @Nullable FlowDiagramTabs.Clip clipboard;
 }

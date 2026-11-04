@@ -10,6 +10,7 @@ import com.example.flowtracker.model.FlowStore;
 import org.junit.jupiter.api.Test;
 
 import java.awt.Font;
+import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.Set;
@@ -17,6 +18,7 @@ import java.util.Set;
 import static com.example.flowtracker.Fixtures.line;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -1009,5 +1011,284 @@ class FlowDiagramTest {
         painter.autoLayout(d);
         assertTrue(a.x < b.x, "Main before DestinationService");
         assertTrue(b.x < c.x, "DestinationService before Travel: no call goes right to left");
+    }
+
+    // ---------- the flow changed while the diagram was open ----------
+
+    @Test
+    void linesAddedInTheFlowShowInAnOpenDiagram() {
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        List<FlowEntry> before = List.of(main8, main13, book21);
+        FlowDiagram d = FlowDiagram.of(before, Set.of(FlowSync.link(mainKey, bookKey)));
+        painter.autoLayout(d);
+        FlowDiagram.Box main = d.boxes.get(0), booking = d.boxes.get(1);
+        main.note = "kept";
+
+        FlowEntry price24 = line("PricingEngine.java", "PricingEngine", "quote()", 24, "BigDecimal running = BigDecimal.ZERO;");
+        FlowEntry book22 = line("BookingService.java", "BookingService", "bookTrip()", 22, "return null;");
+        String priceKey = FlowSync.methodKey(price24);
+        List<FlowEntry> now = List.of(main8, main13, book21, book22, price24);
+        FlowDiagram s = d.synced(now, List.of(book22, price24), Set.of(FlowSync.link(mainKey, bookKey),
+                FlowSync.link(bookKey, priceKey)), new FlowDiagram.IdPool(d.lastId()), painter.measure(), 24);
+
+        assertEquals(3, s.boxes.size(), "PricingEngine came in");
+        FlowDiagram.Box pricing = s.boxes.get(2);
+        assertEquals("PricingEngine", pricing.name);
+        assertEquals("quote()", pricing.methods.get(0).name);
+        assertEquals(2, s.box(booking.id).methods.get(0).saved, "bookTrip() has its new line");
+        assertEquals("kept", s.box(main.id).note, "what was done in the diagram stays");
+        assertTrue(s.links.stream().anyMatch(l -> l.to().equals(pricing.methods.get(0).id)), "its call is drawn");
+        assertTrue(pricing.x > s.box(booking.id).x, "placed right of the class that calls it");
+        assertFalse(s.spreadOut(painter.measure(), 24, null), "it covers no other class");
+        assertEquals(2, d.boxes.size(), "the diagram it came from is unchanged");
+    }
+
+    @Test
+    void methodsWhoseLinesLeftTheFlowLeaveAnOpenDiagram() {
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        FlowDiagram d = FlowDiagram.of(List.of(main8, main13, book21, cancel55), Set.of(FlowSync.link(mainKey, bookKey)));
+        FlowDiagram s = d.synced(List.of(main8, book21), List.of(), Set.of(FlowSync.link(mainKey, bookKey)),
+                new FlowDiagram.IdPool(d.lastId()), painter.measure(), 24);
+        FlowDiagram.Box booking = s.boxes.get(1);
+        assertEquals(List.of("bookTrip()"), booking.methods.stream().map(m -> m.name).toList(), "cancel() left");
+        assertEquals(1, s.boxes.get(0).methods.get(0).saved, "main() has one line left");
+
+        FlowDiagram gone = s.synced(List.of(main8), List.of(), Set.of(), new FlowDiagram.IdPool(s.lastId()), painter.measure(), 24);
+        assertEquals(1, gone.boxes.size(), "BookingService has nothing left in the flow");
+    }
+
+    @Test
+    void theSameNewMethodGetsTheSameIdInEveryStep() {
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        FlowDiagram a = FlowDiagram.of(List.of(main8), Set.of());
+        FlowDiagram b = FlowDiagram.of(List.of(main8, book21), Set.of());
+        FlowDiagram.IdPool pool = new FlowDiagram.IdPool(Math.max(a.lastId(), b.lastId()));
+        List<FlowEntry> now = List.of(main8, book21, cancel55);
+        FlowDiagram sa = a.synced(now, List.of(cancel55), Set.of(), pool, painter.measure(), 24);
+        FlowDiagram sb = b.synced(now, List.of(cancel55), Set.of(), pool, painter.measure(), 24);
+        String idA = sa.boxes.stream().flatMap(x -> x.methods.stream()).filter(m -> m.name.equals("cancel()")).findFirst().orElseThrow().id;
+        String idB = sb.boxes.stream().flatMap(x -> x.methods.stream()).filter(m -> m.name.equals("cancel()")).findFirst().orElseThrow().id;
+        assertEquals(idA, idB);
+    }
+
+    // ---------- find a class or method (Ctrl+F) ----------
+
+    @Test
+    void searchListsClassesWithTheirMethodsAndNarrowsAsYouType() {
+        FlowDiagram d = diagram();
+        List<FlowDiagramSearch.Item> all = FlowDiagramSearch.items(d);
+        assertEquals(List.of("Main", "Main.main()", "BookingService", "BookingService.bookTrip()", "BookingService.cancel()"),
+                all.stream().map(FlowDiagramSearch.Item::text).toList());
+        assertEquals(all, FlowDiagramSearch.filter(all, "  "), "nothing typed: everything");
+        assertEquals(List.of("BookingService", "BookingService.bookTrip()", "BookingService.cancel()"),
+                FlowDiagramSearch.filter(all, "booking").stream().map(FlowDiagramSearch.Item::text).toList(), "a class brings its methods");
+        assertEquals(List.of("BookingService.cancel()"),
+                FlowDiagramSearch.filter(all, "CANC").stream().map(FlowDiagramSearch.Item::text).toList(), "case is ignored");
+        assertEquals(List.of("BookingService.bookTrip()"),
+                FlowDiagramSearch.filter(all, "service trip").stream().map(FlowDiagramSearch.Item::text).toList(), "every word");
+        assertTrue(FlowDiagramSearch.filter(all, "nothing like it").isEmpty());
+    }
+
+    // ---------- calls with notes ----------
+
+    /**
+     * Two calls into TravelCodes.normalize() (from BookingService.create() and PromoDiscountRule.apply()) that go
+     * around the same boxes: with notes, each has its own line (no shared stretch), so a note isn't read as the
+     * other call's.
+     */
+    @Test
+    void callsWithNotesIntoTheSameMethodEachHaveTheirOwnLine() {
+        FlowEntry create = line("BookingService.java", "BookingService", "create()", 20, "TravelCodes.normalize(code);");
+        FlowEntry quote = line("PricingEngine.java", "PricingEngine", "quote()", 24, "rules.apply();");
+        FlowEntry season = line("SeasonalSurchargeRule.java", "SeasonalSurchargeRule", "apply()", 18, "TravelCodes.normalize(mode);");
+        FlowEntry normalize = line("TravelCodes.java", "TravelCodes", "normalize()", 9, "return code.trim();");
+        FlowEntry promo = line("PromoDiscountRule.java", "PromoDiscountRule", "apply()", 19, "TravelCodes.normalize(promo);");
+        String c = FlowSync.methodKey(create), q = FlowSync.methodKey(quote), se = FlowSync.methodKey(season),
+                n = FlowSync.methodKey(normalize), p = FlowSync.methodKey(promo);
+        FlowDiagram d = FlowDiagram.of(List.of(create, quote, season, normalize, promo),
+                Set.of(FlowSync.link(c, q), FlowSync.link(q, se), FlowSync.link(se, n), FlowSync.link(c, n), FlowSync.link(p, n)));
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        // the screenshot's layout: one row of boxes, PromoDiscountRule under the first one
+        double[][] at = {{450, 0}, {860, 0}, {1250, 0}, {1650, 0}, {20, 190}};
+        for (int k = 0; k < at.length; k++) {
+            d.boxes.get(k).x = at[k][0];
+            d.boxes.get(k).y = at[k][1];
+        }
+        FlowDiagram.Link fromCreate = null, fromPromo = null;
+        for (FlowDiagram.Link l : d.links) {
+            String from = d.boxOf(l.from()).name, to = d.boxOf(l.to()).name;
+            if (to.equals("TravelCodes") && from.equals("BookingService")) fromCreate = l;
+            if (to.equals("TravelCodes") && from.equals("PromoDiscountRule")) fromPromo = l;
+        }
+        assertNotNull(fromCreate);
+        assertNotNull(fromPromo);
+        double merged = painter.sharedLength(d, fromCreate, fromPromo);
+        assertTrue(merged < 30, "even without notes, the two calls keep their own way where there is room (" + merged + ")");
+        // the ends meet at the same method row: a few pixels by the arrow head are shared whatever the way
+        d.setCallNote(fromCreate, "BookingService");
+        d.setCallNote(fromPromo, "PromoDiscountRule");
+        double apart = painter.sharedLength(d, fromCreate, fromPromo);
+        assertTrue(apart < 30, "each call with a note has its own line (" + apart + " shared)");
+        assertTrue(painter.sharedLength(d, fromPromo, fromCreate) < 30);
+
+        // no hook at the end: the line from below doesn't go up past normalize()'s row to come back down to it
+        double row = painter.rowBounds(d.boxOf(fromPromo.to()), 0).getCenterY();
+        double top = painter.linkPath(d, fromPromo).getBounds2D().getMinY();
+        assertTrue(top > row - 15, "no hook above the end row (" + top + " vs row " + row + ")");
+
+        // every note is on the drawing (a line around the top of the boxes doesn't take its note off it)
+        for (Rectangle2D r : painter.callNoteLayout(d).values()) {
+            assertTrue(r.getY() >= 0 && r.getX() >= 0, "note on the drawing: " + r);
+        }
+
+        // only one of them with a note: still apart (the note is on its own call's line)
+        d.setCallNote(fromPromo, null);
+        assertTrue(painter.sharedLength(d, fromCreate, fromPromo) < 30);
+    }
+
+    /** A line dragged by hand keeps its way (saved with the looks); its middle pieces can be grabbed. */
+    @Test
+    void aLineRoutedByHandKeepsItsWay() {
+        FlowDiagram d = diagram();
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        painter.autoLayout(d);
+        FlowDiagram.Link l = d.links.get(0);
+        List<Double> lanes = painter.lanesOf(d, l);
+        assertEquals(1, lanes.size() % 2, "lanes start and end with a vertical piece: " + lanes);
+
+        // dragged: down below the boxes and back up
+        double below = 600;
+        double x1 = lanes.get(0);
+        d.setRoute(l, List.of(x1, below, x1 + 40));
+        java.awt.geom.Rectangle2D shape = painter.linkPath(d, l).getBounds2D();
+        assertEquals(below, shape.getMaxY(), 1, "the line runs along the lane it was dragged to");
+        assertEquals(1, painter.laneAt(d, l, d.route(l), new java.awt.geom.Point2D.Double((x1 + x1 + 40) / 2, below)),
+                "the horizontal piece is lane 1");
+        assertEquals(-1, painter.laneAt(d, l, d.route(l), new java.awt.geom.Point2D.Double(5000, 5000)));
+
+        // saved with the looks and back
+        FlowDiagram again = diagram();
+        again.applyLooks(d.looks());
+        assertEquals(List.of((double) Math.round(x1), below, (double) Math.round(x1 + 40)), again.route(again.links.get(0)));
+        assertFalse(d.sameAs(again) && !d.lookSignature().equals(diagram().lookSignature()) && false);
+        assertNotEquals(d.lookSignature(), diagram().lookSignature(), "a moved line is a change (Undo, Save)");
+
+        // dragged onto a class: it goes to the nearest place that misses every box
+        FlowDiagram.Box other = d.boxes.get(1);
+        java.awt.geom.Rectangle2D ob = painter.bounds(other);
+        List<Double> through = new java.util.ArrayList<>(List.of(x1, ob.getCenterY(), x1 + 40));
+        through.set(0, ob.getCenterX());
+        assertFalse(painter.handRouteClear(d, l, through), "a line through " + other.name);
+        Double free = painter.clearLane(d, l, through, 0, ob.getCenterX());
+        assertNotNull(free);
+        through.set(0, free);
+        assertTrue(painter.handRouteClear(d, l, through) || painter.clearLane(d, l, through, 1, ob.getCenterY()) != null);
+
+        d.setRoute(l, null);
+        assertNull(d.route(l), "Reset Line Route");
+    }
+
+    /** A dragged line comes into its method from the side its last lane is on, going around the box. */
+    @Test
+    void aDraggedLineEntersFromTheSideItIsOn() {
+        FlowDiagram d = diagram();
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        painter.autoLayout(d);
+        FlowDiagram.Link l = d.links.get(0);
+        java.awt.geom.Rectangle2D to = painter.bounds(d.boxOf(l.to()));
+        double under = to.getMaxY() + 60;
+        // the last vertical lane past the middle of the callee's box: in from the right
+        d.setRoute(l, List.of(to.getX() - 40, under, to.getX() + to.getWidth() * 0.8));
+        java.awt.geom.Rectangle2D shape = painter.linkPath(d, l).getBounds2D();
+        assertTrue(shape.getMaxX() > to.getMaxX(), "it goes round to the right side");
+        assertTrue(painter.handRouteClear(d, l, d.route(l)), "around the box, not through it");
+        // before the middle: under the box where it was dropped, then up to just under it, left, up and in from the left
+        double dropped = to.getX() + to.getWidth() * 0.4;
+        d.setRoute(l, List.of(to.getX() - 40, under, dropped));
+        java.awt.geom.Rectangle2D left = painter.linkPath(d, l).getBounds2D();
+        assertEquals(dropped, left.getMaxX(), 1, "the vertical piece stays where it was dropped, under the box");
+        assertEquals(under, left.getMaxY(), 1);
+        assertTrue(painter.handRouteClear(d, l, d.route(l)), "around the box, not through it");
+        assertEquals(2, painter.laneAt(d, l, d.route(l), new java.awt.geom.Point2D.Double(dropped, under - 20)),
+                "the piece under the box is still the lane dragged");
+
+        // lines may cross the classes when the setting says so
+        java.awt.geom.Rectangle2D other = painter.bounds(d.boxes.get(0));
+        List<Double> across = List.of(other.getCenterX() + 300, other.getCenterY(), to.getX() - 20);
+        painter.linesOverBoxes = true;
+        assertTrue(painter.handRouteClear(d, l, across));
+        painter.linesOverBoxes = false;
+    }
+
+    /** A note dragged along its line stays there (saved with the looks); it never leaves its line. */
+    @Test
+    void aNoteDraggedAlongItsLineStaysThere() {
+        FlowDiagram d = diagram();
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        painter.autoLayout(d);
+        FlowDiagram.Link l = d.links.get(0);
+        d.setCallNote(l, "books it");
+        java.awt.Shape path = painter.linkPath(d, l);
+        java.awt.geom.Point2D near = new java.awt.geom.Point2D.Double(path.getBounds2D().getMinX() + 20, path.getBounds2D().getCenterY() + 200);
+        double t = painter.nearestAlong(d, l, near);
+        assertTrue(t < 0.5, "the mouse far off the line: the nearest spot on it (" + t + ")");
+        d.setNotePlace(l, t);
+        java.awt.geom.Rectangle2D note = painter.callNoteBounds(d, l);
+        assertNotNull(note);
+        assertTrue(path.intersects(note.getX() - 1, note.getY() - 1, note.getWidth() + 2, note.getHeight() + 2), "on its line");
+
+        FlowDiagram again = diagram();
+        again.applyLooks(d.looks());
+        assertEquals(Math.round(t * 1000) / 1000.0, again.notePlace(again.links.get(0)), 0.001);
+    }
+
+    /**
+     * The booking flow as laid out in the screenshot: BookingService.create() calls BookingDto, PricingEngine and
+     * TravelCodes; TravelCodes.normalize() is also called from SeasonalSurchargeRule and PromoDiscountRule. Where there
+     * is room, no two of these lines run along each other (out of create(), or into normalize()).
+     */
+    @Test
+    void callsOutOfAndIntoOneMethodDontOverlapWhereThereIsRoom() {
+        FlowEntry create = line("BookingService.java", "BookingService", "create()", 20, "TravelCodes.normalize(code);");
+        FlowEntry ref = line("BookingDto.java", "BookingDto", "setReference()", 28, "this.reference = reference;");
+        FlowEntry quote = line("PricingEngine.java", "PricingEngine", "quote()", 24, "rules.apply();");
+        FlowEntry season = line("SeasonalSurchargeRule.java", "SeasonalSurchargeRule", "apply()", 18, "TravelCodes.normalize(mode);");
+        FlowEntry normalize = line("TravelCodes.java", "TravelCodes", "normalize()", 9, "return code.trim();");
+        FlowEntry promo = line("PromoDiscountRule.java", "PromoDiscountRule", "apply()", 19, "TravelCodes.normalize(promo);");
+        String c = FlowSync.methodKey(create), r = FlowSync.methodKey(ref), q = FlowSync.methodKey(quote),
+                se = FlowSync.methodKey(season), n = FlowSync.methodKey(normalize), p = FlowSync.methodKey(promo);
+        FlowDiagram d = FlowDiagram.of(List.of(create, ref, quote, season, normalize, promo),
+                Set.of(FlowSync.link(c, r), FlowSync.link(c, q), FlowSync.link(c, n), FlowSync.link(q, se),
+                        FlowSync.link(se, n), FlowSync.link(p, n)));
+        FlowDiagramPainter painter = new FlowDiagramPainter(new Font(Font.SANS_SERIF, Font.PLAIN, 12));
+        java.util.Map<String, double[]> at = java.util.Map.of("BookingService", new double[]{430, 0},
+                "BookingDto", new double[]{815, 0}, "PricingEngine", new double[]{815, 187},
+                "SeasonalSurchargeRule", new double[]{1200, 187}, "TravelCodes", new double[]{1593, 125},
+                "PromoDiscountRule", new double[]{0, 187});
+        for (FlowDiagram.Box b : d.boxes) {
+            b.x = at.get(b.name)[0];
+            b.y = at.get(b.name)[1];
+        }
+        String png = System.getenv("TRACEWEAVE_RENDER");
+        if (png != null) { // a picture of it, to look at
+            java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(1900, 420, java.awt.image.BufferedImage.TYPE_INT_RGB);
+            java.awt.Graphics2D g = img.createGraphics();
+            g.setColor(java.awt.Color.WHITE);
+            g.fillRect(0, 0, 1900, 420);
+            g.translate(20, 20);
+            g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+            painter.paint(g, d, FlowDiagramPainter.LIGHT, FlowDiagramPainter.Selection.NONE);
+            g.dispose();
+            try { javax.imageio.ImageIO.write(img, "png", new java.io.File(png)); } catch (java.io.IOException e) { throw new RuntimeException(e); }
+        }
+        java.util.Map<String, FlowDiagram.Link> by = new java.util.HashMap<>();
+        for (FlowDiagram.Link l : d.links) by.put(d.boxOf(l.from()).name + ">" + d.boxOf(l.to()).name, l);
+        FlowDiagram.Link toCodes = by.get("BookingService>TravelCodes");
+        for (String other : List.of("BookingService>PricingEngine", "BookingService>BookingDto",
+                "SeasonalSurchargeRule>TravelCodes", "PromoDiscountRule>TravelCodes")) {
+            double shared = painter.sharedLength(d, toCodes, by.get(other));
+            assertTrue(shared < 30, "create() > normalize() runs along " + other + " for " + shared);
+        }
+        assertTrue(painter.sharedLength(d, by.get("PromoDiscountRule>TravelCodes"), by.get("SeasonalSurchargeRule>TravelCodes")) < 30);
     }
 }

@@ -397,6 +397,7 @@ final class FlowDiagramFormat {
                     return new Dimension(Math.max(JBUI.scale(620), f.width + JBUI.scale(16)), Math.min(f.height + JBUI.scale(4), max));
                 }
             };
+            com.example.flowtracker.ui.FlowScroll.wheel(scroll);
             scroll.setBorder(JBUI.Borders.empty());
             scroll.getVerticalScrollBar().setUnitIncrement(JBUI.scale(16));
             return scroll;
@@ -763,6 +764,7 @@ final class FlowDiagramFormat {
                 @Override public Dimension getPreferredSize() { return new Dimension(JBUI.scale(300), height); }
                 @Override public Dimension getMinimumSize() { return new Dimension(JBUI.scale(100), height); }
             };
+            com.example.flowtracker.ui.FlowScroll.wheel(scroll);
             add(scroll, BorderLayout.CENTER);
             JComponent grip = new JComponent() {
                 private int startY, startH;

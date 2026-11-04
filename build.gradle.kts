@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "io.github.rameshnr"
-version = "1.3.2"
+version = "1.4.0"
 
 repositories {
     mavenCentral()
@@ -21,6 +21,8 @@ dependencies {
         bundledPlugin("com.intellij.java")
         // Tests that read real Java code with the IDE's own parser (e.g. FlowCallPathTest)
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Plugin.Java)
+        // ...and Kotlin code (tests only: the plugin itself reads Kotlin through UAST, without depending on it)
+        testBundledPlugin("org.jetbrains.kotlin")
     }
 
     // Unit tests for the parts that don't need a running IDE (src/test): .\gradlew.bat test

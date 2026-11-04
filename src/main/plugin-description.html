@@ -85,7 +85,11 @@ them in <b>call order</b> automatically, and copies the whole flow as text, a co
   <li>Boxes never overlap and lines go around boxes in their way. <b>Zoom</b> with the corner buttons or Ctrl+mouse
       wheel, and drag an empty spot to move the view.</li>
   <li><b>Connect the Flow to…</b>: pick two methods and the calls between them are read from the code and added, with
-      their classes (e.g. main() &rarr; bookTrip() &rarr; getDestination()).</li>
+      their classes (e.g. main() &rarr; bookTrip() &rarr; getDestination()). Several ways: hover one to preview it on the
+      tab, or open them full screen.</li>
+  <li><b>Drag lines</b> by their handles, around boxes or into their side; notes slide along their line. Lines keep
+      apart where there is room; <b>Auto Layout</b> lines the boxes up with the rows that call them. <b>Find</b> a
+      class or method with Ctrl+F.</li>
   <li><b>Tabs</b>, one per flow: move or copy classes to another tab (link boxes show where they went), or see two tabs
       combined.</li>
   <li>Every change is listed in the <b>History</b>, with <b>Undo / Redo</b>; it stays after Save. <b>Save</b> writes
@@ -98,6 +102,7 @@ them in <b>call order</b> automatically, and copies the whole flow as text, a co
 <!--img--><p><img src="@IMAGES@/traceweave-flow-diagram.png" alt="Flow Diagram: class boxes with methods, call arrows and the History" width="640"></p><!--/img-->
 <!--img--><p><img src="@IMAGES@/traceweave-diagram-connect-flow.png" alt="Connect the Flow: the calls between two methods, read from the code" width="640"></p><!--/img-->
 <!--img--><p><img src="@IMAGES@/traceweave-diagram-code-panel.png" alt="Click a method to see its code under the diagram" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-ways-onscreen.png" alt="The ways Connect the Flow found, one previewed on the tab" width="640"></p><!--/img-->
 
 <h3>Debug Data: save, compare and find debug values</h3>
 <ul>
@@ -113,10 +118,28 @@ them in <b>call order</b> automatically, and copies the whole flow as text, a co
   <li><b>Find</b> a name, key or value (e.g. something hidden in the session's attributes) in all saved values and in
       the current debug session.</li>
   <li><b>Edit</b> saved values with a history you can revert, and restore deleted ones from the Recycle Bin.</li>
+  <li><b>Bookmark</b> a field to keep it at the top of its object. <b>Hide Internals</b> shows a String saved as its
+      bytes as its text, and leaves out what Java, Kotlin, Scala, Groovy, .NET, Python and JavaScript keep inside
+      values.</li>
 </ul>
 
 <!--img--><p><img src="@IMAGES@/traceweave-debug-data.png" alt="Debug Data: saved values by flow and line, and a value's fields" width="640"></p><!--/img-->
 <!--img--><p><img src="@IMAGES@/traceweave-compare.png" alt="Compare: two values side by side, what differs marked Old and New" width="640"></p><!--/img-->
+
+<h3>Stop at Value: stop the debugger where a value shows up</h3>
+<ul>
+  <li><b>Add Stop at Value</b>: type a value (e.g. <code>BK-1044</code>, several, or a <code>/regex/</code>) and the
+      debugger stops on the line where it shows up, anywhere in the project's code, without breakpoints of your own.</li>
+  <li><b>Watch a Field or Object</b>: a field (<code>BookingDto.status</code>), a class, a method's variable
+      (<code>BookingWorkflow.book().booking</code>), a field inside it (<code>.getEmail()</code>) or what a method
+      returns; stop when it is set, changes, becomes null or holds a value. Or right-click it in the code.</li>
+  <li>Every stop is listed with when, where, the thread and what was found, and the variables at that stop as a tree
+      or JSON; copy them to Debug Data.</li>
+</ul>
+
+<!--img--><p><img src="@IMAGES@/traceweave-stop-at-value.png" alt="Stop at Value: the records, their stops and the variables at a stop" width="640"></p><!--/img-->
+<!--img--><p><img src="@IMAGES@/traceweave-watch-field.png" alt="Watch a Field or Object: a method's variables, and when to stop" width="640"></p><!--/img-->
+
 
 <h3>Walk through the flow</h3>
 <ul>

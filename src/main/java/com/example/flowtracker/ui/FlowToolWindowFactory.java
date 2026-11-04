@@ -10,6 +10,8 @@ import com.example.flowtracker.diagram.FlowDiagramDialog;
 import com.example.flowtracker.editor.FlowRecorder;
 import com.example.flowtracker.editor.FlowWalk;
 import com.example.flowtracker.model.FlowCheck;
+import com.example.flowtracker.model.FlowDebugStore;
+import com.example.flowtracker.model.FlowSnapshot;
 import com.example.flowtracker.model.FlowEntry;
 import com.example.flowtracker.model.FlowLook;
 import com.example.flowtracker.model.FlowProjects;
@@ -183,13 +185,23 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
                 if (path == null) return null;
                 Object uo = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
                 FlowCheck.Problem problem = uo instanceof FlowEntry fe ? renderer.problems.get(fe) : null;
-                if (problem == null) return null;
+                if (problem == null) return uo instanceof FlowEntry fe ? savedValuesTip(project, fe) : null;
                 return "<html>" + StringUtil.escapeXmlEntities(problem.message())
                         + (problem.kind() == FlowCheck.Kind.MISSING_FILE ? ""
                         : "<br><small>Right-click \u2192 Re-link to Code</small>") + "</html>";
             }
         };
         ToolTipManager.sharedInstance().registerComponent(tree);
+        // lines with values saved in Debug Data get a dot next to their number (hover it for the values)
+        FlowDebugStore debugStore = FlowDebugStore.get(project);
+        Runnable revalue = () -> {
+            renderer.valued.clear();
+            for (FlowSnapshot s : debugStore.getSnapshots()) renderer.valued.add(s.fileUrl + "#" + s.line);
+            tree.repaint();
+        };
+        revalue.run();
+        debugStore.addListener(revalue);
+        Disposer.register(toolWindow.getDisposable(), () -> debugStore.removeListener(revalue));
         tree.setOpaque(false);
         tree.setRootVisible(false);
         tree.setShowsRootHandles(true);
@@ -247,7 +259,11 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
                     new FlowSettingsPopup.Choice(FlowTheme.ICON_LIST, "Copy Original Log",
                             (store.isNestedCallLog() ? "Each call nested under the line that makes it" : "The plain list of this view")
                                     + " (what the Markdown copy ends with), as plain text.",
-                            () -> false, () -> FlowCopy.copyOriginalLog(project, visible(store, filter[0])))));
+                            () -> false, () -> FlowCopy.copyOriginalLog(project, visible(store, filter[0]))),
+                    new FlowSettingsPopup.Choice(FlowTheme.ICON_EXPORT, "Export as HTML Page\u2026",
+                            "One page with the diagram and the lines" + (store.isCopyAllFlows() ? " of every flow" : "")
+                                    + ", to open in any browser or send to someone without the plugin.",
+                            () -> false, () -> FlowCopy.exportHtml(project, visible(store, filter[0])))));
             FlowSettingsPopup.showChoices(copy, "Copy", sections,
                     store.isCopyAllFlows() ? "Copy All Flows is on: every flow is copied." : null, true);
         });
@@ -689,7 +705,7 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         top.add(header, BorderLayout.NORTH);
         top.add(toolbar, BorderLayout.CENTER);
 
-        JBScrollPane scroll = new JBScrollPane(tree);
+        JBScrollPane scroll = FlowScroll.wheel(new JBScrollPane(tree));
         scroll.setBorder(JBUI.Borders.empty());
         scroll.setOpaque(false);
         scroll.getViewport().setOpaque(false);
@@ -717,6 +733,12 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         Content debugContent = ContentFactory.getInstance().createContent(debugData, FlowDebugPanel.TAB, false);
         debugContent.setDisposer(debugData);
         toolWindow.getContentManager().addContent(debugContent);
+
+        // Stop at Value: the debugger stops where values are found; the history of every hunt and stop
+        FlowHuntPanel hunts = new FlowHuntPanel(project);
+        Content huntContent = ContentFactory.getInstance().createContent(hunts, FlowHuntPanel.TAB, false);
+        huntContent.setDisposer(hunts);
+        toolWindow.getContentManager().addContent(huntContent);
     }
 
     // ================= tree look =================
@@ -1218,6 +1240,8 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         boolean showProjectInFlat;
         /** Saved lines that no longer match the code (see FlowCheck), refreshed by the tool window. */
         final Map<FlowEntry, FlowCheck.Problem> problems = new IdentityHashMap<>();
+        /** Lines ("file url#line") with values saved in Debug Data. */
+        final Set<String> valued = new HashSet<>();
 
         private Object value;
         private int padTop;
@@ -1415,6 +1439,11 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
             g.setFont(codeFont);
             g.setColor(problem != null ? FlowTheme.WARNING : FlowTheme.LINE_NO);
             g.drawString(number, gutter - JBUI.scale(10) - code.stringWidth(number), baseline(code, y0, h0));
+            if (valued.contains(e.fileUrl + "#" + e.line)) { // values saved here in Debug Data
+                int d = JBUI.scale(6);
+                g.setColor(FlowTheme.ACCENT);
+                g.fillOval(gutter - JBUI.scale(10) - code.stringWidth(number) - d - JBUI.scale(4), y0 + (h0 - d) / 2, d, d);
+            }
 
             int x = codeStart(code);
             if (flat) {
@@ -1466,34 +1495,26 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
             notify(project, "The IDE is still indexing: connect the lines when it is done.", NotificationType.INFORMATION);
             return;
         }
-        new com.intellij.openapi.progress.Task.Backgroundable(project, "Finding the calls between the two lines", true) {
-            private com.example.flowtracker.code.FlowCallPath.Result result;
-            private FlowEntry from = first;
+        FlowConnecting.connect(project, store, first, second);
+    }
 
-            @Override
-            public void run(@NotNull com.intellij.openapi.progress.ProgressIndicator indicator) {
-                result = FlowCompat.read(() -> com.example.flowtracker.code.FlowCallPath.between(project, first, second));
-                if (result.lines() == null) { // maybe the second line calls the first
-                    com.example.flowtracker.code.FlowCallPath.Result back =
-                            FlowCompat.read(() -> com.example.flowtracker.code.FlowCallPath.between(project, second, first));
-                    if (back.lines() != null) {
-                        result = back;
-                        from = second;
-                    }
-                }
-            }
-
-            @Override
-            public void onSuccess() {
-                if (result.lines() == null) {
-                    FlowToolWindowFactory.notify(project, result.message(), NotificationType.WARNING);
-                    return;
-                }
-                int n = store.insertAfter(from, result.lines(), "Connect " + from.fileName + ":" + from.line);
-                FlowToolWindowFactory.notify(project, result.message() + (n == 0 ? " The lines in between are in the flow already."
-                        : " Added " + n + (n == 1 ? " line" : " lines") + " between them (Undo takes them out)."), NotificationType.INFORMATION);
-            }
-        }.queue();
+    /** A line's values saved in Debug Data, for its tooltip (null when it has none). */
+    private static @Nullable String savedValuesTip(Project project, FlowEntry e) {
+        List<FlowSnapshot> here = FlowDebugStore.get(project).getSnapshots().stream()
+                .filter(s -> s.line == e.line && s.fileUrl.equals(e.fileUrl)).toList();
+        if (here.isEmpty()) return null;
+        StringBuilder sb = new StringBuilder("<html><b>Saved debug values at this line</b>");
+        int shown = 0;
+        for (FlowSnapshot s : here) {
+            if (shown++ == 5) break;
+            String value = s.value == null || s.value.value == null ? "" : s.value.value;
+            if (value.length() > 60) value = value.substring(0, 60) + "…";
+            sb.append("<br>• <b>").append(StringUtil.escapeXmlEntities(s.name)).append("</b> = ")
+                    .append(StringUtil.escapeXmlEntities(value)).append(" <small>· ").append(FlowDebugPanel.time(s.savedAt))
+                    .append(s.flowName.isEmpty() ? "" : " · " + StringUtil.escapeXmlEntities(s.flowName)).append("</small>");
+        }
+        if (here.size() > 5) sb.append("<br>… and ").append(here.size() - 5).append(" more");
+        return sb.append("<br><small>Right-click \u2192 Show Saved Values</small></html>").toString();
     }
 
     private static List<FlowEntry> selectedEntries(JTree tree, FlowStore store) {
@@ -1563,6 +1584,12 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
                     AllIcons.Actions.Edit, true, editNote));
             group.add(menuAction("Jump to Source", AllIcons.Actions.EditSource, true, () -> navigate(project, line)));
             group.add(menuAction("Walk from Here", FlowTheme.ICON_NEXT, true, () -> FlowWalk.show(project, line)));
+            long values = FlowDebugStore.get(project).getSnapshots().stream()
+                    .filter(s -> s.line == line.line && s.fileUrl.equals(line.fileUrl)).count();
+            if (values > 0) {
+                group.add(menuAction("Show Saved Values (" + values + ")", FlowTheme.ICON_CAPTURE, true,
+                        () -> FlowDebugPanel.showLineOf(project, line.fileUrl, line.line)));
+            }
             group.add(connectMenu(store, line, reselect));
         }
 

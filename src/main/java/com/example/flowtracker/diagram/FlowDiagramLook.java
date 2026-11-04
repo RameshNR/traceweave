@@ -47,6 +47,10 @@ public class FlowDiagramLook {
     public String line = "";
     /** How a call's note is drawn: shape;background;text;border, e.g. "PILL;#FFF1D6;;#C27C0E" ("" = the usual one). */
     public String noteStyle = "";
+    /** A call's line routed by hand: its lanes, e.g. "740,212,1680" ("" = routed by itself). */
+    public String route = "";
+    /** Where along its line a call's note was dragged to, 0 to 1 ("" = where it finds room). */
+    public String noteAt = "";
 
     public FlowDiagramLook() {}
 
@@ -58,6 +62,8 @@ public class FlowDiagramLook {
         c.placed = placed; c.x = x; c.y = y;
         c.fill = fill; c.header = header; c.border = border; c.format = format; c.fileFormat = fileFormat;
         c.methodFormat = methodFormat; c.note = note; c.noteFormat = noteFormat; c.line = line; c.noteStyle = noteStyle;
+        c.route = route;
+        c.noteAt = noteAt;
         c.projectFill = projectFill; c.projectBorder = projectBorder; c.projectFormat = projectFormat;
         return c;
     }
@@ -71,6 +77,7 @@ public class FlowDiagramLook {
         return String.join("\u0000", fileUrl, className, method, toFileUrl, toClass, toMethod,
                 placed ? Math.round(x) + "," + Math.round(y) : "", fill, header, border, format, fileFormat, methodFormat,
                 note, noteFormat, line, noteStyle == null ? "" : noteStyle, projectFill == null ? "" : projectFill,
-                projectBorder == null ? "" : projectBorder, projectFormat == null ? "" : projectFormat);
+                projectBorder == null ? "" : projectBorder, projectFormat == null ? "" : projectFormat, route == null ? "" : route,
+                noteAt == null ? "" : noteAt);
     }
 }

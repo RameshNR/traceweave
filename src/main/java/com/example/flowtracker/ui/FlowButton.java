@@ -49,6 +49,13 @@ public final class FlowButton extends JComponent {
     private @Nullable Runnable dropDown;
     private @Nullable String dropDownTip;
     private final List<ActionListener> listeners = new ArrayList<>();
+    /** An outline button's own color (its border, icon and label), e.g. green for Start; null: the usual. */
+    private @Nullable Color accent;
+
+    public void setAccent(@Nullable Color accent) {
+        this.accent = accent;
+        repaint();
+    }
 
     public FlowButton(String text, @Nullable Icon icon, Style style) {
         this.text = text;
@@ -151,6 +158,8 @@ public final class FlowButton extends JComponent {
         repaint();
     }
 
+    boolean isCompact() { return compact; }
+
     /** Called by the toolbar layout; changes the preferred size without revalidating. */
     void setCompact(boolean compact) {
         if (this.compact == compact || icon == null) return;
@@ -171,7 +180,7 @@ public final class FlowButton extends JComponent {
         for (ActionListener l : new ArrayList<>(listeners)) l.actionPerformed(ev);
     }
 
-    private boolean showsText() { return !compact || icon == null; }
+    private boolean showsText() { return icon == null || !compact && text != null && !text.isEmpty(); }
 
     @Override
     public Dimension getPreferredSize() {
@@ -206,6 +215,8 @@ public final class FlowButton extends JComponent {
             if (filled) {
                 bg = !on ? FlowTheme.BTN_BG : pressed ? FlowTheme.ACCENT_PRESSED
                         : hover ? FlowTheme.ACCENT_HOVER : FlowTheme.ACCENT;
+            } else if (style == Style.OUTLINE && accent != null && on) {
+                bg = new Color(accent.getRed(), accent.getGreen(), accent.getBlue(), pressed ? 70 : hover ? 50 : 26);
             } else if (style == Style.OUTLINE) {
                 bg = on && pressed ? FlowTheme.BTN_PRESSED : on && hover ? FlowTheme.BTN_HOVER : FlowTheme.BTN_BG;
             } else if (on && (hover || pressed)) {
@@ -230,11 +241,11 @@ public final class FlowButton extends JComponent {
             }
             if (style == Style.OUTLINE && !filled) {
                 // Stroke centered half a pixel inside, so no edge of the border is clipped.
-                g2.setColor(on ? FlowTheme.BTN_BORDER : FlowTheme.BTN_BORDER_DISABLED);
+                g2.setColor(!on ? FlowTheme.BTN_BORDER_DISABLED : accent != null ? accent : FlowTheme.BTN_BORDER);
                 g2.draw(new RoundRectangle2D.Float(0.5f, 0.5f, w - 1f, h - 1f, arc, arc));
             }
 
-            Color fg = !on ? FlowTheme.FG_DISABLED : filled ? Color.WHITE : FlowTheme.FG;
+            Color fg = !on ? FlowTheme.FG_DISABLED : filled ? Color.WHITE : accent != null ? accent : FlowTheme.FG;
             if (dropDown != null) {
                 int split = w - arrowWidth();
                 g2.setColor(on ? FlowTheme.BTN_BORDER : FlowTheme.BTN_BORDER_DISABLED);

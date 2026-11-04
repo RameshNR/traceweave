@@ -243,6 +243,9 @@ public final class FlowDiagramPainter {
         return new FlowDiagram.Measure() {
             @Override public double width(FlowDiagram.Box b) { return FlowDiagramPainter.this.width(b); }
             @Override public double height(FlowDiagram.Box b) { return FlowDiagramPainter.this.height(b); }
+            @Override public double rowCenter(FlowDiagram.Box b, int index) {
+                return b.methods.isEmpty() ? height(b) / 2 : rowBounds(b, index).getCenterY() - b.y;
+            }
         };
     }
 
@@ -268,7 +271,7 @@ public final class FlowDiagramPainter {
     }
 
     /** The largest distance between the ends of two calls on the same side of a row. */
-    private static final double FAN_STEP = 8;
+    private static final double FAN_STEP = 11;
 
     /**
      * Where on its row's edge a call starts (or ends), up or down from the middle: when a method calls several
@@ -288,7 +291,7 @@ public final class FlowDiagramPainter {
             return anchor(d, other, true).getY();
         }).thenComparing(o -> atStart ? o.to() : o.from()));
         int k = same.indexOf(l), n = same.size();
-        double step = Math.min(FAN_STEP, (ROW - 8) / (n - 1.0));
+        double step = Math.min(FAN_STEP, (ROW - 4) / (n - 1.0));
         return (k - (n - 1) / 2.0) * step;
     }
 
@@ -316,7 +319,18 @@ public final class FlowDiagramPainter {
      * detour around them with right angles (rounded for a curved line).
      */
     private Route route(FlowDiagram d, FlowDiagram.Link l) {
+        return route(d, l, 0);
+    }
+
+    /**
+     * @param depth how many calls deep this is asked (a call with a note keeps away from the related calls drawn before
+     *              it, whose ways are worked out first)
+     */
+    private Route route(FlowDiagram d, FlowDiagram.Link l, int depth) {
         Route direct = direct(d, l);
+        // its own way, while that misses the boxes (a box moved onto it: the line finds its way again meanwhile)
+        List<Double> own = d.route(l);
+        if (own != null && !own.isEmpty() && handRouteClear(d, l, own)) return byHand(d, l, direct, own);
         FlowDiagram.Box from = d.boxOf(l.from()), to = d.boxOf(l.to());
         List<Rectangle2D> others = new ArrayList<>();
         StringBuilder key = new StringBuilder(l.from()).append('>').append(l.to()).append('|').append(d.line(l).shape())
@@ -327,11 +341,16 @@ public final class FlowDiagramPainter {
                     .append(Math.round(r.getWidth())).append(',').append(Math.round(r.getHeight()));
             if (b != from && b != to) others.add(r);
         }
-        List<java.awt.geom.Line2D> along = siblingSegments(d, l, direct);
+        // Calls into (or out of) the same method where one has a note: each takes its own way, so a note is on its
+        // own call's line and two calls never look like one line with two notes.
+        boolean apart = noteInGroup(d, l) && depth < 6;
+        List<java.awt.geom.Line2D> along = apart ? drawnBefore(d, l, depth) : siblingSegments(d, l, direct);
         if (!crosses(direct.path(), others) && !runsAlong(direct.path(), along)) return direct;
-        key.append("|s").append(along.size());
+        key.append("|s").append(along.size()).append(apart ? "|apart" : "");
+        for (java.awt.geom.Line2D s : along) key.append('|').append(Math.round(s.getX1())).append(',').append(Math.round(s.getY1()));
+        double weight = apart ? 60 : 4;
         return detours.computeIfAbsent(key.toString(), k -> {
-            Route around = detour(d, l, direct, along);
+            Route around = detour(d, l, direct, along, weight);
             return around != null ? around : direct;
         });
     }
@@ -352,7 +371,239 @@ public final class FlowDiagramPainter {
             Route od = direct(d, o);
             double os = span(od);
             boolean defer = span > os + 0.5 || Math.abs(span - os) <= 0.5 && (l.to() + l.from()).compareTo(o.to() + o.from()) > 0;
-            if (defer) out.addAll(segments(od.path()));
+            // its line as it is drawn (it doesn't keep away from this one: the order is strict, so no loop)
+            if (defer) out.addAll(segments(route(d, o).path()));
+        }
+        return out;
+    }
+
+    /**
+     * How long two calls' lines run side by side (within {@link #APART}): 0 when each has its own way (for tests). The
+     * straight pieces on the rows a line starts and ends on don't count: calls of one method leave it (or come into
+     * it) side by side there, a fan step apart, by design.
+     */
+    double sharedLength(FlowDiagram d, FlowDiagram.Link a, FlowDiagram.Link b) {
+        double together = 0;
+        Shape path = linkPath(d, a);
+        double[] start = new double[6];
+        path.getPathIterator(null).currentSegment(start);
+        double tipY = route(d, a).tip().getY();
+        List<java.awt.geom.Line2D> other = segments(linkPath(d, b));
+        for (java.awt.geom.Line2D s : segments(path)) {
+            boolean flat = Math.abs(s.getY1() - s.getY2()) < 0.5;
+            if (flat && (Math.abs(s.getY1() - start[1]) < 0.5 || Math.abs(s.getY1() - tipY) < 0.5)) continue;
+            together += alongside(s, other);
+        }
+        return together;
+    }
+
+    // ---------- lines routed by hand ----------
+
+    /** Lines dragged by hand may run across the classes (a setting); by default they keep off them. */
+    boolean linesOverBoxes;
+
+    /**
+     * The corners of a line routed by hand: from its start, along its lanes, to its end (right angles only). Each end
+     * takes the side of its box its lane is on (past the middle: the right side). A lane dragged under (or over) the
+     * box keeps its place there: the line runs up to just under the box, turns to that side, and goes in; a lane beside
+     * the box goes to that side's column.
+     */
+    private List<Point2D> handPoints(FlowDiagram d, FlowDiagram.Link l, Route direct, List<Double> lanes) {
+        double[] start = new double[2];
+        direct.path().getPathIterator(null).currentSegment(start);
+        Rectangle2D fb = bounds(d.boxOf(l.from())), tb = bounds(d.boxOf(l.to()));
+        double ay = start[1], by = direct.tip().getY(), c = CLEARANCE;
+        List<Double> ln = new ArrayList<>(lanes);
+        List<Point2D> pts = new ArrayList<>();
+
+        // the start: the side of the caller's box its first vertical lane is on
+        double firstX = ln.get(0);
+        boolean outRight = firstX >= fb.getCenterX();
+        double outCol = outRight ? fb.getMaxX() + c : fb.getX() - c;
+        pts.add(new Point2D.Double(outRight ? fb.getMaxX() : fb.getX(), ay));
+        if (firstX > fb.getX() - c && firstX < fb.getMaxX() + c) {
+            double nextY = ln.size() > 1 ? ln.get(1) : by;
+            if (nextY > fb.getMaxY() + c || nextY < fb.getY() - c) { // under / over the box: around it to that spot
+                double stop = nextY > fb.getMaxY() ? fb.getMaxY() + c : fb.getY() - c;
+                pts.add(new Point2D.Double(outCol, ay));
+                pts.add(new Point2D.Double(outCol, stop));
+                pts.add(new Point2D.Double(firstX, stop));
+            } else {
+                ln.set(0, outCol); // beside the box: its side's column
+            }
+        }
+
+        // the lanes
+        Point2D at = pts.get(pts.size() - 1);
+        double x = at.getX(), y = at.getY();
+        for (int i = 0; i < ln.size(); i++) {
+            if (i % 2 == 0) x = ln.get(i);
+            else y = ln.get(i);
+            pts.add(new Point2D.Double(x, y));
+        }
+
+        // the end: the side of the callee's box its last vertical lane is on
+        boolean inRight;
+        if (ln.size() % 2 == 0) { // ends on a horizontal lane: one more turn, on the side the line comes from
+            inRight = Math.abs(direct.tip().getX() - tb.getMaxX()) < 0.5;
+            x = inRight ? tb.getMaxX() + c : tb.getX() - c;
+            pts.add(new Point2D.Double(x, y));
+        } else {
+            inRight = x > tb.getCenterX();
+            double inCol = inRight ? tb.getMaxX() + c : tb.getX() - c;
+            if (x > tb.getX() - c && x < tb.getMaxX() + c) {
+                if (y > tb.getMaxY() + c || y < tb.getY() - c) { // from under / over the box: up to it, then to its side
+                    double stop = y > tb.getMaxY() ? tb.getMaxY() + c : tb.getY() - c;
+                    pts.add(new Point2D.Double(x, stop));
+                    pts.add(new Point2D.Double(inCol, stop));
+                    x = inCol;
+                } else { // beside the box: its side's column
+                    pts.set(pts.size() - 1, new Point2D.Double(inCol, y));
+                    x = inCol;
+                }
+            }
+        }
+        pts.add(new Point2D.Double(x, by));
+        pts.add(new Point2D.Double(inRight ? tb.getMaxX() : tb.getX(), by));
+        List<Point2D> out = new ArrayList<>();
+        for (Point2D q : pts) if (out.isEmpty() || out.get(out.size() - 1).distance(q) > 0.01) out.add(q);
+        return out;
+    }
+
+    private Route byHand(FlowDiagram d, FlowDiagram.Link l, Route direct, List<Double> lanes) {
+        List<Point2D> pts = handPoints(d, l, direct, lanes);
+        boolean round = d.line(l).shape() == FlowDiagram.LineShape.CURVED;
+        return new Route(polyline(pts, round ? 10 : 0), pts.get(pts.size() - 1), pts.get(Math.max(0, pts.size() - 2)));
+    }
+
+    /**
+     * A line's lanes as it is drawn now (to start dragging it): the x of each vertical piece and the y of each
+     * horizontal one between its ends; a curve or a straight line gets one vertical lane half way.
+     */
+    List<Double> lanesOf(FlowDiagram d, FlowDiagram.Link l) {
+        List<Double> own = d.route(l);
+        if (own != null && !own.isEmpty() && handRouteClear(d, l, own)) return new ArrayList<>(own);
+        Route r = route(d, l);
+        List<Double> out = new ArrayList<>();
+        Boolean lastVertical = null;
+        List<java.awt.geom.Line2D> pieces = segments(r.path());
+        for (int k = 0; k < pieces.size(); k++) {
+            java.awt.geom.Line2D s = pieces.get(k);
+            boolean vertical = Math.abs(s.getX1() - s.getX2()) < 0.5 && Math.abs(s.getY1() - s.getY2()) > 3;
+            boolean horizontal = Math.abs(s.getY1() - s.getY2()) < 0.5 && Math.abs(s.getX1() - s.getX2()) > 3;
+            if (!vertical && !horizontal) continue;
+            if (lastVertical != null && lastVertical == vertical) continue; // the same piece, cut by a rounded corner
+            if (out.isEmpty() && horizontal) { lastVertical = false; continue; } // leaving the box: its row
+            out.add(vertical ? s.getX1() : s.getY1());
+            lastVertical = vertical;
+        }
+        // the last horizontal piece runs into the end: its row isn't a lane
+        if (out.size() % 2 == 0 && !out.isEmpty()) out.remove(out.size() - 1);
+        if (out.isEmpty()) {
+            double[] start = new double[2];
+            r.path().getPathIterator(null).currentSegment(start);
+            out.add((start[0] + r.tip().getX()) / 2);
+        }
+        return out;
+    }
+
+    /**
+     * True when a line routed along these lanes misses every box: its middle pieces touch no box, and its first and
+     * last pieces only their own method's box (where they start and end).
+     */
+    boolean handRouteClear(FlowDiagram d, FlowDiagram.Link l, List<Double> lanes) {
+        if (linesOverBoxes) return true;
+        List<Point2D> pts = handPoints(d, l, direct(d, l), lanes);
+        FlowDiagram.Box from = d.boxOf(l.from()), to = d.boxOf(l.to());
+        for (int k = 0; k + 1 < pts.size(); k++) {
+            boolean first = k == 0, last = k + 2 == pts.size();
+            for (FlowDiagram.Box b : d.boxes) {
+                if (first && b == from || last && b == to) continue;
+                Rectangle2D r = bounds(b);
+                Rectangle2D inner = new Rectangle2D.Double(r.getX() - 4, r.getY() - 4, r.getWidth() + 8, r.getHeight() + 8);
+                if (inner.intersectsLine(pts.get(k).getX(), pts.get(k).getY(), pts.get(k + 1).getX(), pts.get(k + 1).getY())) return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Where a dragged lane goes: the wanted place when the line misses every box there, else the nearest place that
+     * does (a few pixels at a time, up to 400 away), else null (the line stays where it was).
+     */
+    @Nullable Double clearLane(FlowDiagram d, FlowDiagram.Link l, List<Double> lanes, int lane, double wanted) {
+        List<Double> trial = new ArrayList<>(lanes);
+        for (int step = 0; step <= 100; step++) {
+            for (int sign : step == 0 ? new int[]{1} : new int[]{1, -1}) {
+                double v = wanted + sign * step * 4;
+                if (v < 0) continue;
+                trial.set(lane, v);
+                if (handRouteClear(d, l, trial)) return v;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Which lane of a line a point is on (to drag it): the index in {@code lanes}, or -1 when it is on the first or
+     * last piece (those stay at their method's row).
+     */
+    int laneAt(FlowDiagram d, FlowDiagram.Link l, List<Double> lanes, Point2D p) {
+        List<Point2D> pts = handPoints(d, l, direct(d, l), lanes);
+        int best = -1;
+        double bestDist = 8;
+        for (int k = 1; k < pts.size() - 2; k++) {
+            Point2D u = pts.get(k), v = pts.get(k + 1);
+            double dist = new java.awt.geom.Line2D.Double(u, v).ptSegDist(p);
+            if (dist >= bestDist) continue;
+            boolean vertical = Math.abs(u.getX() - v.getX()) < 0.5;
+            double at = vertical ? u.getX() : u.getY();
+            // the lane this piece lies on (x lanes are the even ones, y lanes the odd ones)
+            int lane = -1;
+            double near = 1.5;
+            for (int i = vertical ? 0 : 1; i < lanes.size(); i += 2) {
+                if (Math.abs(lanes.get(i) - at) < near) {
+                    near = Math.abs(lanes.get(i) - at);
+                    lane = i;
+                }
+            }
+            if (lane >= 0) {
+                bestDist = dist;
+                best = lane;
+            }
+        }
+        return best;
+    }
+
+    /** The middle of each piece of a line that can be dragged (a handle to grab it by), in its lanes' order. */
+    List<Point2D> laneHandles(FlowDiagram d, FlowDiagram.Link l) {
+        List<Double> lanes = lanesOf(d, l);
+        List<Point2D> pts = handPoints(d, l, direct(d, l), lanes);
+        List<Point2D> out = new ArrayList<>();
+        for (int k = 1; k < pts.size() - 2; k++) {
+            Point2D u = pts.get(k), v = pts.get(k + 1);
+            if (u.distance(v) < 14) continue; // too short to grab
+            out.add(new Point2D.Double((u.getX() + v.getX()) / 2, (u.getY() + v.getY()) / 2));
+        }
+        return out;
+    }
+
+    /** True when a call, or a call from the same method or into the same method, has a note. */
+    private static boolean noteInGroup(FlowDiagram d, FlowDiagram.Link l) {
+        if (!d.callNote(l).isBlank()) return true;
+        for (FlowDiagram.Link o : d.links) {
+            if (!o.equals(l) && (o.from().equals(l.from()) || o.to().equals(l.to())) && !d.callNote(o).isBlank()) return true;
+        }
+        return false;
+    }
+
+    /** The lines of the related calls (same caller, or same callee) drawn before this one, as they are drawn. */
+    private List<java.awt.geom.Line2D> drawnBefore(FlowDiagram d, FlowDiagram.Link l, int depth) {
+        List<java.awt.geom.Line2D> out = new ArrayList<>();
+        int at = d.links.indexOf(l);
+        for (int i = 0; i < at; i++) {
+            FlowDiagram.Link o = d.links.get(i);
+            if (o.from().equals(l.from()) || o.to().equals(l.to())) out.addAll(segments(route(d, o, depth + 1).path()));
         }
         return out;
     }
@@ -426,7 +677,7 @@ public final class FlowDiagramPainter {
      * A line around the boxes, from the same ends as the direct line: the shortest path with the fewest turns along
      * the lanes next to the boxes (a grid made of the boxes' edges, {@link #CLEARANCE} away from them).
      */
-    private @Nullable Route detour(FlowDiagram d, FlowDiagram.Link l, Route direct, List<java.awt.geom.Line2D> along) {
+    private @Nullable Route detour(FlowDiagram d, FlowDiagram.Link l, Route direct, List<java.awt.geom.Line2D> along, double weight) {
         FlowDiagram.Box from = d.boxOf(l.from()), to = d.boxOf(l.to());
         Rectangle2D fb = bounds(from), tb = bounds(to);
         double[] start = new double[2];
@@ -444,10 +695,13 @@ public final class FlowDiagramPainter {
                     r.getWidth() + 2 * CLEARANCE, r.getHeight() + 2 * CLEARANCE));
         }
         java.util.Set<Double> xMiddles = new java.util.HashSet<>(), yMiddles = new java.util.HashSet<>();
-        double[] xs = lanes(walls, a2.getX(), b2.getX(), true, xMiddles), ys = lanes(walls, a2.getY(), b2.getY(), false, yMiddles);
+        java.util.Set<Double> xQuarters = new java.util.HashSet<>(), yQuarters = new java.util.HashSet<>();
+        double[] xs = lanes(walls, a2.getX(), b2.getX(), true, xMiddles, xQuarters),
+                ys = lanes(walls, a2.getY(), b2.getY(), false, yMiddles, yQuarters);
         // Lines keep to the middle of the gaps between boxes: running along a box's edge, or along the row the line
         // starts or ends on (where other lines of that method run), costs more.
-        double[] xCost = laneCosts(xs, a2.getX(), b2.getX(), xMiddles), yCost = laneCosts(ys, a2.getY(), b2.getY(), yMiddles);
+        double[] xCost = laneCosts(xs, a2.getX(), b2.getX(), xMiddles, xQuarters, 1.3),
+                yCost = laneCosts(ys, a2.getY(), b2.getY(), yMiddles, yQuarters, 1.1);
         int nx = xs.length, ny = ys.length;
         int si = Arrays.binarySearch(xs, a2.getX()), sj = Arrays.binarySearch(ys, a2.getY());
         int ti = Arrays.binarySearch(xs, b2.getX()), tj = Arrays.binarySearch(ys, b2.getY());
@@ -483,8 +737,12 @@ public final class FlowDiagramPainter {
                 if (blocked(walls, xs[i], ys[j], xs[ni], ys[nj])) continue;
                 double c = top[0] + Math.abs(xs[ni] - xs[i]) * yCost[j] + Math.abs(ys[nj] - ys[j]) * xCost[i]
                         + (nd == dir ? 0 : turn)
-                        // running right next to a related call costs a lot more, so it takes its own way
-                        + (along.isEmpty() ? 0 : 4 * alongside(new java.awt.geom.Line2D.Double(xs[i], ys[j], xs[ni], ys[nj]), along));
+                        // running right next to a related call costs a lot more, so it takes its own way (but not in
+                        // the column it leaves its box by or the one it comes in by: every related call uses those)
+                        // nor along the row it starts or ends on (the calls of one method leave it side by side)
+                        + (along.isEmpty() || nd < 2 && (ys[j] == a2.getY() || ys[j] == b2.getY()) ? 0
+                        : (nd >= 2 && (xs[i] == a2.getX() || xs[i] == b2.getX()) ? Math.min(weight, 4) : weight)
+                        * alongside(new java.awt.geom.Line2D.Double(xs[i], ys[j], xs[ni], ys[nj]), along));
                 int ns = (nj * nx + ni) * 4 + nd;
                 if (c < cost[ns]) {
                     cost[ns] = c;
@@ -520,8 +778,15 @@ public final class FlowDiagramPainter {
         return new Route(polyline(corners, round ? 10 : 0), b, corners.get(corners.size() - 2));
     }
 
-    /** The grid's lines in one direction: the walls' edges, the line's two ends, and the middles between them, sorted. */
-    private static double[] lanes(List<Rectangle2D> walls, double from, double to, boolean x, java.util.Set<Double> middles) {
+    /** A gap at least this wide also gets lanes a quarter of the way in from each side (two lines can pass it apart). */
+    private static final double WIDE_GAP = 2 * APART + 8;
+
+    /**
+     * The grid's lines in one direction: the walls' edges, the line's two ends, the middles between them, and in wide
+     * gaps the quarters too, sorted.
+     */
+    private static double[] lanes(List<Rectangle2D> walls, double from, double to, boolean x, java.util.Set<Double> middles,
+                                  java.util.Set<Double> quarters) {
         java.util.TreeSet<Double> set = new java.util.TreeSet<>();
         set.add(from);
         set.add(to);
@@ -532,21 +797,34 @@ public final class FlowDiagramPainter {
         Double last = null;
         for (double v : set) {
             if (last != null && v - last > 2) middles.add((last + v) / 2);
+            if (last != null && v - last >= WIDE_GAP) {
+                quarters.add(last + (v - last) / 4);
+                quarters.add(v - (v - last) / 4);
+            }
             last = v;
         }
         middles.removeAll(set);
+        quarters.removeAll(set);
+        quarters.removeAll(middles);
         set.addAll(middles);
+        set.addAll(quarters);
         double[] out = new double[set.size()];
         int k = 0;
         for (double v : set) out[k++] = v;
         return out;
     }
 
-    /** What a unit of line costs along each lane: the middles of gaps 1, the line's ends 1.1, a box's edge 1.3. */
-    private static double[] laneCosts(double[] lanes, double from, double to, java.util.Set<Double> middles) {
+    /**
+     * What a unit of line costs along each lane: the middles of gaps 1, a box's edge 1.3, the line's ends {@code ends}
+     * (its rows 1.1; the columns right beside its boxes 1.3, so a line goes up or down in the middle of the gap and
+     * not hugging the box, where the other calls into it come in).
+     */
+    private static double[] laneCosts(double[] lanes, double from, double to, java.util.Set<Double> middles,
+                                      java.util.Set<Double> quarters, double ends) {
         double[] cost = new double[lanes.length];
         for (int k = 0; k < lanes.length; k++) {
-            cost[k] = lanes[k] == from || lanes[k] == to ? 1.1 : middles.contains(lanes[k]) ? 1 : 1.3;
+            cost[k] = lanes[k] == from || lanes[k] == to ? ends : middles.contains(lanes[k]) ? 1
+                    : quarters.contains(lanes[k]) ? 1.05 : 1.3;
         }
         return cost;
     }
@@ -719,6 +997,19 @@ public final class FlowDiagramPainter {
             String note = d.callNote(l);
             if (note.isBlank()) continue;
             Shape path = linkPath(d, l);
+            Double placed = d.notePlace(l);
+            if (placed != null) { // dragged along its line: there
+                List<String> lines = callNoteLines(note, CALL_NOTE_WIDTH);
+                double w = 0;
+                for (String s2 : lines) w = Math.max(w, smallFm.stringWidth(s2));
+                w += 12;
+                double h = lines.size() * NOTE_LINE + 6;
+                Point2D at = pointAlong(path, placed);
+                Rectangle2D r = inside(new Rectangle2D.Double(at.getX() - w / 2, at.getY() - h / 2, w, h));
+                out.put(l, r);
+                taken.add(r);
+                continue;
+            }
             List<java.awt.geom.Line2D> otherLines = new ArrayList<>();
             pieces.forEach((o, segs) -> { if (!o.equals(l)) otherLines.addAll(segs); });
             Rectangle2D found = null, least = null;
@@ -734,7 +1025,9 @@ public final class FlowDiagramPainter {
                     Point2D at = pointAlong(path, t);
                     for (double dy : new double[]{0, -(h / 2 + 8), h / 2 + 8}) {
                         Rectangle2D r = new Rectangle2D.Double(at.getX() - w / 2, at.getY() + dy - h / 2, w, h);
-                        double cover = covered(r, taken) + 600 * crossings(r, otherLines);
+                        // off the drawing (above or left of it: a line around the top of the boxes) it can't be seen
+                        double off = Math.max(0, NOTE_MARGIN - r.getY()) + Math.max(0, NOTE_MARGIN - r.getX());
+                        double cover = covered(r, taken) + 600 * crossings(r, otherLines) + 100_000 * off;
                         if (cover == 0) {
                             found = r;
                             break search;
@@ -746,11 +1039,35 @@ public final class FlowDiagramPainter {
                     }
                 }
             }
-            Rectangle2D r = found != null ? found : least;
+            Rectangle2D r = inside(found != null ? found : least);
             out.put(l, r);
             taken.add(r);
         }
         return out;
+    }
+
+    /** Where along its line (0 = its start, 1 = its end) a point is nearest: where a dragged note goes. */
+    double nearestAlong(FlowDiagram d, FlowDiagram.Link l, Point2D p) {
+        Shape path = linkPath(d, l);
+        double best = 0.5, bestDist = Double.MAX_VALUE;
+        for (int i = 2; i <= 98; i++) {
+            double t = i / 100.0;
+            double dist = pointAlong(path, t).distance(p);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = t;
+            }
+        }
+        return best;
+    }
+
+    /** Space kept between a note and the top / left edge of the drawing. */
+    private static final double NOTE_MARGIN = 4;
+
+    /** A note moved down / right as far as needed to be on the drawing (it starts at 0, 0). */
+    static Rectangle2D inside(Rectangle2D r) {
+        double x = Math.max(NOTE_MARGIN, r.getX()), y = Math.max(NOTE_MARGIN, r.getY());
+        return x == r.getX() && y == r.getY() ? r : new Rectangle2D.Double(x, y, r.getWidth(), r.getHeight());
     }
 
     /** How many of the other calls' line pieces run through a note (with a small margin): a note doesn't hide them. */

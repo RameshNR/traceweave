@@ -144,8 +144,8 @@ final class FlowRecycleBinDialog extends DialogWrapper {
                 com.intellij.ui.SimpleTextAttributes.GRAYED_ATTRIBUTES, null);
 
         JBSplitter split = new JBSplitter(true, 0.5f);
-        split.setFirstComponent(new JBScrollPane(list));
-        split.setSecondComponent(new JBScrollPane(preview));
+        split.setFirstComponent(FlowScroll.wheel(new JBScrollPane(list)));
+        split.setSecondComponent(FlowScroll.wheel(new JBScrollPane(preview)));
         split.setPreferredSize(new Dimension(JBUI.scale(640), JBUI.scale(460)));
         return split;
     }

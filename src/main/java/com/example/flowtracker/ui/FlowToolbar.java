@@ -30,6 +30,21 @@ public final class FlowToolbar extends JPanel {
     private record Group(List<FlowButton> buttons, boolean segmented, int compactLevel, boolean trailing) {}
 
     private final List<Group> groups = new ArrayList<>();
+    /** Width left in the parent for what sits beside the toolbar (e.g. a filter box), when it shares a row. */
+    private int reserve;
+
+    /** True when the buttons fit on one line in this width (icons only where needed). */
+    public boolean fitsOneLine(int width) {
+        Insets in = getInsets();
+        int w = width - in.left - in.right;
+        fitTo(w);
+        return singleLineWidth() <= w;
+    }
+
+    /** Leaves this much of the parent's width to what is beside the toolbar: it squeezes (icons only) before that. */
+    public void reserve(int px) {
+        reserve = px;
+    }
     /** Painted decorations from the last layout pass. */
     private final List<Rectangle> segmentBoxes = new ArrayList<>();
     private final List<Rectangle> dividers = new ArrayList<>();
@@ -37,6 +52,20 @@ public final class FlowToolbar extends JPanel {
     public FlowToolbar() {
         setOpaque(false);
         setLayout(new Layout());
+        // narrower or wider: it may need more lines (or fewer), so what holds it gives it the height again
+        addComponentListener(new java.awt.event.ComponentAdapter() {
+            @Override public void componentResized(java.awt.event.ComponentEvent e) {
+                if (getLayout().preferredLayoutSize(FlowToolbar.this).height != getHeight()) {
+                    javax.swing.SwingUtilities.invokeLater(FlowToolbar.this::revalidate);
+                }
+            }
+        });
+    }
+
+    /** Worked out each time (not kept): it depends on the width the toolbar has now, and wraps to fit it. */
+    @Override
+    public Dimension getPreferredSize() {
+        return isPreferredSizeSet() ? super.getPreferredSize() : getLayout().preferredLayoutSize(this);
     }
 
     /**
@@ -181,7 +210,7 @@ public final class FlowToolbar extends JPanel {
         } else {
             w = getWidth();
         }
-        return w - in.left - in.right;
+        return w - in.left - in.right - (parent != null && parent.getWidth() > 0 ? reserve : 0);
     }
 
     private final class Layout implements LayoutManager {

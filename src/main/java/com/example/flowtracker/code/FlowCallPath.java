@@ -7,10 +7,12 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ProjectFileIndex;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileManager;
+import com.intellij.psi.JavaPsiFacade;
 import com.intellij.psi.JavaRecursiveElementWalkingVisitor;
 import com.intellij.psi.PsiAssignmentExpression;
 import com.intellij.psi.PsiCall;
 import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiClassType;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiExpression;
 import com.intellij.psi.PsiExpressionList;
@@ -19,19 +21,25 @@ import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiLocalVariable;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.PsiMethodCallExpression;
+import com.intellij.psi.PsiMethodReferenceExpression;
 import com.intellij.psi.PsiModifier;
 import com.intellij.psi.PsiNewExpression;
 import com.intellij.psi.PsiParameter;
 import com.intellij.psi.PsiReferenceExpression;
 import com.intellij.psi.PsiStatement;
+import com.intellij.psi.PsiType;
 import com.intellij.psi.search.GlobalSearchScope;
+import com.intellij.psi.search.PsiShortNamesCache;
+import com.intellij.psi.search.searches.AnnotatedElementsSearch;
 import com.intellij.psi.search.searches.OverridingMethodsSearch;
 import com.intellij.psi.util.PsiTreeUtil;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -39,20 +47,26 @@ import java.util.PriorityQueue;
 import java.util.Set;
 
 /**
- * The code that leads from one line of the flow to another: A → B → C → D → E. It follows what the first line
- * starts, not just any calls: from the first line on (not the code before it), it tracks the variables the line
- * makes or uses (e.g. {@code hotelService}), the variables made from them ({@code bookingService}), the parameters
- * they are passed to and the fields of the same name in the classes called ({@code BookingService.hotelService}).
- * The way with the fewest calls that don't touch those is taken (a call that does costs less), into overriding
- * methods too, until the second line's method is reached. In each method on the way, every line that makes the next
- * call and touches the tracked values is kept (e.g. both lines of bookTrip() that call travel.getDestination() with
- * hotelService). Run in a read action.
+ * The code that leads from one line (or method) of the flow to another: A → B → C → D → E, as several <b>ways</b>
+ * when there are several, the closest first.
+ * <p>
+ * It follows what the start works with, not just any calls: the variables the first line makes or uses (e.g.
+ * {@code hotelService}), the variables made from them ({@code bookingService}), the parameters they are passed to
+ * and, when a call is made on a tracked object, that object's fields ({@code BookingService.hotelService}). A call
+ * that touches those costs less than one that doesn't, so the way that carries the data comes first. Calls are
+ * followed into the methods that implement or override the called one (an interface's implementations, e.g. a
+ * Spring bean injected as its interface), through method references ({@code list.forEach(service::handle)}) and
+ * from {@code publishEvent(new X(…))} to Spring's {@code @EventListener} / {@code ApplicationListener} methods for X.
+ * In each method on a way, every line that makes the next call and touches the tracked values is kept (both lines of
+ * bookTrip() that call travel.getDestination()). Run in a read action.
  */
 public final class FlowCallPath {
     private FlowCallPath() {}
 
     /** How many calls deep it looks, and how many methods it reads at most. */
     static final int MAX_DEPTH = 12, MAX_METHODS = 4000;
+    /** How many ways it finds at most. */
+    public static final int MAX_WAYS = 8;
     /** What a call costs: one that uses the tracked values, and one that doesn't. */
     private static final int ON_TRACK = 1, OFF_TRACK = 4;
 
@@ -64,185 +78,624 @@ public final class FlowCallPath {
         }
     }
 
-    private record Hop(PsiMethod from, List<PsiCall> calls) {}
-    private record Queued(PsiMethod method, int cost, int order) {}
+    /**
+     * A method on a way, with the lines it makes the next call on (for the last method: the end line itself, only
+     * to show it).
+     *
+     * @param via how it was reached when that isn't a plain call: "implements PaymentGateway.pay()", "method
+     *            reference", "Spring event BookingCreated" ("" otherwise)
+     */
+    public record Step(String className, String methodName, String fileName, List<FlowEntry> lines, String via) {
+        public String label() {
+            return className + "." + methodName + "()";
+        }
+    }
+
+    /**
+     * One way from the start to the end.
+     *
+     * @param lines   the lines to add between the two (the start line and the end method's line not included)
+     * @param carries the start's values the way carries (e.g. "bookingService"), empty when it doesn't use them
+     */
+    public record Way(List<Step> steps, List<FlowEntry> lines, int cost, List<String> carries) {
+        /** "Main.main() → BookingService.bookTrip() → Travel.getDestination()" */
+        public String chain() {
+            return String.join(" → ", steps.stream().map(Step::label).toList());
+        }
+
+        public int calls() {
+            return steps.size() - 1;
+        }
+    }
+
+    /** The ways found (the closest first; empty when none), and what to say about them. */
+    public record Ways(List<Way> ways, String message) {}
+
+    /** Told how far the search is; asked whether to stop. */
+    public interface Progress {
+        Progress NONE = new Progress() {
+            @Override public boolean cancelled() { return false; }
+            @Override public void read(int methods, int ways) {}
+        };
+
+        boolean cancelled();
+
+        /** @param methods how many methods were read so far; @param ways how many ways were found so far */
+        void read(int methods, int ways);
+    }
 
     private static final com.intellij.openapi.diagnostic.Logger LOG =
             com.intellij.openapi.diagnostic.Logger.getInstance("TraceWeave.ConnectFlow");
 
+    /** The closest way from a line to another (the code after the first line). */
     public static Result between(Project project, FlowEntry from, FlowEntry to) {
-        return between(project, from, to, null);
+        return result(ways(project, from, to, null, 1, Progress.NONE));
     }
 
     /**
-     * A method to a method: all of the first method is looked at (not only the code after one line), following what
-     * its flow lines work with (bookingService in "BookingService bookingService = …"): its first such call that
-     * leads to the end wins.
+     * The closest way from a method to a method: all of the first method is looked at (not only the code after one
+     * line), following what its flow lines work with.
      *
      * @param flowLines the first method's lines in the flow (at least one)
      */
     public static Result betweenMethods(Project project, List<FlowEntry> flowLines, FlowEntry to) {
-        return between(project, flowLines.get(0), to, flowLines);
+        return result(ways(project, flowLines.get(0), to, flowLines, 1, Progress.NONE));
     }
 
-    private static Result between(Project project, FlowEntry from, FlowEntry to, @Nullable List<FlowEntry> flowLines) {
-        boolean wholeMethod = flowLines != null;
-        PsiElement startAt = elementAt(project, from);
-        PsiMethod a = startAt == null ? null : PsiTreeUtil.getParentOfType(startAt, PsiMethod.class, false);
-        PsiElement endAt = elementAt(project, to);
-        PsiMethod e = endAt == null ? null : PsiTreeUtil.getParentOfType(endAt, PsiMethod.class, false);
-        if (a == null) return new Result(null, describe(from) + " isn't inside a Java method.");
-        if (e == null) return new Result(null, describe(to) + " isn't inside a Java method.");
-        if (a.equals(e)) return new Result(List.of(), "Both lines are in " + a.getName() + "().");
-
-        ProjectFileIndex index = ProjectFileIndex.getInstance(project);
-        GlobalSearchScope scope = GlobalSearchScope.projectScope(project);
-        int startOffset = wholeMethod ? -1 : lineStart(startAt);
-        // the start line's statement (a call written over several lines is one statement): its own calls come first
-        PsiElement startStatement = wholeMethod ? null : PsiTreeUtil.getParentOfType(startAt, PsiStatement.class, false);
-
-        // what the first line starts: the variables it makes or uses
-        Map<PsiMethod, Set<String>> tracked = new HashMap<>();
-        if (wholeMethod) {
-            Set<String> names = new LinkedHashSet<>();
-            for (FlowEntry l : flowLines) {
-                PsiElement at = elementAt(project, l);
-                if (at != null && a.equals(PsiTreeUtil.getParentOfType(at, PsiMethod.class, false))) names.addAll(namesOn(at));
-            }
-            tracked.put(a, spread(a, names, -1));
-        } else {
-            tracked.put(a, spread(a, namesOn(startAt), startOffset));
-        }
-
-        Map<PsiMethod, Integer> cost = new HashMap<>();
-        Map<PsiMethod, Integer> depth = new HashMap<>();
-        Map<PsiMethod, Hop> came = new HashMap<>();
-        // fixed (cost, order) entries: on equal cost the call made first in the code wins (bookTrip() before a later
-        // cancelBooking() that also reaches the end), and a method's cost changing later doesn't upset the queue
-        PriorityQueue<Queued> queue = new PriorityQueue<>(
-                java.util.Comparator.comparingInt(Queued::cost).thenComparingInt(Queued::order));
-        int order = 0;
-        cost.put(a, 0);
-        depth.put(a, 0);
-        queue.add(new Queued(a, 0, order++));
-        Set<PsiMethod> done = new HashSet<>();
-        int read = 0;
-        List<String> unresolved = new ArrayList<>(), outside = new ArrayList<>(); // why a call wasn't followed (for the log)
-        String base = project.getBasePath();
-        while (!queue.isEmpty() && read++ < MAX_METHODS) {
-            PsiMethod m = queue.poll().method();
-            if (!done.add(m)) continue;
-            if (m.equals(e)) break;
-            if (depth.get(m) >= MAX_DEPTH) continue;
-            Set<String> names = tracked.getOrDefault(m, Set.of());
-            // every method this one calls (from the first line on, in the first method), with the calls that reach it
-            Map<PsiMethod, List<PsiCall>> next = new java.util.LinkedHashMap<>();
-            for (PsiCall call : calls(m, m.equals(a) ? startOffset : -1)) {
-                List<PsiMethod> targets = targetsOf(project, call);
-                if (targets.isEmpty() && unresolved.size() < 15) unresolved.add(m.getName() + ": " + shortText(call));
-                for (PsiMethod target : targets) {
-                    for (PsiMethod c : candidates(target, scope)) {
-                        PsiMethod nav = c.getNavigationElement() instanceof PsiMethod pm ? pm : c;
-                        VirtualFile vf = nav.getContainingFile() == null ? null : nav.getContainingFile().getVirtualFile();
-                        boolean mine = vf != null && (index.isInContent(vf) || base != null
-                                && vf.getPath().replace('\\', '/').startsWith(base.replace('\\', '/')));
-                        if (!nav.equals(e) && !mine) { // only the project's code
-                            if (vf != null && outside.size() < 5 && vf.getPath().endsWith(".java")) outside.add(vf.getPath());
-                            continue;
-                        }
-                        next.computeIfAbsent(nav, k -> new ArrayList<>()).add(call);
-                    }
-                }
-            }
-            for (Map.Entry<PsiMethod, List<PsiCall>> n : next.entrySet()) {
-                PsiMethod t = n.getKey();
-                List<PsiCall> onTrack = new ArrayList<>();
-                for (PsiCall c : n.getValue()) if (touches(c, names)) onTrack.add(c);
-                boolean fromStartLine = false;
-                for (PsiCall c : n.getValue()) fromStartLine |= startStatement != null && PsiTreeUtil.isAncestor(startStatement, c, false);
-                if (fromStartLine) { // the start line's own call (bookingService.bookTrip(…) on it): that is the way on
-                    onTrack.clear();
-                    for (PsiCall c : n.getValue()) if (startStatement != null && PsiTreeUtil.isAncestor(startStatement, c, false)) onTrack.add(c);
-                }
-                int step = fromStartLine ? 0 : onTrack.isEmpty() ? OFF_TRACK : ON_TRACK;
-                int total = cost.get(m) + step;
-                if (done.contains(t) || cost.containsKey(t) && cost.get(t) <= total) continue;
-                // into the end method: every call to it (bookTrip() calls getDestination() on two lines: both)
-                List<PsiCall> used = t.equals(e) ? n.getValue() : onTrack.isEmpty() ? List.of(n.getValue().get(0)) : onTrack;
-                cost.put(t, total);
-                depth.put(t, depth.get(m) + 1);
-                came.put(t, new Hop(m, used));
-                tracked.put(t, carry(names, used, t));
-                queue.add(new Queued(t, total, order++));
-            }
-        }
-        if (!came.containsKey(e)) {
-            LOG.info("No way from " + a.getName() + " to " + e.getName() + ": read " + done.size() + " methods "
-                    + done.stream().map(PsiMethod::getName).limit(30).toList() + "; calls not resolved " + unresolved
-                    + "; outside the project " + outside + "; dumb " + com.intellij.openapi.project.DumbService.isDumb(project));
-            if (done.size() <= 1 && !unresolved.isEmpty() && next0Empty(a, startOffset)) {
-                return new Result(null, "IntelliJ can't resolve the code of " + from.fileName
-                        + " (none of its calls lead anywhere). Is the project set up? Check that its Gradle/Maven sync worked"
-                        + " and the code isn't red, then connect again.");
-            }
-            return new Result(null, "No calls lead from " + a.getName() + "() to " + e.getName() + "() in the project's code"
-                    + " (looked " + MAX_DEPTH + " calls deep" + (unresolved.isEmpty() ? "" : "; " + unresolved.size()
-                    + " calls couldn't be read: is the project still indexing?") + ").");
-        }
-        List<List<PsiCall>> chain = new ArrayList<>();
-        for (Hop h = came.get(e); h != null; h = came.get(h.from())) chain.add(0, h.calls());
-        LinkedHashSet<FlowEntry> out = new LinkedHashSet<>();
-        Set<String> seen = new HashSet<>();
-        for (List<PsiCall> calls : chain) {
-            for (PsiCall call : calls) {
-                if (startStatement != null && PsiTreeUtil.isAncestor(startStatement, call, false)) continue; // the start line itself
-                FlowEntry entry = entryAt(project, call);
-                if (entry != null && seen.add(entry.fileUrl + ":" + entry.line)) out.add(entry);
-            }
-        }
-        int hops = chain.size();
-        return new Result(new ArrayList<>(out), out.isEmpty() ? a.getName() + "() calls " + e.getName() + "() directly."
-                : "Found the way from " + a.getName() + "() to " + e.getName() + "() (" + hops + (hops == 1 ? " call, " : " calls, ")
-                + out.size() + (out.size() == 1 ? " line)." : " lines)."), cost.get(e));
+    private static Result result(Ways w) {
+        if (w.ways().isEmpty()) return new Result(null, w.message());
+        Way best = w.ways().get(0);
+        return new Result(best.lines(), w.message(), best.cost());
     }
 
     /**
-     * The methods a call may run: what it resolves to; when the IDE can't resolve it (a module or library it can't
-     * see, code with errors), the methods of that name and argument count in the class of the object it is made on,
-     * else in the project.
+     * The ways from a line, or a method, to another method, the closest first.
+     *
+     * @param flowLines null: from the line {@code from} on (its own calls come first); else the whole method of
+     *                  {@code from}, following what these lines of it (its lines in the flow) work with
+     * @param max       how many ways at most
      */
-    private static List<PsiMethod> targetsOf(Project project, PsiCall call) {
-        PsiMethod resolved = call.resolveMethod();
-        if (resolved != null) return List.of(resolved);
-        List<PsiMethod> out = new ArrayList<>();
-        if (!(call instanceof PsiMethodCallExpression mc)) {
-            return out;
+    public static Ways ways(Project project, FlowEntry from, FlowEntry to, @Nullable List<FlowEntry> flowLines, int max,
+                            Progress progress) {
+        PsiElement startAt = elementAt(project, from);
+        PsiMethod a = methodAt(startAt);
+        PsiElement endAt = elementAt(project, to);
+        PsiMethod e = methodAt(endAt);
+        if (a == null) return new Ways(List.of(), describe(from) + " isn't inside a Java or Kotlin method.");
+        if (e == null) return new Ways(List.of(), describe(to) + " isn't inside a Java or Kotlin method.");
+        if (a.equals(e)) {
+            Step only = step(project, a, List.of(), "");
+            return new Ways(List.of(new Way(List.of(only), List.of(), 0, List.of())), "Both lines are in " + a.getName() + "().");
         }
-        for (com.intellij.psi.JavaResolveResult r : mc.getMethodExpression().multiResolve(true)) {
-            if (r.getElement() instanceof PsiMethod pm) out.add(pm);
-        }
-        if (!out.isEmpty()) return out;
-        String name = mc.getMethodExpression().getReferenceName();
-        if (name == null) return out;
-        int args = mc.getArgumentList().getExpressionCount();
-        PsiExpression q = mc.getMethodExpression().getQualifierExpression();
-        PsiClass cls = q == null ? PsiTreeUtil.getParentOfType(call, PsiClass.class)
-                : q.getType() instanceof com.intellij.psi.PsiClassType ct ? ct.resolve() : null;
-        if (cls != null) {
-            for (PsiMethod x : cls.findMethodsByName(name, true)) if (x.getParameterList().getParametersCount() == args) out.add(x);
-        }
-        if (out.isEmpty()) {
-            for (PsiMethod x : com.intellij.psi.search.PsiShortNamesCache.getInstance(project)
-                    .getMethodsByName(name, GlobalSearchScope.projectScope(project))) {
-                if (x.getParameterList().getParametersCount() == args) out.add(x);
+        return new Search(project, a, e, startAt, flowLines, Math.max(1, max), progress).run(from, to);
+    }
+
+    /** One search: the methods' calls are read once and shared by the ways. */
+    private static final class Search {
+        final Project project;
+        final PsiMethod a, e;
+        final ProjectFileIndex index;
+        final GlobalSearchScope scope;
+        final String base;
+        final int startOffset, max;
+        final @Nullable PsiElement startStatement;
+        final Set<String> startNames;
+        final Progress progress;
+        /** The calls each method makes, by the method they reach (read once). */
+        final Map<PsiMethod, Map<PsiMethod, Edge>> edges = new HashMap<>();
+        final List<String> unresolved = new ArrayList<>(), outside = new ArrayList<>(); // for the log
+
+        /** The calls of a method that reach another one, and how it is reached ("" for a plain call). */
+        record Edge(List<PsiElement> calls, String via) {}
+
+        /** A partial way: its last method, what it cost, the calls into that method and what it tracks there. */
+        record State(PsiMethod method, int cost, int order, @Nullable State parent, List<PsiElement> calls, String via,
+                     Set<String> names, int depth) {
+            boolean has(PsiMethod m) {
+                for (State s = this; s != null; s = s.parent) if (s.method.equals(m)) return true;
+                return false;
             }
         }
-        return out;
+
+        Search(Project project, PsiMethod a, PsiMethod e, PsiElement startAt, @Nullable List<FlowEntry> flowLines, int max,
+               Progress progress) {
+            this.project = project;
+            this.a = a;
+            this.e = e;
+            this.max = max;
+            this.progress = progress;
+            index = ProjectFileIndex.getInstance(project);
+            scope = GlobalSearchScope.projectScope(project);
+            base = project.getBasePath();
+            boolean wholeMethod = flowLines != null;
+            startOffset = wholeMethod ? -1 : lineStart(startAt);
+            // the start line's statement (a call written over several lines is one statement): its own calls come first
+            startStatement = wholeMethod ? null : PsiTreeUtil.getParentOfType(startAt, PsiStatement.class, false);
+            if (wholeMethod) {
+                Set<String> names = new LinkedHashSet<>();
+                for (FlowEntry l : flowLines) {
+                    PsiElement at = elementAt(project, l);
+                    if (at != null && a.equals(methodAt(at))) names.addAll(namesOn(at));
+                }
+                startNames = spread(a, names, -1);
+            } else {
+                startNames = spread(a, namesOn(startAt), startOffset);
+            }
+        }
+
+        Ways run(FlowEntry from, FlowEntry to) {
+            // fixed (cost, order) entries: on equal cost the call made first in the code wins (bookTrip() before a
+            // later cancelBooking() that also reaches the end)
+            PriorityQueue<State> queue = new PriorityQueue<>(Comparator.comparingInt(State::cost).thenComparingInt(State::order));
+            int order = 0;
+            queue.add(new State(a, 0, order++, null, List.of(), "", startNames, 0));
+            Map<PsiMethod, Integer> taken = new HashMap<>(); // how often each method was gone on from (≤ max)
+            List<Way> ways = new ArrayList<>();
+            Set<String> seen = new HashSet<>();
+            int read = 0;
+            while (!queue.isEmpty() && read < MAX_METHODS && ways.size() < max) {
+                if (progress.cancelled()) break;
+                State s = queue.poll();
+                if (s.method.equals(e)) {
+                    Way w = way(s);
+                    if (seen.add(w.chain())) ways.add(w);
+                    progress.read(read, ways.size());
+                    continue;
+                }
+                int n = taken.merge(s.method, 1, Integer::sum);
+                if (n > max || s.depth >= MAX_DEPTH) continue;
+                read++;
+                if (read % 25 == 0) progress.read(read, ways.size());
+                for (Map.Entry<PsiMethod, Edge> next : edges(s.method).entrySet()) {
+                    PsiMethod t = next.getKey();
+                    if (s.has(t)) continue; // no going round in circles
+                    List<PsiElement> all = next.getValue().calls();
+                    List<PsiElement> onTrack = new ArrayList<>();
+                    for (PsiElement c : all) if (touches(c, s.names)) onTrack.add(c);
+                    List<PsiElement> fromLine = new ArrayList<>();
+                    if (s.parent == null && startStatement != null) {
+                        for (PsiElement c : all) if (PsiTreeUtil.isAncestor(startStatement, c, false)) fromLine.add(c);
+                    }
+                    // the start line's own call (bookingService.bookTrip(…) on it) is the way on, at no cost
+                    if (!fromLine.isEmpty()) onTrack = fromLine;
+                    int step = !fromLine.isEmpty() ? 0 : onTrack.isEmpty() ? OFF_TRACK : ON_TRACK;
+                    // into the end method: every call to it (bookTrip() calls getDestination() on two lines: both)
+                    List<PsiElement> used = t.equals(e) ? all : onTrack.isEmpty() ? List.of(all.get(0)) : onTrack;
+                    queue.add(new State(t, s.cost + step, order++, s, used, next.getValue().via(), carry(s.names, used, t),
+                            s.depth + 1));
+                }
+            }
+            progress.read(read, ways.size());
+            if (!ways.isEmpty()) {
+                Way best = ways.get(0);
+                String msg = (ways.size() == 1 ? "Found the way from " : "Found " + ways.size() + " ways from ")
+                        + a.getName() + "() to " + e.getName() + "()"
+                        + (ways.size() == 1 ? " (" + best.calls() + (best.calls() == 1 ? " call, " : " calls, ")
+                        + best.lines().size() + (best.lines().size() == 1 ? " line)." : " lines).") : ".");
+                if (progress.cancelled()) msg += " (Stopped: there may be more.)";
+                return new Ways(ways, msg);
+            }
+            if (progress.cancelled()) return new Ways(List.of(), "Stopped before a way was found.");
+            LOG.info("No way from " + a.getName() + " to " + e.getName() + ": read " + read + " methods; calls not resolved "
+                    + unresolved + "; outside the project " + outside + "; dumb " + com.intellij.openapi.project.DumbService.isDumb(project));
+            if (read <= 1 && !unresolved.isEmpty() && noneResolve(a, startOffset)) {
+                return new Ways(List.of(), "IntelliJ can't resolve the code of " + from.fileName
+                        + " (none of its calls lead anywhere). Is the project set up? Check that its Gradle/Maven sync worked"
+                        + " and the code isn't red, then connect again.");
+            }
+            return new Ways(List.of(), "No calls lead from " + a.getName() + "() to " + e.getName() + "() in the project's code"
+                    + " (looked " + MAX_DEPTH + " calls deep" + (unresolved.isEmpty() ? "" : "; " + unresolved.size()
+                    + " calls couldn't be read: is the project still indexing?") + ").");
+        }
+
+        /** A found way: its steps and the lines to add. */
+        Way way(State end) {
+            List<State> chain = new ArrayList<>();
+            for (State s = end; s != null; s = s.parent) chain.add(0, s);
+            List<Step> steps = new ArrayList<>();
+            LinkedHashSet<FlowEntry> lines = new LinkedHashSet<>();
+            Set<String> taken = new HashSet<>();
+            for (int i = 0; i < chain.size(); i++) {
+                State s = chain.get(i);
+                List<FlowEntry> own = new ArrayList<>();
+                if (i + 1 < chain.size()) {
+                    for (PsiElement call : chain.get(i + 1).calls) {
+                        if (startStatement != null && PsiTreeUtil.isAncestor(startStatement, call, false)) continue; // the start line
+                        FlowEntry entry = entryAt(project, call);
+                        if (entry != null && taken.add(entry.fileUrl + ":" + entry.line)) {
+                            own.add(entry);
+                            lines.add(entry);
+                        }
+                    }
+                }
+                steps.add(step(project, s.method, own, s.via));
+            }
+            // the start's values the way carries: those its first call touches
+            List<String> carries = new ArrayList<>();
+            if (chain.size() > 1) {
+                Set<String> used = new HashSet<>();
+                for (PsiElement c : chain.get(1).calls) {
+                    PsiElement where = PsiTreeUtil.getParentOfType(c, PsiStatement.class, false);
+                    used.addAll(referenced(where != null ? where : c));
+                }
+                for (String n : startNames) if (used.contains(n) && !"this".equals(n)) carries.add(n);
+            }
+            return new Way(steps, new ArrayList<>(lines), end.cost, carries);
+        }
+
+        /** The methods a method calls (from the start line on, in the first method), with the calls that reach each. */
+        Map<PsiMethod, Edge> edges(PsiMethod m) {
+            Map<PsiMethod, Edge> known = edges.get(m);
+            if (known != null) return known;
+            Map<PsiMethod, List<PsiElement>> calls = new LinkedHashMap<>();
+            Map<PsiMethod, String> via = new HashMap<>();
+            for (PsiElement call : callsOf(m, m.equals(a) ? startOffset : -1)) {
+                List<Target> targets = new ArrayList<>(targetsOf(call));
+                targets.addAll(threadTargets(call)); // a task given to a thread / executor: its run() / call()
+                targets.addAll(apiTargets(call)); // an HTTP call to a path: the method that handles it
+                if (targets.isEmpty() && unresolved.size() < 15) unresolved.add(m.getName() + ": " + shortText(call));
+                for (Target target : targets) {
+                    for (PsiMethod c : candidates(target.method())) {
+                        PsiMethod nav = c.getNavigationElement() instanceof PsiMethod pm ? pm : c;
+                        if (!nav.equals(e) && !inProject(nav)) continue; // only the project's code
+                        calls.computeIfAbsent(nav, k -> new ArrayList<>()).add(call);
+                        String how = !target.via().isEmpty() ? target.via()
+                                : c != target.method() ? "implements " + owner(target.method()) + "." + target.method().getName() + "()" : "";
+                        String task = taskGivenTo(call, m);
+                        if (task != null) how = (how.isEmpty() ? "" : how + ", ") + "in the task given to " + task;
+                        via.putIfAbsent(nav, how);
+                    }
+                }
+            }
+            Map<PsiMethod, Edge> out = new LinkedHashMap<>();
+            calls.forEach((t, list) -> out.put(t, new Edge(list, via.getOrDefault(t, ""))));
+            edges.put(m, out);
+            return out;
+        }
+
+        /**
+         * The method a call's lambda is given to, e.g. "ApiThreadManager.execute()" for a call made in
+         * {@code threadManager.execute(() -> get(url))} (that method runs it, often in another thread); null when the
+         * call isn't in a lambda given to a call.
+         */
+        @Nullable String taskGivenTo(PsiElement call, PsiMethod m) {
+            com.intellij.psi.PsiLambdaExpression lambda = PsiTreeUtil.getParentOfType(call, com.intellij.psi.PsiLambdaExpression.class, true, PsiMethod.class);
+            if (lambda == null || !(lambda.getParent() instanceof PsiExpressionList list) || !(list.getParent() instanceof PsiCall owner)) return null;
+            PsiMethod x = owner.resolveMethod();
+            if (x == null || x.equals(m)) return null;
+            return owner(x) + "." + x.getName() + "()";
+        }
+
+        boolean inProject(PsiMethod m) {
+            VirtualFile vf = m.getContainingFile() == null ? null : m.getContainingFile().getVirtualFile();
+            if (vf == null) return false;
+            if (index.isInContent(vf)) return true;
+            if (base != null && vf.getPath().replace('\\', '/').startsWith(base.replace('\\', '/'))) return true;
+            if (outside.size() < 5 && vf.getPath().endsWith(".java")) outside.add(vf.getPath());
+            return false;
+        }
+
+        /** A method a call may run, and how ("" for a plain call). */
+        record Target(PsiMethod method, String via) {}
+
+        /**
+         * The methods a call may run: what it resolves to; when the IDE can't resolve it, the methods of that name
+         * and argument count in the class of the object it is made on, else in the project. A method reference runs
+         * the method it names; publishEvent(new X()) runs Spring's listeners of X.
+         */
+        List<Target> targetsOf(PsiElement call) {
+            List<Target> out = new ArrayList<>();
+            if (call instanceof PsiMethodReferenceExpression ref) {
+                if (ref.resolve() instanceof PsiMethod m) out.add(new Target(m, "method reference"));
+                return out;
+            }
+            if (!(call instanceof PsiCall c)) { // Kotlin: a call or a callable reference, read through UAST
+                org.jetbrains.uast.UElement u = org.jetbrains.uast.UastContextKt.toUElement(call);
+                if (u instanceof org.jetbrains.uast.UCallExpression uc && uc.resolve() != null) {
+                    out.add(new Target(uc.resolve(), ""));
+                } else if (u instanceof org.jetbrains.uast.UCallableReferenceExpression ur && ur.resolve() instanceof PsiMethod m) {
+                    out.add(new Target(m, "method reference"));
+                }
+                return out;
+            }
+            PsiMethod resolved = c.resolveMethod();
+            if (resolved != null) {
+                out.add(new Target(resolved, ""));
+                if (call instanceof PsiMethodCallExpression mc) out.addAll(springListeners(mc, resolved));
+                return out;
+            }
+            if (!(call instanceof PsiMethodCallExpression mc)) return out;
+            for (com.intellij.psi.JavaResolveResult r : mc.getMethodExpression().multiResolve(true)) {
+                if (r.getElement() instanceof PsiMethod pm) out.add(new Target(pm, ""));
+            }
+            if (!out.isEmpty()) return out;
+            String name = mc.getMethodExpression().getReferenceName();
+            if (name == null) return out;
+            int args = mc.getArgumentList().getExpressionCount();
+            PsiExpression q = mc.getMethodExpression().getQualifierExpression();
+            PsiClass cls = q == null ? PsiTreeUtil.getParentOfType(call, PsiClass.class)
+                    : q.getType() instanceof PsiClassType ct ? ct.resolve() : null;
+            if (cls != null) {
+                for (PsiMethod x : cls.findMethodsByName(name, true)) {
+                    if (x.getParameterList().getParametersCount() == args) out.add(new Target(x, ""));
+                }
+            }
+            if (out.isEmpty()) {
+                for (PsiMethod x : PsiShortNamesCache.getInstance(project).getMethodsByName(name, scope)) {
+                    if (x.getParameterList().getParametersCount() == args) out.add(new Target(x, ""));
+                }
+            }
+            return out;
+        }
+
+        // ---------- threads ----------
+
+        /**
+         * A task that runs in another thread: a project class implementing Runnable / Callable given to a call or a
+         * new (new Thread(task), executor.submit(task), CompletableFuture.runAsync(task)...), or a new instance of a
+         * class extending Thread: its run() / call().
+         */
+        List<Target> threadTargets(PsiElement call) {
+            List<Target> out = new ArrayList<>();
+            if (!(call instanceof PsiCall c)) return out;
+            List<PsiClass> tasks = new ArrayList<>();
+            PsiExpressionList args = c.getArgumentList();
+            if (args != null) {
+                for (PsiExpression arg : args.getExpressions()) {
+                    PsiClass k = arg.getType() instanceof PsiClassType t ? t.resolve() : null;
+                    if (k != null) tasks.add(k);
+                }
+            }
+            if (call instanceof PsiNewExpression n && n.getClassReference() != null && n.getClassReference().resolve() instanceof PsiClass k
+                    && inherits(k, "java.lang.Thread")) {
+                tasks.add(k);
+            }
+            for (PsiClass k : tasks) {
+                for (String[] kind : new String[][]{{"java.lang.Runnable", "run"}, {"java.util.concurrent.Callable", "call"},
+                        {"java.lang.Thread", "run"}}) {
+                    if (!inherits(k, kind[0]) || k.getQualifiedName() != null && k.getQualifiedName().equals(kind[0])) continue;
+                    for (PsiMethod run : k.findMethodsByName(kind[1], false)) {
+                        if (run.getParameterList().getParametersCount() == 0 && run.getBody() != null) {
+                            out.add(new Target(run, "runs in a thread"));
+                        }
+                    }
+                }
+            }
+            return out;
+        }
+
+        static boolean inherits(PsiClass k, String qualifiedName) {
+            if (qualifiedName.equals(k.getQualifiedName())) return true;
+            if (com.intellij.psi.util.InheritanceUtil.isInheritor(k, qualifiedName)) return true;
+            // a JDK the IDE can't read fully: the name written in implements / extends
+            String simple = qualifiedName.substring(qualifiedName.lastIndexOf('.') + 1);
+            for (PsiClassType t : k.getSuperTypes()) if (simple.equals(t.getClassName())) return true;
+            return false;
+        }
+
+        // ---------- API calls ----------
+
+        /** A method that handles an HTTP path (its segments; "{x}" matches any one). */
+        record Handler(String path, String method, PsiMethod handler) {}
+
+        private @Nullable List<Handler> handlers;
+        private static final java.util.regex.Pattern URL_PATH = java.util.regex.Pattern.compile("(?:https?://[^/\\s\"]+)?(/[A-Za-z0-9_\\-./{}]+)");
+
+        /**
+         * An HTTP call to a path (a URL or "/path" in its arguments, or in the variables they are set from): the
+         * project's methods that handle that path (Spring's @GetMapping / @RequestMapping..., JAX-RS @Path,
+         * HttpServer.createContext("/path", handler) → handler.handle()).
+         */
+        List<Target> apiTargets(PsiElement call) {
+            List<Target> out = new ArrayList<>();
+            if (!(call instanceof PsiCall c) || c.getArgumentList() == null) return out;
+            Set<String> paths = new LinkedHashSet<>();
+            for (PsiExpression arg : c.getArgumentList().getExpressions()) collectPaths(arg, paths, 0);
+            if (paths.isEmpty()) return out;
+            for (Handler h : handlers()) {
+                for (String p : paths) {
+                    if (pathMatches(p, h.path())) {
+                        out.add(new Target(h.handler(), "API call " + (h.method().isEmpty() ? "" : h.method() + " ") + h.path()));
+                        break;
+                    }
+                }
+            }
+            return out;
+        }
+
+        /** The paths in an expression's string literals (and in the variables it reads, a few levels back). */
+        private void collectPaths(PsiElement e, Set<String> out, int depth) {
+            if (depth > 3) return;
+            // the whole text an argument makes: BASE + "/api/report/" + city + "?days=3" → "http://…/api/report/{x}?days=3"
+            if (e instanceof PsiExpression x && depth == 0) addPath(textOf(x, 0), out);
+            for (com.intellij.psi.PsiLiteralExpression lit : PsiTreeUtil.findChildrenOfType(e, com.intellij.psi.PsiLiteralExpression.class)) {
+                if (lit.getValue() instanceof String s) addPath(s, out);
+            }
+            if (e instanceof com.intellij.psi.PsiLiteralExpression lit && lit.getValue() instanceof String s) addPath(s, out);
+            List<PsiReferenceExpression> refs = new ArrayList<>(PsiTreeUtil.findChildrenOfType(e, PsiReferenceExpression.class));
+            if (e instanceof PsiReferenceExpression r) refs.add(r);
+            for (PsiReferenceExpression r : refs) {
+                if (r.resolve() instanceof com.intellij.psi.PsiVariable v && v.getInitializer() != null) collectPaths(v.getInitializer(), out, depth + 1);
+            }
+        }
+
+        /** The text an expression makes: its literals joined, what isn't known as "{x}" (variables are followed back). */
+        private static String textOf(PsiExpression e, int depth) {
+            if (e instanceof com.intellij.psi.PsiLiteralExpression lit) return lit.getValue() instanceof String s ? s : "{x}";
+            if (e instanceof com.intellij.psi.PsiParenthesizedExpression p && p.getExpression() != null) return textOf(p.getExpression(), depth);
+            if (e instanceof com.intellij.psi.PsiPolyadicExpression poly
+                    && poly.getOperationTokenType() == com.intellij.psi.JavaTokenType.PLUS) {
+                StringBuilder sb = new StringBuilder();
+                for (PsiExpression op : poly.getOperands()) sb.append(textOf(op, depth));
+                return sb.toString();
+            }
+            if (depth < 3 && e instanceof PsiReferenceExpression r && r.resolve() instanceof com.intellij.psi.PsiVariable v
+                    && v.getInitializer() != null) {
+                return textOf(v.getInitializer(), depth + 1);
+            }
+            return "{x}";
+        }
+
+        private static void addPath(String s, Set<String> out) {
+            java.util.regex.Matcher m = URL_PATH.matcher(s.strip());
+            if (m.lookingAt() && m.group(1).length() > 1) out.add(m.group(1));
+        }
+
+        /** True when a called path is the handler's path ({x} segments match any one; the caller may add a prefix). */
+        static boolean pathMatches(String called, String handler) {
+            String[] c = trim(called).split("/"), h = trim(handler).split("/");
+            if (h.length == 0 || h.length > c.length) return false;
+            int off = c.length - h.length; // a context path or host part before it
+            for (int i = 0; i < h.length; i++) {
+                if (h[i].startsWith("{") && h[i].endsWith("}")) continue;
+                if (c[off + i].startsWith("{") && c[off + i].endsWith("}")) continue; // a part the caller fills in
+                if (!h[i].equalsIgnoreCase(c[off + i])) return false;
+            }
+            return true;
+        }
+
+        private static String trim(String p) {
+            String s = p;
+            int q = s.indexOf('?');
+            if (q >= 0) s = s.substring(0, q);
+            while (s.startsWith("/")) s = s.substring(1);
+            while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
+            return s;
+        }
+
+        /** The project's HTTP handlers (read once per search). */
+        List<Handler> handlers() {
+            if (handlers != null) return handlers;
+            List<Handler> out = new ArrayList<>();
+            JavaPsiFacade facade = JavaPsiFacade.getInstance(project);
+            GlobalSearchScope all = GlobalSearchScope.allScope(project);
+            String[][] spring = {{"RequestMapping", ""}, {"GetMapping", "GET"}, {"PostMapping", "POST"}, {"PutMapping", "PUT"},
+                    {"DeleteMapping", "DELETE"}, {"PatchMapping", "PATCH"}};
+            for (String[] s : spring) {
+                PsiClass ann = facade.findClass("org.springframework.web.bind.annotation." + s[0], all);
+                if (ann == null) continue;
+                for (PsiMethod m : AnnotatedElementsSearch.searchPsiMethods(ann, scope).findAll()) {
+                    String own = annotationPath(m.getModifierList().findAnnotation(ann.getQualifiedName()));
+                    String prefix = m.getContainingClass() == null ? "" : annotationPath(m.getContainingClass().getModifierList() == null ? null
+                            : m.getContainingClass().getModifierList().findAnnotation("org.springframework.web.bind.annotation.RequestMapping"));
+                    out.add(new Handler(join(prefix, own), s[1], m));
+                }
+            }
+            for (String jaxrs : new String[]{"javax.ws.rs.Path", "jakarta.ws.rs.Path"}) {
+                PsiClass ann = facade.findClass(jaxrs, all);
+                if (ann == null) continue;
+                for (PsiMethod m : AnnotatedElementsSearch.searchPsiMethods(ann, scope).findAll()) {
+                    PsiClass k = m.getContainingClass();
+                    String prefix = k == null || k.getModifierList() == null ? "" : annotationPath(k.getModifierList().findAnnotation(jaxrs));
+                    out.add(new Handler(join(prefix, annotationPath(m.getModifierList().findAnnotation(jaxrs))), "", m));
+                }
+            }
+            // com.sun.net.httpserver: server.createContext("/path", new Handler()) → Handler.handle(exchange)
+            PsiClass server = facade.findClass("com.sun.net.httpserver.HttpServer", all);
+            if (server != null) {
+                for (PsiMethod create : server.findMethodsByName("createContext", false)) {
+                    for (com.intellij.psi.PsiReference ref : com.intellij.psi.search.searches.MethodReferencesSearch.search(create, scope, true).findAll()) {
+                        PsiMethodCallExpression mc = PsiTreeUtil.getParentOfType(ref.getElement(), PsiMethodCallExpression.class);
+                        if (mc == null || mc.getArgumentList().getExpressionCount() < 2) continue;
+                        PsiExpression[] args = mc.getArgumentList().getExpressions();
+                        if (!(args[0] instanceof com.intellij.psi.PsiLiteralExpression lit) || !(lit.getValue() instanceof String path)) continue;
+                        PsiClass k = args[1].getType() instanceof PsiClassType t ? t.resolve() : null;
+                        if (k == null) continue;
+                        for (PsiMethod handle : k.findMethodsByName("handle", false)) {
+                            if (handle.getBody() != null) out.add(new Handler(path, "", handle));
+                        }
+                    }
+                }
+            }
+            handlers = out;
+            return out;
+        }
+
+        private static String annotationPath(@Nullable com.intellij.psi.PsiAnnotation a) {
+            if (a == null) return "";
+            for (String attr : new String[]{"value", "path"}) {
+                com.intellij.psi.PsiAnnotationMemberValue v = a.findDeclaredAttributeValue(attr);
+                if (v instanceof com.intellij.psi.PsiArrayInitializerMemberValue arr && arr.getInitializers().length > 0) v = arr.getInitializers()[0];
+                if (v instanceof com.intellij.psi.PsiLiteralExpression lit && lit.getValue() instanceof String s) return s;
+            }
+            return "";
+        }
+
+        private static String join(String prefix, String own) {
+            String p = trim(prefix), o = trim(own);
+            return "/" + (p.isEmpty() ? o : o.isEmpty() ? p : p + "/" + o);
+        }
+
+        /** Listeners cached by event class. */
+        final Map<PsiClass, List<PsiMethod>> listeners = new HashMap<>();
+
+        /**
+         * Spring: {@code publishEvent(event)} runs the {@code @EventListener} methods that take the event's class (or
+         * a class it extends) and the {@code onApplicationEvent} methods of the matching ApplicationListeners.
+         */
+        List<Target> springListeners(PsiMethodCallExpression call, PsiMethod resolved) {
+            if (!"publishEvent".equals(resolved.getName()) || call.getArgumentList().getExpressionCount() != 1) return List.of();
+            PsiType type = call.getArgumentList().getExpressions()[0].getType();
+            PsiClass event = type instanceof PsiClassType ct ? ct.resolve() : null;
+            if (event == null) return List.of();
+            List<PsiMethod> found = listeners.computeIfAbsent(event, this::listenersOf);
+            List<Target> out = new ArrayList<>();
+            for (PsiMethod m : found) out.add(new Target(m, "Spring event " + event.getName()));
+            return out;
+        }
+
+        List<PsiMethod> listenersOf(PsiClass event) {
+            List<PsiMethod> out = new ArrayList<>();
+            PsiClass annotation = JavaPsiFacade.getInstance(project).findClass("org.springframework.context.event.EventListener",
+                    GlobalSearchScope.allScope(project));
+            if (annotation != null) {
+                for (PsiMethod m : AnnotatedElementsSearch.searchPsiMethods(annotation, scope).findAll()) {
+                    if (takes(m, event)) out.add(m);
+                }
+            }
+            for (PsiMethod m : PsiShortNamesCache.getInstance(project).getMethodsByName("onApplicationEvent", scope)) {
+                if (takes(m, event)) out.add(m);
+            }
+            return out;
+        }
+
+        /** True when a method's only parameter accepts the event (its class or one the event extends). */
+        static boolean takes(PsiMethod m, PsiClass event) {
+            if (m.getParameterList().getParametersCount() != 1) return false;
+            PsiType p = m.getParameterList().getParameters()[0].getType();
+            PsiClass wanted = p instanceof PsiClassType ct ? ct.resolve() : null;
+            return wanted != null && (wanted.equals(event) || event.isInheritor(wanted, true));
+        }
+
+        /** The method itself and, when it can be overridden, the project's methods that override it. */
+        List<PsiMethod> candidates(PsiMethod target) {
+            List<PsiMethod> out = new ArrayList<>();
+            out.add(target);
+            if (!target.hasModifierProperty(PsiModifier.FINAL) && !target.hasModifierProperty(PsiModifier.STATIC)
+                    && !target.hasModifierProperty(PsiModifier.PRIVATE) && !target.isConstructor()) {
+                int n = 0;
+                for (PsiMethod o : OverridingMethodsSearch.search(target, scope, true).findAll()) {
+                    out.add(o);
+                    if (++n >= 20) break;
+                }
+            }
+            return out;
+        }
+    }
+
+    private static Step step(Project project, PsiMethod m, List<FlowEntry> lines, String via) {
+        PsiFile file = m.getContainingFile();
+        return new Step(owner(m), m.getName(), file == null ? "" : file.getName(), lines, via);
+    }
+
+    private static String owner(PsiMethod m) {
+        PsiClass c = m.getContainingClass();
+        return c == null || c.getName() == null ? "?" : c.getName();
     }
 
     /** True when none of a method's calls (from an offset on) resolve: the IDE can't read its code. */
-    private static boolean next0Empty(PsiMethod m, int from) {
-        for (PsiCall c : calls(m, from)) if (c.resolveMethod() != null) return false;
+    private static boolean noneResolve(PsiMethod m, int from) {
+        for (PsiElement c : callsOf(m, from)) if (c instanceof PsiCall pc && pc.resolveMethod() != null) return false;
         return true;
     }
 
@@ -251,25 +704,34 @@ public final class FlowCallPath {
         return t.length() > 60 ? t.substring(0, 60) + "…" : t;
     }
 
-    /** The method itself and, when it can be overridden, the project's methods that override it. */
-    private static List<PsiMethod> candidates(PsiMethod target, GlobalSearchScope scope) {
-        List<PsiMethod> out = new ArrayList<>();
-        out.add(target);
-        if (!target.hasModifierProperty(PsiModifier.FINAL) && !target.hasModifierProperty(PsiModifier.STATIC)
-                && !target.hasModifierProperty(PsiModifier.PRIVATE) && !target.isConstructor()) {
-            int n = 0;
-            for (PsiMethod o : OverridingMethodsSearch.search(target, scope, true).findAll()) {
-                out.add(o);
-                if (++n >= 20) break;
-            }
-        }
-        return out;
-    }
+    /**
+     * The calls a method makes (method calls, new …(), method references), in order; from an offset on when ≥ 0. A
+     * Kotlin function's calls and callable references are read through UAST (their Kotlin code elements are given).
+     */
+    private static List<PsiElement> callsOf(PsiMethod m, int from) {
+        List<PsiElement> out = new ArrayList<>();
+        if (m.getBody() == null) {
+            org.jetbrains.uast.UMethod u = org.jetbrains.uast.UastContextKt.toUElement(m, org.jetbrains.uast.UMethod.class);
+            if (u == null || u.getSourcePsi() == null || u.getSourcePsi() instanceof PsiMethod) return out; // no code (abstract, a library)
+            u.accept(new org.jetbrains.uast.visitor.AbstractUastVisitor() {
+                @Override public boolean visitCallExpression(@org.jetbrains.annotations.NotNull org.jetbrains.uast.UCallExpression node) {
+                    add(node.getSourcePsi());
+                    return false; // the arguments can hold calls too
+                }
 
-    /** The calls a method makes (method calls and new …()), in order; from an offset on when it is ≥ 0. */
-    private static List<PsiCall> calls(PsiMethod m, int from) {
-        List<PsiCall> out = new ArrayList<>();
-        if (m.getBody() == null) return out;
+                @Override public boolean visitCallableReferenceExpression(
+                        @org.jetbrains.annotations.NotNull org.jetbrains.uast.UCallableReferenceExpression node) {
+                    add(node.getSourcePsi());
+                    return false;
+                }
+
+                private void add(@Nullable PsiElement psi) {
+                    if (psi != null && psi.getTextOffset() >= from && !out.contains(psi)) out.add(psi);
+                }
+            });
+            out.sort(Comparator.comparingInt(PsiElement::getTextOffset));
+            return out;
+        }
         m.getBody().accept(new JavaRecursiveElementWalkingVisitor() {
             @Override public void visitMethodCallExpression(PsiMethodCallExpression expression) {
                 super.visitMethodCallExpression(expression);
@@ -280,12 +742,17 @@ public final class FlowCallPath {
                 super.visitNewExpression(expression);
                 if (expression.getTextOffset() >= from) out.add(expression);
             }
+
+            @Override public void visitMethodReferenceExpression(PsiMethodReferenceExpression expression) {
+                super.visitMethodReferenceExpression(expression);
+                if (expression.getTextOffset() >= from) out.add(expression);
+            }
         });
         return out;
     }
 
     /** True when a call (or the statement it is in) uses one of the tracked names. */
-    private static boolean touches(PsiCall call, Set<String> names) {
+    private static boolean touches(PsiElement call, Set<String> names) {
         if (names.isEmpty()) return false;
         PsiElement where = PsiTreeUtil.getParentOfType(call, PsiStatement.class, false);
         Set<String> used = referenced(where != null ? where : call);
@@ -349,21 +816,26 @@ public final class FlowCallPath {
      * with a tracked name (e.g. a field hotelService set from the parameter of the same name), and what is made from
      * those in it.
      */
-    private static Set<String> carry(Set<String> names, List<PsiCall> calls, PsiMethod into) {
+    private static Set<String> carry(Set<String> names, List<PsiElement> calls, PsiMethod into) {
         Set<String> in = new LinkedHashSet<>();
         PsiParameter[] params = into.getParameterList().getParameters();
-        for (PsiCall call : calls) {
-            PsiExpressionList args = call.getArgumentList();
-            if (args == null) continue;
-            PsiExpression[] exprs = args.getExpressions();
-            for (int i = 0; i < exprs.length && i < params.length; i++) {
-                for (String n : names) if (referenced(exprs[i]).contains(n)) in.add(params[i].getName());
-            }
-            // the object the call is made on: when it is tracked, so are its fields of tracked names
-            if (call instanceof PsiMethodCallExpression mc && mc.getMethodExpression().getQualifierExpression() != null) {
-                for (String n : names) {
-                    if (referenced(mc.getMethodExpression().getQualifierExpression()).contains(n)) in.add("this");
+        for (PsiElement call : calls) {
+            PsiExpressionList args = call instanceof PsiCall c ? c.getArgumentList() : null;
+            if (args != null) {
+                PsiExpression[] exprs = args.getExpressions();
+                for (int i = 0; i < exprs.length && i < params.length; i++) {
+                    for (String n : names) if (referenced(exprs[i]).contains(n)) in.add(params[i].getName());
                 }
+            }
+            // the object the call is made on: when it is tracked, so are its fields
+            PsiExpression qualifier = call instanceof PsiMethodCallExpression mc ? mc.getMethodExpression().getQualifierExpression()
+                    : call instanceof PsiMethodReferenceExpression ref ? ref.getQualifierExpression() : null;
+            if (qualifier != null) {
+                for (String n : names) if (referenced(qualifier).contains(n)) in.add("this");
+            }
+            // a method reference used on tracked data (tracked.forEach(service::handle)): its parameters get it
+            if (call instanceof PsiMethodReferenceExpression && touches(call, names)) {
+                for (PsiParameter p : params) in.add(p.getName());
             }
         }
         PsiClass cls = into.getContainingClass();
@@ -393,20 +865,30 @@ public final class FlowCallPath {
         return null;
     }
 
+    /** The method a code element is in: a Java method, or a Kotlin function (as the method Java sees). */
+    private static @Nullable PsiMethod methodAt(@Nullable PsiElement at) {
+        if (at == null) return null;
+        PsiMethod java = PsiTreeUtil.getParentOfType(at, PsiMethod.class, false);
+        if (java != null) return java;
+        org.jetbrains.uast.UMethod u = FlowLang.uParent(FlowLang.uElementAt(at), org.jetbrains.uast.UMethod.class);
+        return u == null ? null : u.getJavaPsi();
+    }
+
     private static int lineStart(PsiElement at) {
         PsiStatement st = PsiTreeUtil.getParentOfType(at, PsiStatement.class, false);
         return (st != null ? st : at).getTextRange().getStartOffset();
     }
 
     /** A flow line for the line a call is on. */
-    private static @Nullable FlowEntry entryAt(Project project, PsiCall call) {
+    private static @Nullable FlowEntry entryAt(Project project, PsiElement call) {
         PsiFile file = call.getContainingFile();
         VirtualFile vf = file == null ? null : file.getVirtualFile();
         Document doc = vf == null ? null : FileDocumentManager.getInstance().getDocument(vf);
         if (doc == null) return null;
         // the line the call is made on: where the called method's name is (travel.getDestination() on the second
         // line of "double hotelCost = hotelService.calculateCost(\n travel.getDestination(), …" is that second line)
-        PsiElement name = call instanceof PsiMethodCallExpression mc ? mc.getMethodExpression().getReferenceNameElement() : null;
+        PsiElement name = call instanceof PsiMethodCallExpression mc ? mc.getMethodExpression().getReferenceNameElement()
+                : call instanceof PsiMethodReferenceExpression ref ? ref.getReferenceNameElement() : null;
         int at = name != null ? name.getTextOffset() : call.getTextOffset();
         return FlowCapture.lineEntry(project, doc, doc.getLineNumber(at)); // lines in the flow already count too
     }
@@ -414,5 +896,4 @@ public final class FlowCallPath {
     private static String describe(FlowEntry e) {
         return e.fileName + ":" + e.line;
     }
-
 }

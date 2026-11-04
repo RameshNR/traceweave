@@ -209,6 +209,10 @@ public final class FlowDiagramDialog {
         return !diagram.boxes.isEmpty();
     }
 
+    int classCount() {
+        return diagram.boxes.size();
+    }
+
     /** Apply without reloading (closing the tab right after). */
     boolean applyNow() {
         return applyChanges();
@@ -269,8 +273,9 @@ public final class FlowDiagramDialog {
 
     /** The page is on screen. */
     void shown() {
-        canvas.requestFocusInWindow();
         refresh();
+        // once the tab is on screen (asked before that, the focus stayed on the tab strip and Ctrl+V went nowhere)
+        javax.swing.SwingUtilities.invokeLater(canvas::requestFocusInWindow);
     }
 
     private void close() {
@@ -281,16 +286,17 @@ public final class FlowDiagramDialog {
 
     private final Project project;
     private final FlowStore store;
-    private final List<FlowEntry> entriesAtOpen;
+    /** The flow's lines the page is on (those at its opening, then as the flow changed while it was open). */
+    private List<FlowEntry> entriesAtOpen;
     private String flowName;
     private final FlowDiagramPainter painter = new FlowDiagramPainter(JBUI.Fonts.label());
 
     /** This window's copy of the flow's history; stored back on Apply. */
     private final FlowDiagram.History history;
     private final int openPosition;
-    private final String openSignature;
+    private String openSignature;
     /** The diagram as the window opened it (to tell whether anything was done). */
-    private final FlowDiagram openDiagram;
+    private FlowDiagram openDiagram;
     private FlowDiagram diagram;
     private Tool tool = Tool.SELECT;
     private FlowDiagramPainter.Selection selection = FlowDiagramPainter.Selection.NONE;
@@ -309,7 +315,7 @@ public final class FlowDiagramDialog {
     private final FlowButton backgroundToggle = new FlowButton("", FlowTheme.ICON_DARK, FlowButton.Style.OUTLINE);
     /** Zoom buttons in the bottom right corner of the drawing area, and the zoom they set (1 = 100 %). */
     private final JPanel zoomBar = new JPanel(new FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0));
-    private FlowButton zoomIn, zoomOut, zoomReset;
+    private FlowButton zoomIn, zoomOut, zoomReset, searchButton;
     private double zoom = 1;
     private static final double[] ZOOMS = {0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3};
     /** Space kept between boxes when they are moved apart. */
@@ -343,6 +349,90 @@ public final class FlowDiagramDialog {
 
         backgroundToggle.addActionListener(e -> toggleBackground());
         Disposer.register(getDisposable(), () -> look.removeListener(lookChanged));
+        store.addListener(flowListener);
+        Disposer.register(getDisposable(), () -> store.removeListener(flowListener));
+    }
+
+    // ---------- the flow changed while the page is open ----------
+
+    /** Lines added to the flow (or removed, undone…) in the Flow window show here at once. */
+    private final Runnable flowListener = () -> javax.swing.SwingUtilities.invokeLater(this::flowChanged);
+
+    private void flowChanged() {
+        if (disposed || applied || project.isDisposed() || !store.getFlowNames().contains(flowName)) return;
+        List<FlowEntry> now = store.getEntriesOf(flowName);
+        if (now.equals(entriesAtOpen)) return;
+        boolean active = flowName.equals(store.getActiveFlowName());
+        syncTo(now, active ? store.getCalls().links() : FlowSync.withManual(FlowSync.Calls.NONE, now).links(), true);
+        // the calls the new lines make (found in the background): their lines between the classes
+        FlowSync.callsFor(project, List.of(now), result -> {
+            if (disposed || applied || !now.equals(entriesAtOpen)) return;
+            syncTo(now, FlowSync.withManual(result.get(0), now).links(), false);
+        });
+    }
+
+    /**
+     * Brings the page (and each step of its history, so Undo and Save still work) to the flow's lines now: the
+     * classes and methods of new lines are added, the ones whose lines are all gone leave.
+     *
+     * @param tell true to say in the status line what came in or went
+     */
+    private void syncTo(List<FlowEntry> now, java.util.Set<String> calls, boolean tell) {
+        java.util.Set<FlowEntry> before = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        before.addAll(entriesAtOpen);
+        java.util.Set<FlowEntry> nowSet = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        nowSet.addAll(now);
+        List<FlowEntry> added = new ArrayList<>();
+        for (FlowEntry e : now) if (!before.contains(e)) added.add(e);
+        java.util.Set<FlowEntry> removed = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (FlowEntry e : entriesAtOpen) if (!nowSet.contains(e)) removed.add(e);
+
+        int start = Math.max(diagram.lastId(), openDiagram.lastId());
+        for (FlowDiagram.History.Step s : history.steps) start = Math.max(start, s.diagram().lastId());
+        FlowDiagram.IdPool pool = new FlowDiagram.IdPool(start);
+        FlowDiagram.Measure measure = painter.measure();
+        List<FlowEntry> currentBase = rebase(history.current().base(), now, added, removed);
+        for (int i = 0; i < history.steps.size(); i++) {
+            FlowDiagram.History.Step s = history.steps.get(i);
+            List<FlowEntry> base = rebase(s.base(), now, added, removed);
+            history.steps.set(i, new FlowDiagram.History.Step(s.label(),
+                    s.diagram().synced(base, added, calls, pool, measure, BOX_GAP), base, s.applied(), s.open()));
+        }
+        diagram = diagram.synced(currentBase, added, calls, pool, measure, BOX_GAP);
+        openDiagram = openDiagram.synced(currentBase, added, calls, pool, measure, BOX_GAP);
+        openSignature = openDiagram.signature();
+        entriesAtOpen = now;
+        if (waysPanel != null && (diagram.method(waysOf) == null)) hideWays();
+        if (selection != FlowDiagramPainter.Selection.NONE && !stillThere(selection)) selection = FlowDiagramPainter.Selection.NONE;
+        refresh();
+        if (!tell) return;
+        java.util.Set<String> in = new java.util.LinkedHashSet<>(), out = new java.util.LinkedHashSet<>();
+        for (FlowEntry e : added) in.add(FlowDiagram.className(e) + "." + com.example.flowtracker.copy.FlowFormat.methodName(e));
+        for (FlowEntry e : removed) out.add(FlowDiagram.className(e) + "." + com.example.flowtracker.copy.FlowFormat.methodName(e));
+        String msg = (in.isEmpty() ? "" : "From the flow: " + String.join(", ", in) + ". ")
+                + (out.isEmpty() ? "" : "Left the flow: " + String.join(", ", out) + ".");
+        if (!msg.isBlank()) say(msg.strip());
+    }
+
+    /** True while the diagram still has what the selection points at. */
+    private boolean stillThere(FlowDiagramPainter.Selection sel) {
+        if (sel.methodId() != null) return diagram.method(sel.methodId()) != null;
+        if (sel.boxId() != null) return diagram.box(sel.boxId()) != null;
+        return sel.link() == null || diagram.links.contains(sel.link());
+    }
+
+    /** A step's lines with the flow's change: in the flow's order, without the removed lines, with the added ones. */
+    private static List<FlowEntry> rebase(List<FlowEntry> base, List<FlowEntry> now, List<FlowEntry> added,
+                                          java.util.Set<FlowEntry> removed) {
+        java.util.Set<FlowEntry> in = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        in.addAll(base);
+        in.addAll(added);
+        java.util.Set<FlowEntry> nowSet = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        nowSet.addAll(now);
+        List<FlowEntry> out = new ArrayList<>();
+        for (FlowEntry e : now) if (in.contains(e)) out.add(e);
+        for (FlowEntry e : base) if (!nowSet.contains(e) && !removed.contains(e)) out.add(e); // an earlier step's own lines
+        return out;
     }
 
     // ---------- layout ----------
@@ -371,7 +461,7 @@ public final class FlowDiagramDialog {
         undo = button("Undo", FlowTheme.ICON_UNDO, FlowButton.Style.OUTLINE, null, this::undo);
         redo = button("Redo", FlowTheme.ICON_REDO, FlowButton.Style.OUTLINE, null, this::redo);
         FlowButton layout = button("Auto Layout", FlowTheme.ICON_LAYOUT, FlowButton.Style.OUTLINE,
-                "Arrange the classes in call order, left to right", this::autoLayout);
+                "Arrange the classes in call order, left to right; lines and notes moved by hand find their own way again", this::autoLayout);
         FlowButton copyPng = button("Copy PNG", FlowTheme.ICON_IMAGE, FlowButton.Style.OUTLINE,
                 "Copy this diagram as a PNG image", () -> copyClassImage(look.getImageBackground()));
         copyPng.setDropDown("Copy with a light or dark background", () -> backgroundMenu(copyPng, this::copyClassImage));
@@ -381,8 +471,10 @@ public final class FlowDiagramDialog {
         settings = button("Settings", FlowTheme.ICON_SETTINGS, FlowButton.Style.OUTLINE,
                 "Backgrounds of this window and of the copied images", () -> settingsMenu(settings));
         updateCopyTips(copyPng, copySequence);
+        painter.linesOverBoxes = look.isLinesOverBoxes();
         look.addListener(lookChanged = () -> {
             updateCopyTips(copyPng, copySequence);
+            painter.linesOverBoxes = look.isLinesOverBoxes();
             root.repaint();
         });
 
@@ -400,8 +492,9 @@ public final class FlowDiagramDialog {
         toolbar.addTrailingGroup(1, settings);
         toolbar.setBorder(JBUI.Borders.emptyBottom(8));
 
-        JBScrollPane scroll = new JBScrollPane(canvas);
+        JBScrollPane scroll = com.example.flowtracker.ui.FlowScroll.wheel(new JBScrollPane(canvas));
         scroll.setBorder(JBUI.Borders.customLine(FlowTheme.CARD_BORDER));
+        busy = new com.example.flowtracker.ui.FlowBusyOverlay(disposable);
         // The light / dark switch floats over the top right corner of the drawing area.
         JLayeredPane drawing = new JLayeredPane() {
             @Override
@@ -413,6 +506,18 @@ public final class FlowDiagramDialog {
                 Dimension z = zoomBar.getPreferredSize();
                 int bottom = JBUI.scale(10) + (scroll.getHorizontalScrollBar().isVisible() ? scroll.getHorizontalScrollBar().getHeight() : 0);
                 zoomBar.setBounds(getWidth() - z.width - inset, getHeight() - z.height - bottom, z.width, z.height);
+                busy.setBounds(0, 0, getWidth(), getHeight());
+                if (waysPanel != null) { // the ways: above the zoom buttons, or where they were dragged to
+                    Dimension w = waysPanel.getPreferredSize();
+                    int width = Math.min(w.width, getWidth() - 2 * inset), zoomTop = getHeight() - z.height - bottom;
+                    int height = waysPanel.isMinimized() ? w.height : Math.max(JBUI.scale(160), Math.min(w.height, zoomTop - JBUI.scale(20)));
+                    int x = getWidth() - width - inset, y = Math.max(JBUI.scale(10), zoomTop - height - JBUI.scale(10));
+                    if (waysAt != null) { // kept on the drawing
+                        x = Math.max(0, Math.min(waysAt.x, getWidth() - width));
+                        y = Math.max(0, Math.min(waysAt.y, getHeight() - height));
+                    }
+                    waysPanel.setBounds(x, y, width, height);
+                }
             }
 
             @Override
@@ -425,11 +530,16 @@ public final class FlowDiagramDialog {
         zoomOut = button("", FlowTheme.ICON_ZOOM_OUT, FlowButton.Style.OUTLINE, "Zoom out (Ctrl+Minus, or Ctrl+mouse wheel)", () -> zoomBy(-1, null));
         zoomReset = button("100%", null, FlowButton.Style.OUTLINE, "Back to 100% (Ctrl+0)", () -> setZoom(1, null));
         zoomIn = button("", FlowTheme.ICON_ZOOM_IN, FlowButton.Style.OUTLINE, "Zoom in (Ctrl+Plus, or Ctrl+mouse wheel)", () -> zoomBy(1, null));
+        searchButton = button("", com.intellij.icons.AllIcons.Actions.Search, FlowButton.Style.OUTLINE,
+                "Find a class or method (Ctrl+F)", () -> openSearch(true));
         zoomBar.setOpaque(false);
+        zoomBar.add(searchButton);
         zoomBar.add(zoomOut);
         zoomBar.add(zoomReset);
         zoomBar.add(zoomIn);
         drawing.add(zoomBar, JLayeredPane.PALETTE_LAYER);
+        drawing.add(busy, JLayeredPane.MODAL_LAYER); // "looking for the ways" over the drawing
+        drawingPane = drawing;
         updateZoomBar();
         updateBackgroundToggle();
 
@@ -442,8 +552,8 @@ public final class FlowDiagramDialog {
         JPanel side = new JPanel(new BorderLayout(0, JBUI.scale(6)));
         historyTitle.setFont(JBUI.Fonts.label().asBold());
         side.add(historyTitle, BorderLayout.NORTH);
-        side.add(new JBScrollPane(historyList, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
-                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER), BorderLayout.CENTER);
+        side.add(com.example.flowtracker.ui.FlowScroll.wheel(new JBScrollPane(historyList, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER)), BorderLayout.CENTER);
         JBLabel hint = new JBLabel("<html>Click a step to go back to it; Save uses the selected step. "
                 + "✔ marks applied steps. The History stays while the IDE runs.</html>");
         hint.setForeground(FlowTheme.FG_MUTED);
@@ -486,6 +596,7 @@ public final class FlowDiagramDialog {
 
     private void installKeys(JComponent root) {
         bind(root, KeyStroke.getKeyStroke(KeyEvent.VK_Z, InputEvent.CTRL_DOWN_MASK), "undo", this::undo);
+        bind(root, KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "minimizeWays", () -> { if (waysPanel != null) waysPanel.setMinimized(true); });
         bind(root, KeyStroke.getKeyStroke(KeyEvent.VK_Y, InputEvent.CTRL_DOWN_MASK), "redo", this::redo);
         bind(root, KeyStroke.getKeyStroke(KeyEvent.VK_Z, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK), "redo2", this::redo);
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "delete", this::deleteSelection);
@@ -495,12 +606,56 @@ public final class FlowDiagramDialog {
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_X, InputEvent.CTRL_DOWN_MASK), "cut", () -> copyPicked(true));
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_V, InputEvent.CTRL_DOWN_MASK), "paste", this::pasteClipboard);
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_A, InputEvent.CTRL_DOWN_MASK), "selectAll", this::selectAll);
+        // the same anywhere in the window (e.g. right after a tab was made, with the focus on the tabs), but not while
+        // typing in a field or the code panel, which have their own copy and paste
+        bind(root, KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK), "copyHere", () -> { if (!typing()) copyPicked(false); });
+        bind(root, KeyStroke.getKeyStroke(KeyEvent.VK_X, InputEvent.CTRL_DOWN_MASK), "cutHere", () -> { if (!typing()) copyPicked(true); });
+        bind(root, KeyStroke.getKeyStroke(KeyEvent.VK_V, InputEvent.CTRL_DOWN_MASK), "pasteHere", () -> { if (!typing()) pasteClipboard(); });
+        bind(root, KeyStroke.getKeyStroke(KeyEvent.VK_A, InputEvent.CTRL_DOWN_MASK), "selectAllHere", () -> { if (!typing()) selectAll(); });
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, InputEvent.CTRL_DOWN_MASK), "zoomIn", () -> zoomBy(1, null));
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_PLUS, InputEvent.CTRL_DOWN_MASK), "zoomIn2", () -> zoomBy(1, null));
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_ADD, InputEvent.CTRL_DOWN_MASK), "zoomIn3", () -> zoomBy(1, null));
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, InputEvent.CTRL_DOWN_MASK), "zoomOut", () -> zoomBy(-1, null));
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_SUBTRACT, InputEvent.CTRL_DOWN_MASK), "zoomOut2", () -> zoomBy(-1, null));
         bind(canvas, KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK), "zoomReset", () -> setZoom(1, null));
+        // Ctrl+F: find a class or method (the IDE's own Ctrl+F stays in the code panel and the fields)
+        com.intellij.openapi.project.DumbAwareAction.create(e -> { if (!typing()) openSearch(false); })
+                .registerCustomShortcutSet(new com.intellij.openapi.actionSystem.CustomShortcutSet(
+                        KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK)), root, disposable);
+    }
+
+    /** Find a class or method: above the search button, or (Ctrl+F) at the top of the drawing. */
+    private void openSearch(boolean fromButton) {
+        if (drawingPane == null) return;
+        FlowDiagramSearch.show(drawingPane, fromButton ? searchButton : null, diagram, it -> {
+            FlowDiagram.Box box = diagram.box(it.box().id);
+            if (box == null) return;
+            FlowDiagram.Method m = it.method() == null ? null : diagram.method(it.method().id);
+            select(box, m, null);
+            reveal(box, m);
+            say("Found " + (m == null ? box.name : label(m)) + ".");
+            javax.swing.SwingUtilities.invokeLater(canvas::requestFocusInWindow);
+        });
+    }
+
+    /** Scrolls the drawing so a class (or one of its methods) is in the middle. */
+    private void reveal(FlowDiagram.Box box, @Nullable FlowDiagram.Method m) {
+        Rectangle2D r = m == null ? painter.bounds(box) : painter.rowBounds(box, Math.max(0, box.methods.indexOf(m)));
+        double z = zoom;
+        java.awt.Rectangle visible = canvas.getVisibleRect();
+        int cx = (int) (r.getCenterX() * z), cy = (int) (r.getCenterY() * z);
+        canvas.scrollRectToVisible(new java.awt.Rectangle(cx - visible.width / 2, cy - visible.height / 2, visible.width, visible.height));
+        canvas.repaint();
+    }
+
+    /** True while the focus is in a text field or the code panel (they copy and paste text). */
+    private static boolean typing() {
+        java.awt.Component owner = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
+        if (owner instanceof javax.swing.text.JTextComponent) return true;
+        for (com.intellij.openapi.editor.Editor ed : com.intellij.openapi.editor.EditorFactory.getInstance().getAllEditors()) {
+            if (owner != null && javax.swing.SwingUtilities.isDescendingFrom(owner, ed.getComponent())) return true;
+        }
+        return false;
     }
 
     private static void bind(JComponent c, KeyStroke key, String name, Runnable action) {
@@ -605,17 +760,11 @@ public final class FlowDiagramDialog {
                     + "then right-click " + label(from) + " → Connect the Flow to…", false);
             return;
         }
-        com.intellij.openapi.ui.popup.JBPopupFactory.getInstance().createPopupChooserBuilder(others)
-                .setTitle("Connect " + label(from) + " to…")
-                .setRenderer(new com.intellij.ui.SimpleListCellRenderer<FlowDiagram.Method>() {
-                    @Override public void customize(@NotNull javax.swing.JList<? extends FlowDiagram.Method> l, FlowDiagram.Method m, int i,
-                                                    boolean sel, boolean focus) {
-                        setText(label(m));
-                        setIcon(FlowTheme.ICON_METHOD);
-                    }
-                })
-                .setItemChosenCallback(to -> findPath(from, to))
-                .createPopup().showInCenterOf(canvas);
+        FlowDiagramSearch.showConnectTargets(drawingPane != null ? drawingPane : canvas, "Connect " + label(from) + " to…",
+                diagram, from, it -> {
+                    FlowDiagram.Method to = it.method() == null ? null : diagram.method(it.method().id);
+                    if (to != null) findPath(from, to);
+                });
     }
 
     /** A flow line of a method: its first line in the flow (or picked here). */
@@ -646,39 +795,96 @@ public final class FlowDiagramDialog {
                     + " lines, " + label(to) + ": " + (e == null ? "none" : "1") + ").", false);
             return;
         }
-        tell("Looking in the code for the calls from " + label(from) + " to " + label(to) + "…", true);
-        new com.intellij.openapi.progress.Task.Backgroundable(project, "Finding the calls between two methods", true) {
-            private com.example.flowtracker.code.FlowCallPath.Result result;
+        if (busy.running()) return; // one search at a time
+        java.util.concurrent.atomic.AtomicBoolean stop = new java.util.concurrent.atomic.AtomicBoolean();
+        busy.start("Looking for the ways from " + label(from) + " to " + label(to), "Reading the code…",
+                "Following the calls (up to " + 12 + " deep) for up to " + com.example.flowtracker.code.FlowCallPath.MAX_WAYS + " ways",
+                () -> stop.set(true));
+        say("Looking for the ways from " + label(from) + " to " + label(to) + "…");
+        new com.intellij.openapi.progress.Task.Backgroundable(project, "Finding the ways between two methods", true) {
+            private com.example.flowtracker.code.FlowCallPath.Ways found;
 
             @Override
             public void run(@NotNull com.intellij.openapi.progress.ProgressIndicator indicator) {
-                // a method connected to a method: all of it is looked at (its first call that leads there wins),
-                // not only the code after one of its flow lines
-                result = FlowCompat.read(() -> com.example.flowtracker.code.FlowCallPath.betweenMethods(project, starts, e));
-                PATH_LOG.info("  " + result.message() + " cost " + result.cost()
-                        + (result.lines() == null ? "" : " " + result.lines().stream().map(x -> x.fileName + ":" + x.line).toList()));
+                // a method connected to a method: all of it is looked at, following what its flow lines work with
+                com.example.flowtracker.code.FlowCallPath.Progress progress = new com.example.flowtracker.code.FlowCallPath.Progress() {
+                    @Override public boolean cancelled() {
+                        return stop.get() || indicator.isCanceled();
+                    }
+
+                    @Override public void read(int methods, int ways) {
+                        String text = methods + (methods == 1 ? " method" : " methods") + " read · " + ways
+                                + (ways == 1 ? " way" : " ways") + " found";
+                        indicator.setText2(text);
+                        javax.swing.SwingUtilities.invokeLater(() -> busy.progress(text));
+                    }
+                };
+                found = FlowCompat.read(() -> com.example.flowtracker.code.FlowCallPath.ways(project, starts.get(0), e, starts,
+                        com.example.flowtracker.code.FlowCallPath.MAX_WAYS, progress));
+                PATH_LOG.info("  " + found.message() + " " + found.ways().stream().map(w -> w.chain()).toList());
             }
 
             @Override
             public void onSuccess() {
+                busy.stop();
                 if (isDisposed()) return;
-                if (result == null || result.lines() == null) {
-                    tell(result == null ? "No way was found." : result.message(), false);
+                if (found == null || found.ways().isEmpty()) {
+                    tell(found == null ? "No way was found." : found.message(), false);
                     return;
                 }
-                addPath(from, to, result.lines(), result.message());
+                // the ways in a large window first; afterwards, selecting the method shows them as a bar in the tab
+                // (open it: hover a way to see it on the diagram, click it to add it)
+                Found f = new Found(found, from.id, to.id);
+                waysFor.put(from.id, f);
+                List<com.example.flowtracker.code.FlowCallPath.Way> all = found.ways();
+                com.example.flowtracker.code.FlowCallPath.Way pick = com.example.flowtracker.ui.FlowWaysDialog.choose(project, canvas, found,
+                        label(from), label(to), "Add This Way", FlowDiagramDialog.this::whereOnTab, "this tab", FlowDiagramDialog.this::wayOnTab,
+                        w -> previewWay(f, w)); // the way under the mouse, drawn on the diagram behind the window
+                if (pick != null) {
+                    addPath(from, to, pick.lines(), all.size() == 1 ? found.message()
+                            : "Added way " + (all.indexOf(pick) + 1) + " of " + all.size() + ": " + pick.chain() + ".");
+                } else {
+                    say(found.message() + " The ways stay in the bar above the zoom buttons.");
+                }
+                showWays(from.id, true); // from now on: the bar on the diagram (a click opens it)
+            }
+
+            @Override
+            public void onCancel() {
+                busy.stop();
+                if (!isDisposed()) say("Stopped looking for the ways.");
             }
 
             @Override
             public void onThrowable(@NotNull Throwable error) {
+                busy.stop();
                 PATH_LOG.warn("Connect the Flow failed", error);
                 if (!isDisposed()) tell("Couldn't read the code between them: " + error, false);
             }
         }.queue();
     }
 
+    /** "Looking for the ways…" over the drawing while Connect the Flow reads the code. */
+    private com.example.flowtracker.ui.FlowBusyOverlay busy;
+
     /** The calls' lines become methods (boxes added where needed), connected from {@code from} to {@code to}. */
     private void addPath(FlowDiagram.Method from, FlowDiagram.Method to, List<FlowEntry> lines, String message) {
+        int added = addWay(from, to, lines, false);
+        changed("Connect " + label(from) + " to " + label(to));
+        tell(message + (added == 0 ? "" : " Added " + added + (added == 1 ? " line" : " lines") + " (Save saves them to the flow)."), true);
+    }
+
+    /** A way preview: violet (new boxes, methods and calls), different from everything else on the diagram. */
+    private static final com.intellij.ui.JBColor PREVIEW = new com.intellij.ui.JBColor(0x7B4FD6, 0xB08CFF);
+    private static final com.intellij.ui.JBColor PREVIEW_FILL = new com.intellij.ui.JBColor(0xF1EBFF, 0x2B2340);
+
+    /**
+     * Adds a way's lines to the diagram: boxes and methods where needed, connected from {@code from} to {@code to},
+     * laid out left to right. As a preview, what it adds is drawn in violet (dashed, thick calls).
+     *
+     * @return how many lines were added
+     */
+    private int addWay(FlowDiagram.Method from, FlowDiagram.Method to, List<FlowEntry> lines, boolean preview) {
         FlowDiagram.Box start = diagram.boxOf(from.id);
         double x = start == null ? 40 : start.x + painter.width(start) + 80, y = start == null ? 40 : start.y + 60;
         FlowDiagram.Method prev = from;
@@ -693,20 +899,199 @@ public final class FlowDiagramDialog {
                 box = diagram.addKnownClass(e.fileUrl, e.fileName, e.projectName == null ? "" : e.projectName, e.className, null, x, y);
                 x += 60;
                 y += 40;
+                if (preview) {
+                    box.border = PREVIEW;
+                    box.fill = PREVIEW_FILL;
+                    box.headerFill = PREVIEW_FILL;
+                }
             }
             FlowDiagram.Method m = null;
             for (FlowDiagram.Method x2 : box.methods) if (x2.name.equals(name)) m = x2;
             if (m == null || !codeLines(m).contains(e.line - 1)) {
                 m = diagram.addKnownMethod(box, name, List.of(e));
                 added++;
+                if (preview) m.format = new FlowDiagram.Format(true, false, false, false, PREVIEW);
             }
-            if (m != prev) diagram.connect(prev.id, m.id, false); // calls the code makes: solid
+            if (m != prev) previewCall(prev, m, preview);
             prev = m;
         }
-        if (prev != to) diagram.connect(prev.id, to.id, false);
+        if (prev != to) previewCall(prev, to, preview);
         diagram.autoLayout(painter.measure(), 180, 50, 40); // the new way reads left to right
-        changed("Connect " + label(from) + " to " + label(to));
-        tell(message + (added == 0 ? "" : " Added " + added + (added == 1 ? " line" : " lines") + " (Save saves them to the flow)."), true);
+        return added;
+    }
+
+    /** A call the code makes (solid); in a preview, a new one is violet, dashed and thick. */
+    private void previewCall(FlowDiagram.Method from, FlowDiagram.Method to, boolean preview) {
+        boolean made = diagram.connect(from.id, to.id, false);
+        if (made && preview) {
+            diagram.setLine(new FlowDiagram.Link(from.id, to.id, false, null), new FlowDiagram.Line(FlowDiagram.LinePattern.DASHED,
+                    FlowDiagram.LineWidth.THICK, FlowDiagram.LineShape.CURVED, FlowDiagram.ArrowHead.FILLED, PREVIEW));
+        }
+    }
+
+    // ---------- the ways panel: hover to preview, click to add ----------
+
+    /** Ways found from a method to another (kept per method: clicking it shows them again). */
+    private record Found(com.example.flowtracker.code.FlowCallPath.Ways ways, String fromId, String toId) {}
+    private final java.util.Map<String, Found> waysFor = new java.util.HashMap<>();
+    private @Nullable com.example.flowtracker.ui.FlowWaysPanel waysPanel;
+    private @Nullable JLayeredPane drawingPane;
+    /** The diagram as it was before a way was previewed (null: no preview). */
+    private @Nullable FlowDiagram previewBase;
+
+    /** Which method the ways panel is for. */
+    private @Nullable String waysOf;
+
+    /**
+     * The ways found from a method, above the zoom buttons: open (right after the search), or minimized to a bar (when
+     * the method is selected again; a click opens it).
+     */
+    private void showWays(String fromId, boolean minimized) {
+        Found f = waysFor.get(fromId);
+        FlowDiagram.Method from = f == null ? null : diagram.method(f.fromId()), to = f == null ? null : diagram.method(f.toId());
+        if (f == null || from == null || to == null || drawingPane == null) {
+            waysFor.remove(fromId);
+            return;
+        }
+        hideWays();
+        waysPanel = new com.example.flowtracker.ui.FlowWaysPanel(f.ways(), label(from), label(to), this::whereOnTab,
+                w -> previewWay(f, w), w -> applyWay(f, w), () -> {
+                    clearPreview(); // minimized or opened: no preview left on the diagram
+                    if (drawingPane != null) {
+                        drawingPane.revalidate();
+                        drawingPane.repaint();
+                    }
+                }, () -> fullScreenWays(f));
+        waysOf = fromId;
+        waysPanel.setThere(this::wayOnTab);
+        waysPanel.onMove(by -> {
+            if (waysPanel == null || drawingPane == null) return;
+            java.awt.Point at = waysAt != null ? waysAt : waysPanel.getLocation();
+            waysAt = new java.awt.Point(at.x + by.x, at.y + by.y);
+            drawingPane.doLayout();
+            drawingPane.repaint();
+        });
+        if (minimized) waysPanel.setMinimized(true);
+        drawingPane.add(waysPanel, JLayeredPane.POPUP_LAYER);
+        drawingPane.revalidate();
+        drawingPane.repaint();
+    }
+
+    /** Where the ways panel was dragged to (null: its own place, above the zoom buttons); it goes back when hidden. */
+    private @Nullable java.awt.Point waysAt;
+
+    private void hideWays() {
+        waysAt = null;
+        clearPreview();
+        if (waysPanel != null && drawingPane != null) {
+            drawingPane.remove(waysPanel);
+            drawingPane.repaint();
+        }
+        waysPanel = null;
+        waysOf = null;
+    }
+
+    /**
+     * True when a way is on this tab already: each of its methods is there, and each calls the next one (a way
+     * through methods the tab has for other calls isn't). The way shown on hover doesn't count.
+     */
+    private boolean wayOnTab(com.example.flowtracker.code.FlowCallPath.Way w) {
+        FlowDiagram d = previewBase != null ? previewBase : diagram;
+        List<com.example.flowtracker.code.FlowCallPath.Step> steps = w.steps();
+        if (steps.size() < 2) return false;
+        FlowDiagram.Method prev = methodOnTab(d, steps.get(0));
+        for (int i = 1; i < steps.size(); i++) {
+            FlowDiagram.Method next = methodOnTab(d, steps.get(i));
+            if (prev == null || next == null) return false;
+            boolean linked = false;
+            for (FlowDiagram.Link l : d.links) linked |= l.from().equals(prev.id) && l.to().equals(next.id);
+            if (!linked) return false;
+            prev = next;
+        }
+        return true;
+    }
+
+    private @Nullable FlowDiagram.Method methodOnTab(FlowDiagram d, com.example.flowtracker.code.FlowCallPath.Step s) {
+        for (FlowDiagram.Box b : d.boxes) {
+            if (FlowDiagramTabs.isLink(b) || !(b.name.equals(s.className()) || simpleName(b.origClass).equals(s.className()))) continue;
+            for (FlowDiagram.Method m : b.methods) if (baseName(m.name).equals(s.methodName())) return m;
+        }
+        return null;
+    }
+
+    /** Where a way's step is on this tab: its method is there, its class is, or it is new. */
+    private com.example.flowtracker.ui.FlowWaysList.Where whereOnTab(com.example.flowtracker.code.FlowCallPath.Step s) {
+        boolean cls = false;
+        for (FlowDiagram.Box b : (previewBase != null ? previewBase : diagram).boxes) {
+            if (FlowDiagramTabs.isLink(b) || !(b.name.equals(s.className()) || simpleName(b.origClass).equals(s.className()))) continue;
+            cls = true;
+            for (FlowDiagram.Method m : b.methods) {
+                if (baseName(m.name).equals(s.methodName())) return com.example.flowtracker.ui.FlowWaysList.Where.METHOD_THERE;
+            }
+        }
+        return cls ? com.example.flowtracker.ui.FlowWaysList.Where.CLASS_THERE : com.example.flowtracker.ui.FlowWaysList.Where.NEW;
+    }
+
+    /** The mouse is over a way: it is drawn on the diagram (violet), on a copy; null: back to the diagram as it is. */
+    private void previewWay(Found f, @Nullable com.example.flowtracker.code.FlowCallPath.Way w) {
+        if (w == null) {
+            clearPreview();
+            return;
+        }
+        if (previewBase == null) previewBase = diagram;
+        diagram = previewBase.copy();
+        FlowDiagram.Method from = diagram.method(f.fromId()), to = diagram.method(f.toId());
+        if (from != null && to != null) addWay(from, to, w.lines(), true);
+        refresh();
+    }
+
+    private void clearPreview() {
+        if (previewBase == null) return;
+        diagram = previewBase;
+        previewBase = null;
+        refresh();
+    }
+
+    /** The ways in the large window (Full Screen); the way picked there is added. */
+    private void fullScreenWays(Found f) {
+        hideWays();
+        FlowDiagram.Method from = diagram.method(f.fromId()), to = diagram.method(f.toId());
+        if (from == null || to == null) return;
+        com.example.flowtracker.code.FlowCallPath.Way pick = com.example.flowtracker.ui.FlowWaysDialog.choose(project, canvas, f.ways(),
+                label(from), label(to), "Add This Way", this::whereOnTab, "this tab", this::wayOnTab, w -> previewWay(f, w));
+        if (pick != null) applyWay(f, pick);
+        else showWays(f.fromId(), true);
+    }
+
+    /**
+     * A click on a method with ways: its ways in the bar. A click anywhere else (another class or method, the empty
+     * canvas) puts the minimized bar away: it belongs to its method; an open panel stays until it is minimized.
+     */
+    private void waysOnClick(FlowDiagramPainter.Hit hit) {
+        if (previewBase != null) return;
+        FlowDiagram.Method method = hit.method();
+        if (method != null && waysFor.containsKey(method.id)) {
+            if (waysPanel == null || !method.id.equals(waysOf)) showWays(method.id, true);
+            return;
+        }
+        if (waysPanel == null || !waysPanel.isMinimized()) return;
+        // the class box of its own method (its name, its other rows) keeps it; any other class, method or space doesn't
+        FlowDiagram.Box own = waysOf == null ? null : diagram.boxOf(waysOf);
+        boolean sameBox = own != null && hit.box() == own && hit.method() == null;
+        if (!sameBox && hit.link() == null) hideWays();
+    }
+
+    /** A way clicked: it is added (one step of the History). */
+    private void applyWay(Found f, com.example.flowtracker.code.FlowCallPath.Way w) {
+        java.awt.Point keep = waysAt; // where it was dragged to stays (only hiding it puts it back)
+        hideWays();
+        FlowDiagram.Method from = diagram.method(f.fromId()), to = diagram.method(f.toId());
+        if (from == null || to == null) return;
+        List<com.example.flowtracker.code.FlowCallPath.Way> all = f.ways().ways();
+        addPath(from, to, w.lines(), all.size() == 1 ? f.ways().message()
+                : "Added way " + (all.indexOf(w) + 1) + " of " + all.size() + ": " + w.chain() + ".");
+        waysAt = keep;
+        showWays(f.fromId(), true); // back to the bar
     }
 
     /** The flow's lines of a file (0-based): the flow's own and the ones picked here. */
@@ -762,7 +1147,7 @@ public final class FlowDiagramDialog {
         FlowDiagram.Box box = null;
         FlowDiagram.Method m = null;
         for (FlowDiagram.Box b : diagram.boxes) {
-            if (!url.equals(b.fileUrl) || isLink(b)) continue;
+            if (!url.equals(b.fileUrl) || FlowDiagramTabs.isLink(b)) continue;
             for (FlowDiagram.Method x : b.methods) {
                 if (codeLines(x).contains(line)) {
                     box = b;
@@ -931,40 +1316,13 @@ public final class FlowDiagramDialog {
     /** Classes picked with Ctrl+click (besides the selection), by box id. */
     private final java.util.LinkedHashSet<String> multi = new java.util.LinkedHashSet<>();
 
-    /** A call's look: its note, the note's style and the line's style. */
-    record CallLook(String note, FlowDiagram.NoteStyle noteStyle, FlowDiagram.Line line, boolean manual) {}
 
-    /**
-     * Copied classes: their files, methods and lines, positions, the calls between them (with their notes and line
-     * styles), and their calls to (and from) classes that weren't copied.
-     */
-    record Clip(List<BoxCopy> boxes, List<LinkCopy> links, List<Outside> outside) {}
-    record BoxCopy(String name, String fileUrl, String fileName, String projectName, String origClass, boolean unknown,
-                   double x, double y, List<MethodCopy> methods, @Nullable FlowDiagram.Box look) {
-        BoxCopy(String name, String fileUrl, String fileName, String projectName, String origClass, boolean unknown,
-                double x, double y, List<MethodCopy> methods) {
-            this(name, fileUrl, fileName, projectName, origClass, unknown, x, y, methods, null);
-        }
-    }
-    record MethodCopy(String name, boolean unknown, List<FlowEntry> lines, String tag, boolean tagSet, String note,
-                      @Nullable FlowDiagram.Format format, @Nullable FlowDiagram.Format noteFormat) {
-        MethodCopy(String name, boolean unknown, List<FlowEntry> lines) {
-            this(name, unknown, lines, "", false, "", null, null);
-        }
-    }
+    /** Copy, paste and moves between tabs, without the window (the window adds History steps and messages). */
+    private final FlowDiagramTabs tabs = new FlowDiagramTabs(() -> diagram, painter, this::methodEntries);
 
-    private MethodCopy methodCopy(FlowDiagram.Method m) {
-        return new MethodCopy(m.name, m.unknown && m.picked.isEmpty(), methodEntries(m), m.tag, m.tagSet, m.note, m.format, m.noteFormat);
+    FlowDiagramTabs tabs() {
+        return tabs;
     }
-    record LinkCopy(int fromBox, int fromMethod, int toBox, int toMethod, CallLook look) {}
-    /** A call between a copied method ({box, method}) and a method that wasn't copied (class name, method name). */
-    record Outside(int box, int method, String otherClass, String otherMethod, boolean outgoing, double otherX, double otherY,
-                   CallLook look, BoxCopy other, MethodCopy otherM) {}
-    /** A call by class and method names (between tabs), with its look. */
-    record NamedCall(String fromClass, String fromMethod, String toClass, String toMethod, CallLook look) {}
-
-    /** Where classes that were moved here stood in the tab they came from (to put them back in a combined tab). */
-    private final java.util.Map<String, double[]> homes = new java.util.HashMap<>();
 
     /** The classes selected: the Ctrl+clicked ones and the selected one. */
     private List<FlowDiagram.Box> pickedBoxes() {
@@ -986,142 +1344,32 @@ public final class FlowDiagramDialog {
         return out;
     }
 
-    private CallLook lookOf(FlowDiagram.Link l) {
-        return new CallLook(diagram.callNote(l), diagram.noteStyle(l), diagram.line(l), l.manual());
-    }
-
-    /** Connects two methods (unless they are already) and gives the call its note and styles. */
-    private void connect(FlowDiagram.Method from, FlowDiagram.Method to, @Nullable CallLook look) {
-        if (from == null || to == null || from == to) return;
-        // a call the code makes stays a code call (solid); only calls connected by hand are drawn dashed
-        boolean manual = look == null || look.manual();
-        diagram.connect(from.id, to.id, manual);
-        if (look == null) return;
-        FlowDiagram.Link l = new FlowDiagram.Link(from.id, to.id, manual, null);
-        if (!look.note().isEmpty() && diagram.callNote(l).isEmpty()) diagram.setCallNote(l, look.note());
-        if (!look.noteStyle().equals(FlowDiagram.NoteStyle.DEFAULT)) diagram.setNoteStyle(l, look.noteStyle());
-        if (!look.line().equals(FlowDiagram.Line.DEFAULT)) diagram.setLine(l, look.line());
-    }
-
-    private Clip copyOf(List<FlowDiagram.Box> boxes) {
-        List<BoxCopy> out = new ArrayList<>();
-        for (FlowDiagram.Box b : boxes) {
-            List<MethodCopy> ms = new ArrayList<>();
-            for (FlowDiagram.Method m : b.methods) ms.add(methodCopy(m));
-            out.add(new BoxCopy(b.name, b.fileUrl, b.fileName, b.projectName == null ? "" : b.projectName, b.origClass,
-                    b.isUnknown(), b.x, b.y, ms, b.copy()));
-        }
-        List<LinkCopy> links = new ArrayList<>();
-        List<Outside> outside = new ArrayList<>();
-        for (FlowDiagram.Link l : diagram.links) {
-            int[] from = place(boxes, l.from()), to = place(boxes, l.to());
-            if (from != null && to != null) {
-                links.add(new LinkCopy(from[0], from[1], to[0], to[1], lookOf(l)));
-            } else if (from != null || to != null) {
-                FlowDiagram.Method other = diagram.method(from != null ? l.to() : l.from());
-                FlowDiagram.Box ob = other == null ? null : diagram.boxOf(other.id);
-                if (ob != null) {
-                    int[] in = from != null ? from : to;
-                    MethodCopy om = methodCopy(other);
-                    BoxCopy obc = new BoxCopy(ob.name, ob.fileUrl, ob.fileName, ob.projectName == null ? "" : ob.projectName,
-                            ob.origClass, ob.isUnknown(), ob.x, ob.y, List.of(om));
-                    outside.add(new Outside(in[0], in[1], ob.name, other.name, from != null, ob.x, ob.y, lookOf(l), obc, om));
-                }
-            }
-        }
-        return new Clip(out, links, outside);
-    }
-
-    /** Where a method is among copied boxes: {box, method}, or null when it isn't copied. */
-    private @Nullable int[] place(List<FlowDiagram.Box> boxes, String methodId) {
-        for (int i = 0; i < boxes.size(); i++) {
-            List<FlowDiagram.Method> ms = boxes.get(i).methods;
-            for (int j = 0; j < ms.size(); j++) if (ms.get(j).id.equals(methodId)) return new int[]{i, j};
-        }
-        return null;
-    }
-
     /** Every class of this tab (to move them to another tab when it closes). */
-    Clip copyAll() {
-        return copyOf(new ArrayList<>(diagram.boxes));
+    FlowDiagramTabs.Clip copyAll() {
+        return tabs.copyAll();
     }
 
-    /** Where pasted classes go. */
-    enum Place { RIGHT, BELOW, AS_THEY_WERE }
-
-    void paste(Clip clip, String label) {
-        paste(clip, label, Place.RIGHT);
+    void paste(FlowDiagramTabs.Clip clip, String label) {
+        paste(clip, label, FlowDiagramTabs.Place.RIGHT);
     }
 
-    /** Pastes copied classes (a step of this tab's History; Apply saves their lines to its flow). Returns the boxes made. */
-    List<FlowDiagram.Box> paste(Clip clip, String label, Place where) {
-        List<FlowDiagram.Box> boxesMade = new ArrayList<>();
-        if (clip == null || clip.boxes().isEmpty()) return boxesMade;
-        double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE;
-        for (BoxCopy c : clip.boxes()) {
-            minX = Math.min(minX, c.x());
-            minY = Math.min(minY, c.y());
-        }
-        double maxX = 40, maxY = 40;
-        for (FlowDiagram.Box b : diagram.boxes) {
-            maxX = Math.max(maxX, b.x + painter.width(b) + 60);
-            maxY = Math.max(maxY, b.y + painter.height(b) + 120);
-        }
-        List<List<FlowDiagram.Method>> made = new ArrayList<>();
-        multi.clear();
-        for (BoxCopy c : clip.boxes()) {
-            double x = switch (where) {
-                case AS_THEY_WERE -> c.x();
-                case BELOW -> 40 + (c.x() - minX);
-                default -> maxX + (c.x() - minX);
-            };
-            double y = switch (where) {
-                case AS_THEY_WERE -> c.y();
-                case BELOW -> (diagram.boxes.isEmpty() ? 40 : maxY) + (c.y() - minY);
-                default -> 40 + (c.y() - minY);
-            };
-            FlowDiagram.Box box = c.unknown() ? diagram.addUnknownClass(c.name(), c.fileName(), x, y)
-                    : diagram.addKnownClass(c.fileUrl(), c.fileName(), c.projectName(), c.origClass(), null, x, y);
-            if (c.look() != null) box.copyLook(c.look()); // colors, note, text formats, project style
-            box.moved = true;
-            List<FlowDiagram.Method> ms = new ArrayList<>();
-            for (MethodCopy m : c.methods()) {
-                FlowDiagram.Method nm = m.unknown() || m.lines().isEmpty() ? diagram.addUnknownMethod(box, m.name())
-                        : diagram.addKnownMethod(box, m.name(), m.lines());
-                nm.moved = true;
-                if (m.tagSet || !m.tag().isEmpty()) diagram.setMethodTag(nm, m.tag().isEmpty() ? null : m.tag());
-                if (!m.note().isEmpty()) nm.note = m.note();
-                if (m.format() != null) nm.format = m.format();
-                if (m.noteFormat() != null) nm.noteFormat = m.noteFormat();
-                ms.add(nm);
-            }
-            made.add(ms);
-            boxesMade.add(box);
-            multi.add(box.id);
-        }
-        for (LinkCopy l : clip.links()) connect(made.get(l.fromBox()).get(l.fromMethod()), made.get(l.toBox()).get(l.toMethod()), l.look());
-        int kept = 0;
-        for (Outside o : clip.outside()) { // calls to classes this tab has too (not link boxes: those are made apart)
-            FlowDiagram.Method here = made.get(o.box()).get(o.method()), there = realMethod(o.otherClass(), o.otherMethod());
-            if (here == null || there == null || here == there) continue;
-            if (o.outgoing()) connect(here, there, o.look());
-            else connect(there, here, o.look());
-            kept++;
-        }
-        changed(label + " (" + clip.boxes().size() + (clip.boxes().size() == 1 ? " class)" : " classes)"));
-        say("Pasted " + clip.boxes().size() + (clip.boxes().size() == 1 ? " class" : " classes")
+    /** Pastes copied classes (a step of this tab's History; Save saves their lines to its flow). Returns the boxes made. */
+    List<FlowDiagram.Box> paste(FlowDiagramTabs.Clip clip, String label, FlowDiagramTabs.Place where) {
+        FlowDiagramTabs.Pasted p = tabs.paste(clip, where);
+        if (p.boxes().isEmpty()) return p.boxes();
+        pickOnly(p.boxes());
+        int n = clip.boxes().size(), kept = p.kept();
+        changed(label + " (" + n + (n == 1 ? " class)" : " classes)"));
+        say("Pasted " + n + (n == 1 ? " class" : " classes")
                 + (kept == 0 ? "" : ", with " + kept + (kept == 1 ? " call" : " calls") + " to classes here")
                 + ". Save saves them to “" + flowName + "”.");
-        return boxesMade;
+        return p.boxes();
     }
 
-    /** A method of a real class here (not a link box) by the class's and the method's names. */
-    private @Nullable FlowDiagram.Method realMethod(String className, String methodName) {
-        for (FlowDiagram.Box b : diagram.boxes) {
-            if (isLink(b) || !b.name.equals(className)) continue;
-            for (FlowDiagram.Method m : b.methods) if (m.name.equals(methodName)) return m;
-        }
-        return null;
+    /** The boxes become the Ctrl+click selection. */
+    private void pickOnly(List<FlowDiagram.Box> boxes) {
+        multi.clear();
+        for (FlowDiagram.Box b : boxes) multi.add(b.id);
     }
 
     private void copyPicked(boolean cut) {
@@ -1130,7 +1378,7 @@ public final class FlowDiagramDialog {
             say("Select classes first (Ctrl+click to pick several, Ctrl+A for all).");
             return;
         }
-        FlowDiagramHost.clipboard = copyOf(boxes);
+        FlowDiagramHost.clipboard = tabs.copyOf(boxes);
         if (cut) removeBoxes(boxes, "Cut");
         say((cut ? "Cut " : "Copied ") + boxes.size() + (boxes.size() == 1 ? " class" : " classes")
                 + ". Ctrl+V pastes them here or in another tab.");
@@ -1160,144 +1408,31 @@ public final class FlowDiagramDialog {
     }
 
     /**
-     * The classes go to (or are copied to) another tab. Where they are connected to classes that stay here, link
-     * boxes show it on both sides, with the calls (and their notes):
-     * <ul>
-     * <li>here, a moved class leaves a link box in its place: the class's name, "⇄ in “the other tab”" under it,
-     * the moved methods, framed in the other tab's color;</li>
-     * <li>there, each class here that calls (or is called by) them gets a link box: callers before the moved classes,
-     * the ones they call after them, framed in this tab's color.</li>
-     * </ul>
-     * Moving also opens a tab with both combined.
+     * The classes go to (or are copied to) another tab, with link boxes on both sides where they are connected to
+     * classes that stay (see {@link FlowDiagramTabs}); one History step in each tab. Moving also opens a tab with
+     * both combined.
+     *
      * @param fresh the target is a new tab (it is laid out after)
      */
     private void send(List<FlowDiagram.Box> boxes, FlowDiagramDialog target, boolean move, boolean fresh) {
-        Clip clip = copyOf(boxes);
-        List<FlowDiagram.Box> pasted = target.paste(clip, (move ? "Moved from " : "Copied from ") + flowName,
-                fresh ? Place.AS_THEY_WERE : Place.RIGHT);
-
-        for (BoxCopy c : clip.boxes()) target.homes.put(c.name(), new double[]{c.x(), c.y()});
-        // the calls between the classes that go and the ones that stay (not the ones the target tab has itself)
-        List<Outside> across = new ArrayList<>();
-        for (Outside o : clip.outside()) if (target.realMethod(o.otherClass(), o.otherMethod()) == null) across.add(o);
-        if (move) removeBoxes(boxes, "Move to " + target.flowName() + ":");
-        if (!across.isEmpty()) {
-            if (move) leaveLinkBoxes(clip, across, target.flowName());
-            target.receiveLinkBoxes(clip, across, flowName, pasted);
+        int n = boxes.size();
+        String classes = n + (n == 1 ? " class" : " classes");
+        FlowDiagramTabs.Sent sent = FlowDiagramTabs.send(tabs, flowName, target.tabs, target.flowName(), boxes, move, fresh);
+        if (move) {
+            multi.clear();
+            selection = FlowDiagramPainter.Selection.NONE;
+            changed("Move " + classes + " to " + target.flowName());
         }
-        if (fresh) target.layOutAround(pasted);
-        if (move && host != null && !across.isEmpty()) host.combine(this, target);
-    }
-
-    /** Link boxes are the classes themselves (with their code), marked "⇄ in “the tab”" in their note. */
-    static final String LINK = "⇄ in ";
-    /** The frame of a link box (a class that is in another tab). */
-    static final java.awt.Color LINK_COLOR = new java.awt.Color(0xE5A83B);
-
-    static boolean isLink(FlowDiagram.Box b) {
-        return b.note != null && b.note.startsWith(LINK);
-    }
-
-    /**
-     * A link box (one per class and tab): the class from the code (click its methods to see their code), with
-     * "⇄ in “the other tab”" under its name, framed in the other tab's color.
-     */
-    private FlowDiagram.Box linkBox(BoxCopy cls, String tab, String colorOf, double x, double y) {
-        String mark = LINK + "“" + tab + "”";
-        for (FlowDiagram.Box b : diagram.boxes) if (isLink(b) && b.name.equals(cls.name()) && mark.equals(b.note)) return b;
-        FlowDiagram.Box box = cls.unknown() ? diagram.addUnknownClass(cls.name(), cls.fileName(), x, y)
-                : diagram.addKnownClass(cls.fileUrl(), cls.fileName(), cls.projectName(), cls.origClass(), null, x, y);
-        box.note = mark;
-        box.moved = true; // not "added": it is a class of the other tab
-        // always the link orange (on both sides): a tab's own color can be the selection blue, which hides it
-        box.border = LINK_COLOR;
-        return box;
-    }
-
-    private FlowDiagram.Method linkMethod(FlowDiagram.Box box, MethodCopy m) {
-        for (FlowDiagram.Method x : box.methods) if (x.name.equals(m.name())) return x;
-        FlowDiagram.Method made = m.unknown() || m.lines().isEmpty() || box.isUnknown() ? diagram.addUnknownMethod(box, m.name())
-                : diagram.addKnownMethod(box, m.name(), m.lines());
-        made.moved = true;
-        return made;
-    }
-
-    /** Here: each moved class becomes a link box in its place, connected as the class was. */
-    private void leaveLinkBoxes(Clip clip, List<Outside> across, String otherTab) {
-        for (Outside o : across) {
-            BoxCopy moved = clip.boxes().get(o.box());
-            FlowDiagram.Box box = linkBox(moved, otherTab, flowName, moved.x(), moved.y());
-            FlowDiagram.Method lm = linkMethod(box, moved.methods().get(o.method()));
-            FlowDiagram.Method stay = realMethod(o.otherClass(), o.otherMethod());
-            if (stay == null) continue;
-            if (o.outgoing()) connect(lm, stay, o.look());
-            else connect(stay, lm, o.look());
-        }
-        changed("Link to the tab " + otherTab);
-    }
-
-    /** There: the classes of the other tab that call (or are called by) the moved ones, as link boxes around them. */
-    void receiveLinkBoxes(Clip clip, List<Outside> across, String otherTab, List<FlowDiagram.Box> pasted) {
-        double left = Double.MAX_VALUE, right = 0, top = Double.MAX_VALUE;
-        for (FlowDiagram.Box b : pasted) {
-            left = Math.min(left, b.x);
-            right = Math.max(right, b.x + painter.width(b));
-            top = Math.min(top, b.y);
-        }
-        int callers = 0, called = 0;
-        for (Outside o : across) {
-            FlowDiagram.Method here = realMethod(clip.boxes().get(o.box()).name(), clip.boxes().get(o.box()).methods().get(o.method()).name());
-            if (here == null) continue;
-            boolean callsIn = !o.outgoing(); // the other class calls the moved one: it goes before it
-            FlowDiagram.Box existing = null;
-            for (FlowDiagram.Box b : diagram.boxes) if (isLink(b) && b.name.equals(o.otherClass())) existing = b;
-            double x = callsIn ? Math.max(40, left - 360) : right + 120;
-            double y = top + (callsIn ? callers : called) * 150;
-            FlowDiagram.Box box = existing != null ? existing : linkBox(o.other(), otherTab, otherTab, x, y);
-            if (existing == null) {
-                if (callsIn) callers++;
-                else called++;
-            }
-            FlowDiagram.Method lm = linkMethod(box, o.otherM());
-            if (callsIn) connect(lm, here, o.look());
-            else connect(here, lm, o.look());
-        }
-        changed("Link to the tab " + otherTab);
-    }
-
-    /** A new tab: callers on the left, the moved classes, then what they call (call order, left to right). */
-    void layOutAround(List<FlowDiagram.Box> pasted) {
-        diagram.autoLayout(painter.measure(), 180, 50, 40); // wide gaps: the arrows' notes fit between the boxes
-        changed("Auto layout");
-    }
-
-    /** Every class but the link boxes (to combine tabs). */
-    Clip copyReal() {
-        List<FlowDiagram.Box> real = new ArrayList<>();
-        for (FlowDiagram.Box b : diagram.boxes) if (!isLink(b)) real.add(b);
-        return copyOf(real);
-    }
-
-    /** The calls through link boxes, as the real classes are named (a link box has its class's name), with their looks. */
-    List<NamedCall> linkCalls() {
-        List<NamedCall> out = new ArrayList<>();
-        for (FlowDiagram.Link l : diagram.links) {
-            FlowDiagram.Box fb = diagram.boxOf(l.from()), tb = diagram.boxOf(l.to());
-            FlowDiagram.Method fm = diagram.method(l.from()), tm = diagram.method(l.to());
-            if (fb == null || tb == null || fm == null || tm == null || !(isLink(fb) || isLink(tb))) continue;
-            out.add(new NamedCall(fb.name, fm.name, tb.name, tm.name, lookOf(l)));
-        }
-        return out;
+        target.pickOnly(sent.pasted());
+        target.changed((move ? "Moved from " : "Copied from ") + flowName + " (" + classes + ")");
+        target.say((move ? "Moved " : "Copied ") + classes + " from “" + flowName + "”"
+                + (sent.across().isEmpty() ? "." : ", with link boxes for the calls to its classes."));
+        if (move && host != null && !sent.across().isEmpty()) host.combine(this, target);
     }
 
     /** Where a class moved here stood in the tab it came from (null when it wasn't moved here). */
     @Nullable double[] homeOf(String className) {
-        return homes.get(className);
-    }
-
-    /** Connects two real classes' methods by name (the calls of combined tabs), with the call's look. */
-    void connectByName(NamedCall c) {
-        connect(realMethod(c.fromClass(), c.fromMethod()), realMethod(c.toClass(), c.toMethod()), c.look());
+        return tabs.homeOf(className);
     }
 
     void changedAfterCombine(String label) {
@@ -1305,38 +1440,15 @@ public final class FlowDiagramDialog {
     }
 
     /**
-     * This tab shows two tabs combined: the first one's classes as they are, the second one's where they stood
-     * before they were moved there (else under the first one's), and the calls between them, with their notes.
+     * This tab shows two tabs combined (see {@link FlowDiagramTabs#combine}), then the calls the code really makes
+     * between their classes are drawn and it is laid out again.
      */
     void combineFrom(FlowDiagramDialog a, FlowDiagramDialog b) {
-        if (!a.homes.isEmpty() && b.homes.isEmpty()) { // b is where the classes came from: its layout is the base
-            FlowDiagramDialog t = a;
-            a = b;
-            b = t;
-        }
-        List<FlowDiagram.Box> first = paste(a.copyReal(), "From " + a.flowName(), Place.AS_THEY_WERE);
-        double below = 40;
-        for (FlowDiagram.Box x : first) below = Math.max(below, x.y + painter.height(x) + 120);
-        Clip second = b.copyReal();
-        double minY = Double.MAX_VALUE;
-        for (BoxCopy c : second.boxes()) if (b.homeOf(c.name()) == null) minY = Math.min(minY, c.y());
-        List<BoxCopy> placed = new ArrayList<>();
-        for (BoxCopy c : second.boxes()) {
-            double[] home = b.homeOf(c.name());
-            double x = home != null ? home[0] : c.x(), y = home != null ? home[1] : below + (c.y() - minY);
-            placed.add(new BoxCopy(c.name(), c.fileUrl(), c.fileName(), c.projectName(), c.origClass(), c.unknown(), x, y,
-                    c.methods(), c.look()));
-        }
-        List<FlowDiagram.Box> back = paste(new Clip(placed, second.links(), second.outside()), "From " + b.flowName(), Place.AS_THEY_WERE);
-        for (FlowDiagram.Box x : back) if (b.homeOf(x.name) != null) x.border = null; // back in place: no "moved" frame
-        List<NamedCall> calls = new ArrayList<>(a.linkCalls());
-        calls.addAll(b.linkCalls());
-        for (NamedCall c : calls) connectByName(c); // their notes and styles, where the code makes the call
+        tabs.combine(a.tabs, a.flowName(), b.tabs, b.flowName());
         multi.clear();
-        diagram.autoLayout(painter.measure(), 180, 50, 40);
         changed("Connect " + a.flowName() + " and " + b.flowName());
         connectFromCode(() -> {
-            diagram.autoLayout(painter.measure(), 180, 50, 40);
+            tabs.layOut();
             changed("Auto layout");
         });
     }
@@ -1349,7 +1461,7 @@ public final class FlowDiagramDialog {
         List<FlowEntry> all = new ArrayList<>();
         java.util.Map<String, FlowDiagram.Method> byKey = new java.util.HashMap<>();
         for (FlowDiagram.Box b : diagram.boxes) {
-            if (isLink(b)) continue;
+            if (FlowDiagramTabs.isLink(b)) continue;
             for (FlowDiagram.Method m : b.methods) {
                 for (FlowEntry e : methodEntries(m)) {
                     all.add(e);
@@ -1365,7 +1477,7 @@ public final class FlowDiagramDialog {
         FlowSync.callsFor(project, List.of(all), found -> {
             if (isDisposed()) return;
             int n = 0;
-            CallLook code = new CallLook("", FlowDiagram.NoteStyle.DEFAULT, FlowDiagram.Line.DEFAULT, false);
+            FlowDiagramTabs.CallLook code = new FlowDiagramTabs.CallLook("", FlowDiagram.NoteStyle.DEFAULT, FlowDiagram.Line.DEFAULT, false);
             for (String link : found.get(0).links()) {
                 String[] ends = link.split(" -> ", 2);
                 if (ends.length < 2) continue;
@@ -1374,7 +1486,7 @@ public final class FlowDiagramDialog {
                 boolean there = false;
                 for (FlowDiagram.Link l : diagram.links) there |= l.from().equals(from.id) && l.to().equals(to.id);
                 if (!there) {
-                    connect(from, to, code);
+                    tabs.connect(from, to, code);
                     n++;
                 }
             }
@@ -1387,7 +1499,6 @@ public final class FlowDiagramDialog {
     private void sendToNewTab(boolean move) {
         List<FlowDiagram.Box> boxes = pickedBoxes();
         if (boxes.isEmpty() || host == null) return;
-        Clip clip = copyOf(boxes);
         String name = store.uniqueName(flowName + " – " + (boxes.size() == 1 ? boxes.get(0).name : boxes.size() + " classes"));
         FlowDiagramHost h = host;
         String from = flowName;
@@ -1784,9 +1895,14 @@ public final class FlowDiagramDialog {
         changed("Connect " + label(from) + " → " + label(to));
     }
 
+    /** Auto Layout: the classes in call order, and every line (and note) back to finding its own way. */
     private void autoLayout() {
+        int byHand = diagram.routes.size() + diagram.notePlaces.size();
+        diagram.routes.clear();
+        diagram.notePlaces.clear();
         painter.autoLayout(diagram);
         changed("Auto layout");
+        if (byHand > 0) say("Auto Layout: lines and notes moved by hand find their own way again (Undo brings them back).");
     }
 
     // ---------- copy as PNG ----------
@@ -1837,6 +1953,13 @@ public final class FlowDiagramDialog {
                         () -> look.getDiagramBackground() == FlowLook.Background.LIGHT, () -> look.setDiagramBackground(FlowLook.Background.LIGHT)),
                 new FlowSettingsPopup.Choice(FlowTheme.ICON_DARK, "Dark Background", null,
                         () -> look.getDiagramBackground() == FlowLook.Background.DARK, () -> look.setDiagramBackground(FlowLook.Background.DARK))));
+        sections.put("DRAGGING LINES", List.of(
+                new FlowSettingsPopup.Choice(FlowTheme.ICON_CONNECT, "Keep Lines Off the Classes",
+                        "A dragged line goes to the nearest free place: it never runs across a class.",
+                        () -> !look.isLinesOverBoxes(), () -> look.setLinesOverBoxes(false)),
+                new FlowSettingsPopup.Choice(FlowTheme.ICON_CONNECT, "Let Lines Cross the Classes",
+                        "A dragged line goes exactly where you drop it, over classes too.",
+                        look::isLinesOverBoxes, () -> look.setLinesOverBoxes(true))));
         FlowSettingsPopup.showChoices(under, "Flow Diagram Settings", sections,
                 "Remembered for all projects. The Dark / Light switch in the drawing area's corner flips the window's background.", false);
     }
@@ -2059,6 +2182,14 @@ public final class FlowDiagramDialog {
         private @Nullable Point2D draftTo;
         /** While the view is dragged: where the mouse started (on screen) and the view position then. */
         private @Nullable Point panFrom, panView;
+        /** While a line is dragged: the call, its lanes, the lane moved, and its route before (null: routed by itself). */
+        private @Nullable FlowDiagram.Link dragLink;
+        private List<Double> dragLanes = List.of();
+        private int dragLane = -1;
+        private @Nullable List<Double> routeBefore;
+        /** While a note is dragged along its line: the call, and where the note was before (null: its own place). */
+        private @Nullable FlowDiagram.Link dragNote;
+        private @Nullable Double noteBefore;
 
         Canvas() {
             setFocusable(true);
@@ -2067,6 +2198,7 @@ public final class FlowDiagramDialog {
                 @Override public void mousePressed(MouseEvent e) { pressed(e); }
                 @Override public void mouseDragged(MouseEvent e) { dragged(e); }
                 @Override public void mouseReleased(MouseEvent e) { released(e); }
+                @Override public void mouseMoved(MouseEvent e) { hover(e); }
             };
             addMouseListener(mouse);
             addMouseMotionListener(mouse);
@@ -2098,6 +2230,7 @@ public final class FlowDiagramDialog {
             if (e.isPopupTrigger()) { menu(e, hit, p); return; }
             if (SwingUtilities.isMiddleMouseButton(e)) { startPan(e); return; } // the middle button pans anywhere
             if (!SwingUtilities.isLeftMouseButton(e)) return;
+            if (e.getClickCount() == 1 && tool == Tool.SELECT) waysOnClick(hit); // its ways, as a bar (empty space: the bar goes)
 
             if (e.getClickCount() == 2 && tool == Tool.SELECT) {
                 FlowDiagram.Box box = hit.box();
@@ -2134,7 +2267,22 @@ public final class FlowDiagramDialog {
                 return;
             }
             multi.clear();
+            FlowDiagram.Link picked = selection.link();
+            if (hit.box() == null && picked != null && diagram.links.contains(picked)
+                    && painter.laneAt(diagram, picked, painter.lanesOf(diagram, picked), p) >= 0) {
+                hit = new FlowDiagramPainter.Hit(null, null, picked); // the selected line, not one running close by
+            }
             select(hit.box(), hit.method(), hit.link());
+            if (hit.box() == null && hit.link() != null) {
+                Rectangle2D note = painter.callNoteBounds(diagram, hit.link());
+                if (note != null && note.contains(p)) { // a note: it slides along its own line
+                    dragNote = hit.link();
+                    noteBefore = diagram.notePlace(dragNote);
+                    setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
+                    return;
+                }
+                if (startLineDrag(hit.link(), p)) return;
+            }
             if (hit.box() != null) {
                 dragBox = hit.box();
                 dragDx = p.getX() - dragBox.x;
@@ -2166,9 +2314,59 @@ public final class FlowDiagramDialog {
             viewport.setViewPosition(new Point(x, y));
         }
 
+        /**
+         * Pressed on a call's line (not on its note): its middle pieces can be dragged, a horizontal one up or down, a
+         * vertical one left or right; the line keeps that way from then on (right-click → Reset Line Route).
+         */
+        private boolean startLineDrag(FlowDiagram.Link link, Point2D p) {
+            Rectangle2D note = painter.callNoteBounds(diagram, link);
+            if (note != null && note.contains(p)) return false;
+            List<Double> lanes = painter.lanesOf(diagram, link);
+            int k = painter.laneAt(diagram, link, lanes, p);
+            if (k < 0) return false;
+            dragLink = link;
+            dragLanes = new ArrayList<>(lanes);
+            dragLane = k;
+            routeBefore = diagram.route(link);
+            setCursor(Cursor.getPredefinedCursor(k % 2 == 0 ? Cursor.E_RESIZE_CURSOR : Cursor.N_RESIZE_CURSOR));
+            return true;
+        }
+
+        /** Over a line's middle piece: the cursor shows it can be dragged. */
+        private void hover(MouseEvent e) {
+            if (tool != Tool.SELECT || dragBox != null || dragLink != null || panFrom != null) return;
+            Point2D p = at(e);
+            FlowDiagramPainter.Hit hit = painter.hit(diagram, p);
+            int cursor = Cursor.DEFAULT_CURSOR;
+            if (hit.box() == null && hit.link() != null) {
+                Rectangle2D note = painter.callNoteBounds(diagram, hit.link());
+                if (note == null || !note.contains(p)) {
+                    int k = painter.laneAt(diagram, hit.link(), painter.lanesOf(diagram, hit.link()), p);
+                    if (k >= 0) cursor = k % 2 == 0 ? Cursor.E_RESIZE_CURSOR : Cursor.N_RESIZE_CURSOR;
+                }
+            }
+            if (getCursor().getType() != cursor) setCursor(Cursor.getPredefinedCursor(cursor));
+        }
+
         private void dragged(MouseEvent e) {
             if (panFrom != null) { pan(e); return; }
             Point2D p = at(e);
+            if (dragNote != null) {
+                diagram.setNotePlace(dragNote, painter.nearestAlong(diagram, dragNote, p));
+                repaint();
+                return;
+            }
+            if (dragLink != null) {
+                // never through a class: the nearest free place to where the mouse is
+                Double v = painter.clearLane(diagram, dragLink, dragLanes, dragLane, Math.max(0, dragLane % 2 == 0 ? p.getX() : p.getY()));
+                if (v != null) {
+                    dragLanes.set(dragLane, v);
+                    diagram.setRoute(dragLink, dragLanes);
+                    revalidate();
+                    repaint();
+                }
+                return;
+            }
             if (dragBox != null) {
                 dragBox.x = Math.max(0, p.getX() - dragDx);
                 dragBox.y = Math.max(0, p.getY() - dragDy);
@@ -2188,6 +2386,25 @@ public final class FlowDiagramDialog {
                 return;
             }
             Point2D p = at(e);
+            if (dragNote != null) {
+                FlowDiagram.Link moved = dragNote;
+                dragNote = null;
+                setCursor(Cursor.getDefaultCursor());
+                if (!java.util.Objects.equals(diagram.notePlace(moved), noteBefore)) changed("Move note");
+                return;
+            }
+            if (dragLink != null) {
+                FlowDiagram.Link moved = dragLink;
+                dragLink = null;
+                setCursor(Cursor.getDefaultCursor());
+                List<Double> now = diagram.route(moved);
+                if (now != null && !now.equals(routeBefore)) {
+                    FlowDiagram.Method from = diagram.method(moved.from()), to = diagram.method(moved.to());
+                    changed("Move line " + label(from) + " → " + label(to));
+                    say("The line keeps this way. Right-click it → Reset Line Route to let it find its own again.");
+                }
+                return;
+            }
             if (e.isPopupTrigger()) { menu(e, painter.hit(diagram, p), p); return; }
             if (dragBox != null) {
                 FlowDiagram.Box moved = dragBox;
@@ -2210,6 +2427,16 @@ public final class FlowDiagramDialog {
             if (hit.link() != null) {
                 select(null, null, hit.link());
                 item(menu, "Format Line…", FlowTheme.ICON_FORMAT, FlowDiagramDialog.this::formatSelection);
+                FlowDiagram.Link link = hit.link();
+                JMenuItem reset = item(menu, "Reset Line Route", FlowTheme.ICON_LAYOUT, () -> {
+                    diagram.setRoute(link, null);
+                    diagram.setNotePlace(link, null);
+                    changed("Reset line route");
+                    repaint();
+                });
+                reset.setEnabled(diagram.route(link) != null || diagram.notePlace(link) != null);
+                reset.setToolTipText(diagram.route(link) != null ? "Let the line find its own way again"
+                        : "Drag the line to give it a way of your own");
                 JMenuItem remove = item(menu, "Delete Call", FlowTheme.ICON_DELETE, FlowDiagramDialog.this::deleteSelection);
                 remove.setEnabled(hit.link().manual());
                 if (!hit.link().manual()) remove.setToolTipText("Found in the code");
@@ -2284,13 +2511,25 @@ public final class FlowDiagramDialog {
         private javax.swing.JMenu tagMenu(FlowDiagram.Method m) {
             javax.swing.JMenu tags = new javax.swing.JMenu("Tag");
             tags.setIcon(FlowTheme.ICON_TAG);
+            tags.setBorder(JBUI.Borders.empty(5, 8, 5, 14));
+            tags.setIconTextGap(JBUI.scale(8));
+            tags.getPopupMenu().setBorder(JBUI.Borders.empty(4, 2));
+            // each tag: a ✔ for the method's tag, the tag's mark and name in its color, room around it
             for (FlowTag t : FlowTag.values()) {
-                JMenuItem it = new javax.swing.JCheckBoxMenuItem(t.emoji + "  " + t.label, t.id.equals(m.tag));
+                boolean on = t.id.equals(m.tag);
+                JMenuItem it = new JMenuItem("<html>" + t.emoji + "&nbsp;&nbsp;" + (on ? "<b>" + t.label + "</b>" : t.label) + "</html>",
+                        on ? AllIcons.Actions.Checked : com.intellij.util.ui.EmptyIcon.ICON_16);
+                it.setForeground(t.fg);
+                it.setIconTextGap(JBUI.scale(8));
+                it.setBorder(JBUI.Borders.empty(7, 10, 7, 18));
+                it.setToolTipText(on ? "The method's tag" : "Tag every line of the method " + t.label + " (on Save)");
                 it.addActionListener(ev -> tagMethod(m, t.id));
                 tags.add(it);
             }
             tags.addSeparator();
-            JMenuItem none = new JMenuItem("No Tag");
+            JMenuItem none = new JMenuItem("No Tag", m.tag.isEmpty() ? AllIcons.Actions.Checked : com.intellij.util.ui.EmptyIcon.ICON_16);
+            none.setIconTextGap(JBUI.scale(8));
+            none.setBorder(JBUI.Borders.empty(7, 10, 7, 18));
             none.setEnabled(!m.tag.isEmpty());
             none.addActionListener(ev -> tagMethod(m, ""));
             tags.add(none);
@@ -2345,6 +2584,19 @@ public final class FlowDiagramDialog {
                 }
                 g.scale(zoom(), zoom());
                 painter.paint(g, diagram, palette, selection);
+                FlowDiagram.Link line = selection.link();
+                if (line != null && tool == Tool.SELECT && diagram.links.contains(line)) { // handles to drag it by
+                    java.awt.Stroke was = g.getStroke();
+                    g.setStroke(new java.awt.BasicStroke(1.6f));
+                    for (Point2D h : painter.laneHandles(diagram, line)) {
+                        java.awt.geom.Ellipse2D dot = new java.awt.geom.Ellipse2D.Double(h.getX() - 5, h.getY() - 5, 10, 10);
+                        g.setColor(palette.background());
+                        g.fill(dot);
+                        g.setColor(palette.selection());
+                        g.draw(dot);
+                    }
+                    g.setStroke(was);
+                }
                 if (!multi.isEmpty()) { // the classes picked with Ctrl+click
                     g.setColor(palette.selection());
                     g.setStroke(new java.awt.BasicStroke(2f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND, 10,

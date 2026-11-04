@@ -37,7 +37,7 @@ final class FlowInfoDialog extends DialogWrapper {
         text.setBorder(JBUI.Borders.empty(4, 8));
         text.setCaretPosition(0);
 
-        JBScrollPane scroll = new JBScrollPane(text);
+        JBScrollPane scroll = FlowScroll.wheel(new JBScrollPane(text));
         scroll.setBorder(JBUI.Borders.empty());
         scroll.setPreferredSize(new Dimension(JBUI.scale(580), JBUI.scale(400)));
 
@@ -200,6 +200,13 @@ final class FlowInfoDialog extends DialogWrapper {
                 + "<li><b>Connect the Flow to…</b> (right-click a method): pick another method; the calls between them are "
                 + "read from the code and added, with their classes (e.g. main() → bookTrip(), both lines that call "
                 + "getDestination() → getDestination()), laid out left to right.</li>"
+                + "<li><b>Several ways</b>: the ways panel over the diagram lists them; hover one to preview it on the tab, "
+                + "click it to add it. Minimize it to a bar, drag it, or open it <b>Full Screen</b> (Choose a Way): there "
+                + "too a hovered way is previewed, and a clicked one stays previewed. Ways already on the tab are left out.</li>"
+                + "<li><b>Drag a line</b>: select a call and drag one of its handles; below or above a box it goes around "
+                + "it into the box's side. Drag a note along its line. Right-click → <b>Reset Line Route</b>. Settings → "
+                + "Dragging Lines lets lines cross the classes. Lines keep apart where there is room.</li>"
+                + "<li><b>Find</b> (Ctrl+F, or the search button before the zoom buttons): a class or method by name.</li>"
                 + "<li><b>Code panel</b>: click a method to see its lines of code under the diagram, with syntax colors and "
                 + "the rest of the file folded. <b>View Full Code</b> shows the whole file at that method. Hover a line "
                 + "number: <b>+</b> adds the line, <b>−</b> takes a flow line out (not one that makes a call drawn to another "
@@ -260,11 +267,34 @@ final class FlowInfoDialog extends DialogWrapper {
                 + "Delete, Delete Flows, export and import. Right-click the list to rename a flow (F2), <b>Name This "
                 + "Line…</b>, or move, export, import and delete a flow. Selecting a flow here selects it in the Flow tab. "
                 + "<b>Delete</b> on selected flows deletes them in both screens (at once when empty, else after asking).</li>"
+                + "<li>Hover a field's icon and click it to <b>bookmark</b> it (it goes to the top of its object, also in "
+                + "Stop at Value). Click a line in the list to see all its values together.</li>"
                 + "<li><b>Settings</b> (the gear) holds the Layout and Capture Data's options. The tab has the Flow tab's "
                 + "look. In the Compare window, <b>Open File…</b> puts a file on a side and <b>Export…</b> saves a side or "
                 + "the differences; comparing pasted data shows the result in the same window (<b>Back to Edit</b> "
                 + "returns).</li></ul>"
 
+                + section(accent, "Stop at Value")
+                + "<ul><li><b>Add Stop at Value</b> (Ctrl+N): the values to look for (several, each on or off; any or all "
+                + "of them; a /regex/ too) and where to look: <b>anywhere in the project's code</b> (no breakpoints: the "
+                + "fields are watched, fast), at the flow's lines, wherever the debugger stops, or stepping from where it "
+                + "is paused. Start the app in Debug; a record waits for it (<i>Waiting for Debug…</i>).</li>"
+                + "<li><b>Watch a Field or Object</b> (▾ of Add): <code>BookingDto.status</code>, a class, "
+                + "<code>BookingWorkflow.book()</code> (pick one of its variables or <b>return</b>), "
+                + "<code>book().booking</code>, <code>book().booking.getEmail()</code>. Stop when it is set, changes, "
+                + "becomes null or holds a value; optionally when the object's data changes. In the editor: right-click "
+                + "→ TraceWeave → Watch….</li>"
+                + "<li>The <b>stops</b>: when, where, thread and what was found; filter by text, thread or file, newest "
+                + "or oldest first. The <b>variables at a stop</b> as a Tree or JSON, with bookmarks. <b>To Debug Data</b> "
+                + "(Ctrl+Shift+D) copies stops into the active flow. Deleted records and stops go to the <b>Recycle "
+                + "Bin</b>.</li>"
+                + "<li>Keys: Space starts or stops a record, Enter edits, F2 renames, Delete deletes.</li></ul>"
+                + section(accent, "Hide Internals")
+                + "<ul><li>On by default in Debug Data, Compare, Compare Pasted Data and Stop at Value: a String saved "
+                + "as its bytes (value, coder, hash) shows as its text; an enum as its name; BigDecimal, ArrayList and "
+                + "Kotlin lazy values as what they hold; compiler and framework fields (this$0, $outer, x$delegate, "
+                + "metaClass, modCount…), .NET's $id / $type / $ref and Python and JavaScript's __dunder__ names are "
+                + "left out. The saved data isn't changed.</li></ul>"
                 + section(accent, "Walk-through")
                 + "<ul><li><b>Next Step / Previous Step</b> (toolbar, or <b>Alt+]</b> / <b>Alt+[</b> anywhere) open "
                 + "each saved line in the editor in turn, with the step number, method, tag and note in a hint.</li>"

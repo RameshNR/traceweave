@@ -1,13 +1,10 @@
 # TraceWeave - Code Flow Tracker
 
 
-
 NOTE: `.\gradlew.bat runIdeLocal` and `verifyPlugin` use your installed IntelliJ IDEA: set its path in `build.gradle.kts` first (see [Find your IntelliJ IDEA installation path](#find-your-intellij-idea-installation-path)). Building and testing need no installed IDE.
 
 
-
 ## Overview
-
 
 
 TraceWeave - Code Flow Tracker is an IntelliJ IDEA plugin by **RameshNR** for following a code path through a Java, Kotlin or Java web project (JSP, JavaScript, TLD and more). While you read code, you click the lines that matter (or let the debugger record them). TraceWeave collects them in a side panel (grouped by file and method, or as one flat sequence), keeps them in **call order** automatically, and copies the whole flow as text, a compact log or a Markdown document. The **Flow Diagram** shows the flow as boxes and arrows you can edit, format and copy as an image. Flows have names, can be exported as `.flow.json` files to share with your team, and can be replayed step by step in the editor.
@@ -17,13 +14,10 @@ It works in **IntelliJ IDEA 2023.1 and every later version** (see [Compatibility
 ![Grouped View](src/main/resources/images/traceweave-grouped-view.png)
 
 
-
 # Prerequisites
 
 
-
 Make sure you have the following installed:
-
 
 
 - **IntelliJ IDEA 2023.1 or newer** to use the plugin (build `231+`, Community/OSS or Ultimate)
@@ -39,13 +33,11 @@ Make sure you have the following installed:
 | Java (plugin code) | 17 (what IntelliJ IDEA 2023.x runs on) | `build.gradle.kts` → `java.toolchain` |
 | Gradle | 9.6.0 | `gradle/wrapper/gradle-wrapper.properties` |
 | IntelliJ Platform Gradle Plugin | 2.19.0 | `build.gradle.kts` → `plugins` |
-| Plugin version | 1.3.0 | `build.gradle.kts` → `version` |
+| Plugin version | 1.4.0 | `build.gradle.kts` → `version` |
 | Plugin ID | `io.github.rameshnr.flowtracker` (kept from Flow Tracker; never change it once published) | `plugin.xml` → `<id>` |
 
 
-
 ## Installation
-
 
 
 **Just use the plugin:** download `traceweave-code-flow-tracker-<version>.zip` from the [latest release](https://github.com/RameshNR/traceweave/releases/latest) (don't unzip it), then in IntelliJ IDEA 2023.1 or later go to **Settings → Plugins → ⚙️ → Install Plugin from Disk…**, pick the zip and restart the IDE.
@@ -69,9 +61,7 @@ Make sure you have the following installed:
 To build the installable plugin instead, see [Build the plugin](#build-the-plugin).
 
 
-
 ## Find your IntelliJ IDEA installation path
-
 
 
 `runIdeLocal` and `verifyPlugin` use the IntelliJ IDEA installed on your machine (the build itself compiles against IntelliJ IDEA 2023.1, which Gradle downloads). The `localPath` / `local("...")` paths in `build.gradle.kts` must point to the **installation folder**: the folder that contains `product-info.json` and the `bin` and `lib` folders.
@@ -116,9 +106,7 @@ Each line shows a version and its folder. Pick the version you use.
 Check the folder: it must contain `product-info.json`. Write the path in `build.gradle.kts` with forward slashes `/`.
 
 
-
 ## Build the plugin
-
 
 
 ```shell
@@ -128,21 +116,19 @@ Check the folder: it must contain `product-info.json`. Write the path in `build.
 The installable plugin is written to:
 
 ```
-build\distributions\traceweave-code-flow-tracker-1.3.2.zip
+build\distributions\traceweave-code-flow-tracker-1.4.0.zip
 ```
 
 Install it in IntelliJ IDEA:
 
 - **Settings** → **Plugins** → ⚙️ → **Install Plugin from Disk…**
-- Select `build\distributions\traceweave-code-flow-tracker-1.3.2.zip`
+- Select `build\distributions\traceweave-code-flow-tracker-1.4.0.zip`
 - Restart the IDE when asked
 
-To release a new version, change `version = "1.3.0"` in `build.gradle.kts`, add its change notes in `plugin.xml`, and build again.
-
+To release a new version, change `version = "1.4.0"` in `build.gradle.kts`, add its change notes in `plugin.xml`, and build again.
 
 
 ## Commands
-
 
 
 Open this README in IntelliJ IDEA and click the ▶ icon next to a block to run it in the terminal.
@@ -198,9 +184,7 @@ Stop Gradle background processes:
 On macOS/Linux use `./gradlew` instead of `.\gradlew.bat`.
 
 
-
 ## Compatibility
-
 
 
 TraceWeave works in **IntelliJ IDEA 2023.1 and all later versions** (Community/OSS and Ultimate), with one plugin and one plugin ID:
@@ -213,9 +197,7 @@ TraceWeave works in **IntelliJ IDEA 2023.1 and all later versions** (Community/O
 When you change the code, keep it that way: if `compileJava` fails on a class or method, the IDE added it after 2023.1, so add a fallback to `FlowCompat` instead of raising `sinceBuild`.
 
 
-
 ## Using TraceWeave
-
 
 
 **Adding and removing lines**
@@ -298,11 +280,68 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 - **Delete** removes the field selected on the right when you clicked there last (History → Revert puts it back). With values or lines selected on the left, it moves them to the Recycle Bin. With **flows** selected, it deletes the flows (here and in the Flow tab): at once when they have nothing in either screen, else after one confirmation that says what goes (Debug Data's values first, then the Flow tab's lines).
 - Keys (they work wherever the focus is in the tab, before the IDE's own shortcuts): **Delete** deletes (in the Recycle Bin: for good), **Ctrl+C** copies the selected values (on a field: its value), **Ctrl+V** pastes into a field, **Insert** adds a field, **F2** renames a flow or line in the list, or edits a field, **Ctrl+D** Compare, **Ctrl+F** Find.
 - **Delete** moves saved values to the tab's **Recycle Bin** (**← Back to Saved Values** leaves it): **Restore** brings them back, **Delete Permanently** removes them (the bin keeps the latest 200).
+- **Bookmarks**: hover a field's icon in the value tree and click it: the field goes to the top of its object (a blue bookmark), in every saved value of that type and in Stop at Value too. Click it again to put it back in its place.
+- **A line's values together**: click a line in the list (e.g. `BookingDto.java:28`) to see every value saved there at once (`this`, `reference`, `this.reference`), each under its name.
+- **Hide Internals** (the eye button, on by default): a String saved as its bytes shows as its text, and what other languages keep inside values goes too (see [Hide Internals](#hide-internals) below). The Compare window has the same button, and **Compare Pasted Data** a **Hide Internals** checkbox: the saved value and JSON pasted on either side are shown without them.
+- The value's buttons get shorter (icons only) and wrap when the pane is narrow; the field filter moves under them when there is no room beside them.
 - Saved values are kept per project in `.idea/workspace.xml`, grouped by flow and by line.
 
 ![Debug Data](src/main/resources/images/traceweave-debug-data.png)
 
 ![Compare window](src/main/resources/images/traceweave-compare.png)
+
+**Stop at Value (stop the debugger where a value shows up)**
+
+The **Stop at Value** tab stops the debugger on the line where a value you look for shows up, or where a field or a variable changes, in any thread or module, without breakpoints of your own. Start the app in **Debug**; a record added before that says *Waiting for Debug…* and starts by itself when the app runs.
+
+- **Add Stop at Value** (Ctrl+N, or Insert): give it a name (*Hunt 1* by default) and the values to look for, e.g. `BK-1044`. Several values: each is its own chip with a tick to switch it off and on; stop at **any of them**, or only where **all of them** are in the same stop. A `/regex/` works too. Pick where it looks:
+
+  | Where it looks | How |
+  |---|---|
+  | **Anywhere in the project's code** | No breakpoints: every field of the project's classes is watched. When code stores a value in one (a setter, a constructor, JSON read into an object…), it is looked at right there without stopping the app; the debugger stops only on the line that stores what you look for. Fast. |
+  | **At the flow's lines** | Its own breakpoints on every line of the active flow (they go when it ends). |
+  | **Wherever the debugger stops** | At your breakpoints and steps: where the values aren't, the debugger goes on by itself. |
+  | **Step from here, into the methods it calls** / **Step through this method only** | Line by line from where the debugger is paused, until the values show up. |
+
+  **Keep looking after a find** lists every stop (resume the debugger to go on). Several records can run at the same time.
+- **Watch a Field or Object** (the ▾ of Add): type what to watch, with suggestions as you type and a list to pick from:
+
+  | You type | It watches |
+  |---|---|
+  | `BookingDto.status` | One field of a class, in every object of it |
+  | `BookingDto` | Every field of the class (*All fields*) |
+  | `BookingWorkflow.book()` | Lists the method's parameters, local variables and **return**: pick one |
+  | `BookingWorkflow.book().booking` | The local variable `booking` in `book()`, on each line it is known on |
+  | `BookingWorkflow.book().booking.email` | A field inside the variable's object; `.getEmail()` and `.setEmail()` mean the same field, and deeper paths (`.traveller.name`) work |
+  | `BookingWorkflow.book().return` | What `book()` returns, each time it returns (`.return.getEmail()` too) |
+
+  Then when to stop: **whenever it is set**, **only when its value changes**, **when it is set to null**, or **when it is set to a value containing** some text. **Also stop when the object's data changes** watches the fields of the object it holds too (and of the objects inside it). Nothing is added to the Breakpoints list.
+- **From the editor**: right-click → **TraceWeave** → **Watch “BookingDto.status”** on a field, **Watch variable “booking” in book()** on a local variable or parameter, or **Stop at Value “BK-1044”** on a selected text or string.
+- **The records** are listed on the left with their state (*Looking… 42 checked · 1 stop*, *Waiting for Debug…*, *✔ 3 stops*). **Start** (green) / **Stop** (red), **Edit**, **Rename** (F2) and **Delete** are on the toolbar and in the right-click menu; Space starts or stops, Enter edits, Delete deletes.
+- **Stops**: every place it stopped, with **When**, **Where**, **Thread** and what was **Found** (e.g. `booking in book(): (not set) → BookingDto@7927`). Filter them by text, thread or file; **Newest first / Oldest first** (or click a column's header). Double-click (or Enter) opens the line.
+- **Variables at that stop**: the paused frame's variables as a **Tree** (like the debugger's Threads & Variables) or **JSON**. Hover a field's icon and click it to **bookmark** it: it goes to the top of its object, here and in Debug Data. **Hide Internals** (on by default) leaves out what the language puts inside values (see below).
+- **To Debug Data** (Ctrl+Shift+D) copies the selected stops' variables into Debug Data, in the active flow.
+- **Recycle Bin**: deleted records and stops go there; **Restore** puts them back, **Delete Forever** / **Empty Bin** remove them.
+- The buttons get shorter (icons only) and wrap when the tool window is narrow. Records and stops are saved per project in `.idea/workspace.xml`.
+
+![Stop at Value](src/main/resources/images/traceweave-stop-at-value.png)
+
+![Add Stop at Value](src/main/resources/images/traceweave-add-stop-at-value.png)
+
+![Watch a Field or Object](src/main/resources/images/traceweave-watch-field.png)
+
+<a id="hide-internals"></a>**Hide Internals (in Debug Data, Compare, Compare Pasted Data and Stop at Value)**
+
+Values often carry what a language or its tools keep inside them: a Java `String` saved as its bytes (`value = [66, 75, 45, …]`, `coder`, `hash`) instead of `"BK-1044"`. **Hide Internals** (on by default, one setting for every screen) shows the values without it; the saved data isn't changed, so turning it off shows everything again.
+
+| Language | Left out or shown simply |
+|---|---|
+| Java, Kotlin, Scala, Groovy | A String's `value` / `coder` / `hash` as its text; an enum's `{name, ordinal}` as its name; a BigDecimal's insides as its number (`125.50`); an ArrayList's `{elementData, size}` as its elements; a Kotlin `lazy` as its value. Fields a compiler or framework adds go: `this$0`, `val$x`, `$outer`, `bitmap$0`, `name$delegate`, `$$_hibernate_interceptor`, `CGLIB$…`, `metaClass`, `serialVersionUID`, `modCount`, `hibernateLazyInitializer`, `_class` |
+| .NET (Json.NET) | `$id`, `$type` and `$ref` go; `{"$id": …, "$values": […]}` is its list; `<Email>k__BackingField` is `Email` |
+| Python, JavaScript | `__dunder__` names, `__proto__`, `__typename` and jsonpickle's `py/…` keys go |
+
+A key with `$` in it counts as one of these (e.g. a pasted `"$schema"`): turn Hide Internals off to see it.
+
 
 **Flows (and sharing them)**
 
@@ -357,7 +396,7 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 | **Rename** (`F2`), **Delete** (`Delete`) | Rename or remove the selected class, method or call. |
 | **Format**, **Reset Theme** | Colors, text formats, notes and line styles (see below); Reset Theme gives everything the default look again. |
 | **Undo**, **Redo** (`Ctrl+Z` / `Ctrl+Y`) | Step through the History. |
-| **Auto Layout** | Arranges the classes in call order: every call goes from left to right (a class called directly and through another one is placed after that other one), with room between the boxes for the calls' notes. |
+| **Auto Layout** | Arranges the classes in call order: every call goes from left to right (a class called directly and through another one is placed after that other one), with room between the boxes for the calls' notes. Each box is lined up with the method row that calls it, so the arrows run straight across; lines dragged by hand find their own way again. |
 | **Copy PNG ▾**, **Copy Sequence PNG ▾**, **Settings** | At the right end: copy images, and the window's background settings. |
 
 The toolbar belongs to the selected tab and sits above the tabs.
@@ -384,6 +423,16 @@ The toolbar belongs to the selected tab and sits above the tabs.
 
 ![Connect the Flow](src/main/resources/images/traceweave-diagram-connect-flow.png)
 
+*Ways: when there is more than one way to connect*
+
+- When **Connect the Flow to…** finds several ways from one method to the other, the **ways panel** opens over the diagram: each way as a card with its steps. **Hover a way** to see it drawn on the tab (a preview); click it to add it. Ways already on the tab are left out (a filter shows *All*, *On the tab* or *New* ones) and they can be sorted.
+- **Minimize** the panel to a bar (a click opens it again; clicking elsewhere on the tab hides the bar), drag it anywhere on the tab, or **Full Screen**: the ways in a large window, **Connect the Flow: Choose a Way**.
+- In the large window, hovering a way previews it on the diagram behind the window too. A way you **click** stays previewed: move the mouse to another way to see that one, and out of the list to see the clicked one again. **Add** (or double-click) adds it.
+
+![Ways on the tab](src/main/resources/images/traceweave-ways-onscreen.png)
+
+![Choose a Way, full screen](src/main/resources/images/traceweave-ways-fullscreen.png)
+
 *Adding classes and methods*
 
 - **Add File** asks for a **file**: type at least **3 letters** of its name (a class name finds its file too) and the matching files are listed as you type, with their folder and project. Use `*` and `?` as wildcards for the whole name (`*Cruise*.java` finds `OdysseyCruiseProcessor.java`), or a regular expression between slashes: `/Book.*Service/`. When the file has several classes, the next window lists them to pick one (the one named like the file is preselected).
@@ -401,7 +450,10 @@ The toolbar belongs to the selected tab and sits above the tabs.
 *Moving around*
 
 - **Drag a box** to move it. Boxes never cover each other: when a box grows (a longer name, a note, more methods) or is dropped on another, the boxes around it move right or down to make room, and the box you just edited or moved stays put.
-- **Lines go around boxes**: a call whose line would run under another box takes a detour through the gaps between the boxes (rounded corners for curved lines, right angles for the others).
+- **Lines go around boxes**: a call whose line would run under another box takes a detour through the gaps between the boxes (rounded corners for curved lines, right angles for the others). Lines keep apart where there is room: two calls out of (or into) one method don't run along each other, they turn in the middle of the gaps, and each note sits on its own call's line, inside the drawing.
+- **Drag a line**: select a call and drag it; round **handles** mark the pieces that can be dragged, and the selected line is the one you grab even where another runs close by. A piece dragged below or above a box goes around it into the box's side; past the middle of a box it comes in from the right. Dropped lines snap to the nearest free place (Settings → **Dragging Lines** → *Let Lines Cross the Classes* drops them exactly where you let go). Drag a call's **note** along its line. Right-click a line → **Reset Line Route** lets it find its own way again; **Auto Layout** resets every dragged line.
+- **Find** (the search button before the zoom buttons, or **Ctrl+F**): type a class or method name; matches are listed and the view goes to the one you pick.
+- The diagram follows the flow: lines added in the TraceWeave window (or by Connect the Flow) show up in the open diagram right away.
 - **Drag an empty spot** (or drag with the middle mouse button anywhere) to move the view.
 - **Zoom**: the **−**, **100%** and **+** buttons in the bottom right corner zoom out, back to 100% and in (25%–300%). `Ctrl` + mouse wheel zooms around the mouse; `Ctrl+Plus`, `Ctrl+Minus` and `Ctrl+0` work too.
 - The **Dark / Light** switch in the top right corner flips the drawing area's background.
@@ -460,7 +512,7 @@ The toolbar belongs to the selected tab and sits above the tabs.
 *Images and settings*
 
 - **Copy PNG** copies the diagram as an image; **Copy Sequence PNG** copies its calls as a numbered sequence diagram image (participants, calls and returns). They paste into documents, chats and image editors, always at full size whatever the zoom. Each is a split button: click it for the default background, or its **▾** for **Copy with Light Background** / **Copy with Dark Background**.
-- **Settings** (the gear at the right end) sets the **default background of the copied images** (light or dark) and the **diagram window's background** (same as TraceWeave / the IntelliJ theme, light or dark). Its popup opens below the button, lined up with its right edge. Both settings are remembered for all projects.
+- **Settings** (the gear at the right end) sets the **default background of the copied images** (light or dark), the **diagram window's background** (same as TraceWeave / the IntelliJ theme, light or dark) and **Dragging Lines** (keep dragged lines off the classes, or let them cross). Its popup opens below the button, lined up with its right edge. Both settings are remembered for all projects.
 
 ![Copy Sequence PNG](src/main/resources/images/traceweave-diagram-sequence.png)
 
@@ -548,9 +600,7 @@ A Markdown copy with the sequence diagram, rendered in IntelliJ's Markdown previ
 Flows, settings and the Recycle Bin are saved per project in `.idea/workspace.xml`. Lines saved by version 1.0.0 open as **Flow 1**. The same help is in the plugin under **Settings ⚙️ → Info**.
 
 
-
 ## Screenshots
-
 
 
 The image carousel at the top of a plugin's page in **Settings → Plugins** comes from **JetBrains Marketplace**: it shows the screenshots uploaded on the plugin's Marketplace page (**Edit plugin → Media**). It can't be set in `plugin.xml`, and a plugin installed from disk shows no carousel. To get one:
@@ -595,15 +645,18 @@ These are the screenshots in `src/main/resources/images/`. To update one, replac
 | `traceweave-diagram-color-picker.png` | The color picker popup: Auto, suggested colors, the color grid, recent colors and `#RRGGBB` | README, Info |
 | `traceweave-diagram-format-line.png` | The Line window: pattern, width, shape, arrow and color with the preview | README, Info |
 | `traceweave-diagram-sequence.png` | An image made by Copy Sequence PNG: participants, numbered calls and returns | README, Info |
-| `traceweave-debug-data.png` | The Debug Data tab: the Flow button, the saved values by flow and line, and a value's fields | README, Overview tab, Info |
-| `traceweave-compare.png` | The Compare window: two values side by side, OLD / NEW, what differs marked | README, Overview tab, Info |
+| `traceweave-ways-onscreen.png` | The ways panel over the Flow Diagram: the ways Connect the Flow found, one previewed on the tab | README, Overview tab, Info |
+| `traceweave-ways-fullscreen.png` | **Connect the Flow: Choose a Way** in full screen, a way previewed on the diagram behind it | README, Info |
+| `traceweave-debug-data.png` | The Debug Data tab: the Flow button, the saved values by flow and line, a value's fields with Hide Internals | README, Overview tab, Info |
+| `traceweave-compare.png` | The Compare window: two values side by side, OLD / NEW, what differs marked, Hide Internals | README, Overview tab, Info |
+| `traceweave-stop-at-value.png` | The Stop at Value tab: the records, a record's stops and the variables at a stop | README, Overview tab, Info |
+| `traceweave-add-stop-at-value.png` | The Add Stop at Value window: the name, the values and where it looks | README, Info |
+| `traceweave-watch-field.png` | The Watch a Field or Object window: a method's variables to pick, and when to stop | README, Overview tab, Info |
 
 To add a screenshot, put the file in `src/main/resources/images/` and add it to this table, to the README section it belongs to, to `FlowCarousel.SLIDES` (the Info carousel) and, if it should be on the Overview tab, to `src/main/plugin-description.html`.
 
 
-
 ## Publish to JetBrains Marketplace
-
 
 
 The plugin passes the IntelliJ Platform Gradle plugin's checks for Marketplace (`.\gradlew.bat verifyPluginProjectConfiguration verifyPluginStructure`). Its ID is `io.github.rameshnr.flowtracker` (kept from Flow Tracker when it became TraceWeave): Marketplace doesn't accept `com.example` IDs, and an ID can't change after the first upload (Marketplace matches updates to a plugin by its ID).
@@ -632,9 +685,7 @@ The plugin passes the IntelliJ Platform Gradle plugin's checks for Marketplace (
    ```
 
 
-
 ## Project structure
-
 
 
 ```text
@@ -642,10 +693,13 @@ src/main/java/com/example/flowtracker/
 ├── model/     Data and settings: a saved line (FlowEntry), tags, the per-project store with flows, undo and the
 │              Recycle Bin (FlowStore), the IDE-wide look (FlowLook), .flow.json export / import (FlowTransfer),
 │              out-of-date checks (FlowCheck), project names (FlowProjects), and saved debug values
-│              (FlowSnapshot, FlowValue, FlowDebugStore) with their search (FlowValueSearch) and compare (FlowValueDiff)
+│              (FlowSnapshot, FlowValue, FlowDebugStore) with their search (FlowValueSearch) and compare (FlowValueDiff),
+│              how a value is shown (FlowValueShape: sort, filter, Hide Internals; FlowInternals: the languages' rules),
+│              and Stop at Value's records, stops, bookmarks and Recycle Bin (FlowHuntStore)
 ├── compat/    APIs that differ between the supported IntelliJ IDEA versions (FlowCompat)
-├── debug/     Debugger integration: Save to TraceWeave in the Variables view (FlowSaveValueAction) and reading
-│              debugger values a few levels deep (FlowValueReader)
+├── debug/     Debugger integration: Save to TraceWeave in the Variables view (FlowSaveValueAction), reading
+│              debugger values a few levels deep (FlowValueReader), and Stop at Value (FlowValueHunt) with its
+│              field watches (FlowFieldWatch) and method-variable watches (FlowLocalWatch)
 ├── code/      Understanding code: supported file types (FlowLang), class / method of a line (FlowCapture, and
 │              FlowOutline for JSP, JavaScript, TLD... read as text), call order (FlowSync) and the project search
 │              used by the Flow Diagram (FlowCodeSearch)
@@ -660,7 +714,9 @@ src/main/java/com/example/flowtracker/
 └── ui/        The tool window (FlowToolWindowFactory), toolbar and buttons (FlowToolbar, FlowButton), colors and
                icons (FlowTheme), the Flows and Settings popups (FlowMenuPopup, FlowSettingsPopup), Info with its
                screenshot carousel (FlowInfoDialog, FlowCarousel), the Recycle Bin (FlowRecycleBinDialog), and the
-               Debug Data tab (FlowDebugPanel) with its Compare window (FlowCompareDialog)
+               Debug Data tab (FlowDebugPanel) with its Compare window (FlowCompareDialog), the Stop at Value tab
+               (FlowHuntPanel, FlowWatchDialog, FlowHuntBinDialog), the variables tree (FlowJsonTree) and the
+               Connect the Flow ways (FlowWaysPanel, FlowWaysDialog, FlowWaysList)
 
 src/main/resources/
 ├── META-INF/  plugin.xml (actions, tool window, change notes) and the plugin icon
@@ -676,14 +732,12 @@ src/test/resources/fixtures/            Sample JSP, JavaScript and TLD files
 Classes used only inside their package stay package-private; what another package needs is `public`. The plugin's entry points in `plugin.xml` are `ui.FlowToolWindowFactory`, `editor.FlowEditorFactoryListener`, `editor.FlowAddAction`, `editor.FlowWalk$Next` / `$Previous` and `debug.FlowSaveValueAction` (in the debugger's `XDebugger.ValueGroup` menu).
 
 
-
 ## Tests
 
 
+`src/test` holds JUnit 5 tests for everything that doesn't need a running IDE: the Markdown diagrams and line tables, the Original Log, reading JSP / JavaScript / TLD files (with sample files in `src/test/resources/fixtures`), JSP → Java and JavaScript calls, the Recycle Bin and undo, flows and their order, copy formats, labels, file types and highlighting, and the Flow Diagram (building it from a flow, Save, the History, left-to-right layout without overlaps, lines around boxes, formats, themes and Reset Theme, and the PNG images, lines that keep apart, Auto Layout's alignment), Debug Data (saved values, compare, flows and their names, bookmarks), Hide Internals (Java, Kotlin, Scala, Groovy, .NET, Python and JavaScript values, as trees and as JSON) and Stop at Value (records, stops, the Recycle Bin).
 
-`src/test` holds JUnit 5 tests for everything that doesn't need a running IDE: the Markdown diagrams and line tables, the Original Log, reading JSP / JavaScript / TLD files (with sample files in `src/test/resources/fixtures`), JSP → Java and JavaScript calls, the Recycle Bin and undo, flows and their order, copy formats, labels, file types and highlighting, and the Flow Diagram (building it from a flow, Save, the History, left-to-right layout without overlaps, lines around boxes, formats, themes and Reset Theme, and the PNG images), Debug Data (saved values, compare, flows and their names).
-
-`FlowCallPathTest` runs IntelliJ's own Java parser (the IntelliJ test framework) on a small travel-booking project to check **Connect the Flow**: which calls it follows from a line, or from a whole method, to another method.
+`FlowCallPathTest` runs IntelliJ's own Java parser (the IntelliJ test framework) on a small travel-booking project to check **Connect the Flow**: which calls it follows from a line, or from a whole method, to another method. `FlowHuntTargetTest` does the same for **Watch a Field or Object**: what `BookingDto.status`, `BookingWorkflow.book()`, `book().booking.getEmail()` or `book().return` watch.
 
 ```shell
 .\gradlew.bat test
@@ -692,17 +746,13 @@ Classes used only inside their package stay package-private; what another packag
 The report is written to `build\reports\tests\test\index.html`.
 
 
-
 ## License
-
 
 
 [MIT](LICENSE) © 2026 RameshNR.
 
 
-
 ## Troubleshooting
-
 
 
 | Problem | Fix |

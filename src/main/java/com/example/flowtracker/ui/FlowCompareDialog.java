@@ -81,11 +81,17 @@ public final class FlowCompareDialog {
     /** The editable texts of the JSON and Text views, and what they showed (to see what was edited). */
     private final java.util.Map<String, com.intellij.diff.contents.DocumentContent[]> docs = new java.util.HashMap<>();
     private final java.util.Map<String, String[]> shownTexts = new java.util.HashMap<>();
-    private final javax.swing.JButton undo = new javax.swing.JButton("Undo");
-    private final javax.swing.JButton redo = new javax.swing.JButton("Redo");
-    private final javax.swing.JButton history = new javax.swing.JButton("History");
-    private final javax.swing.JButton reset = new javax.swing.JButton("Reset");
-    private final javax.swing.JButton saveEdits = new javax.swing.JButton("Save Edits");
+    private final FlowButton undo = new FlowButton("Undo", FlowTheme.ICON_UNDO, FlowButton.Style.OUTLINE);
+    private final FlowButton redo = new FlowButton("Redo", FlowTheme.ICON_REDO, FlowButton.Style.OUTLINE);
+    private final FlowButton history = new FlowButton("History", com.intellij.icons.AllIcons.Vcs.History, FlowButton.Style.OUTLINE);
+    private final FlowButton reset = new FlowButton("Reset", com.intellij.icons.AllIcons.Actions.Rollback, FlowButton.Style.OUTLINE);
+    private final FlowButton saveEdits = new FlowButton("Save Edits", com.intellij.icons.AllIcons.Actions.MenuSaveall, FlowButton.Style.PRIMARY);
+    /** How the values are shown (never how they are saved): sorted by name, only the fields that match the filter. */
+    private com.example.flowtracker.model.FlowValueShape.Sort sort = com.example.flowtracker.model.FlowValueShape.Sort.AS_SAVED;
+    private final com.intellij.ui.SearchTextField filter = new com.intellij.ui.SearchTextField(false);
+    private final java.util.Map<com.example.flowtracker.model.FlowValueShape.Sort, FlowButton> sortButtons = new java.util.EnumMap<>(com.example.flowtracker.model.FlowValueShape.Sort.class);
+    /** Tree rows folded (by where they are) and the rows that have fields under them. */
+    private final java.util.Set<String> collapsed = new java.util.HashSet<>(), parents = new java.util.HashSet<>();
     private final JBLabel editHint = new JBLabel();
     /** Counts the differences again a moment after the JSON or Text was edited (not saved yet). */
     private final javax.swing.Timer recount = new javax.swing.Timer(400, e -> recountEdits());
@@ -128,7 +134,6 @@ public final class FlowCompareDialog {
         FlowCompareDialog d = new FlowCompareDialog(project, title, left, leftTitle, right, rightTitle);
         d.leftSnap = leftSnap;
         d.rightSnap = rightSnap;
-        JPanel editing = new JPanel(new FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0));
         d.undo.setToolTipText("Undo the last change made here (Ctrl+Z)");
         d.redo.setToolTipText("Redo it (Ctrl+Shift+Z)");
         d.history.setToolTipText("The changes made here; pick one to go back to it");
@@ -139,41 +144,43 @@ public final class FlowCompareDialog {
         d.history.addActionListener(e -> d.showHistory());
         d.reset.addActionListener(e -> d.reset());
         d.saveEdits.addActionListener(e -> d.saveTextEdits());
-        editing.add(d.undo);
-        editing.add(d.redo);
-        editing.add(d.history);
-        editing.add(d.reset);
-        editing.add(d.saveEdits);
         d.editHint.setForeground(UIUtil.getContextHelpForeground());
-        editing.add(d.editHint);
         d.seeChanges.setToolTipText("The last change, before and after, side by side");
-        editing.add(d.seeChanges);
-        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0));
-        javax.swing.JButton swap = new javax.swing.JButton("⇄ Swap Old / New");
+        FlowButton swap = new FlowButton("Swap Old / New", com.intellij.icons.AllIcons.Diff.ArrowLeftRight, FlowButton.Style.OUTLINE);
         swap.setToolTipText("Make the other side the new data (Ctrl+Shift+X): what was added shows as removed, and so on");
         swap.addActionListener(e -> d.swap());
-        buttons.add(swap);
-        javax.swing.JButton openFile = new javax.swing.JButton("Open File…");
+        FlowButton openFile = new FlowButton("Open File…", FlowTheme.ICON_IMPORT, FlowButton.Style.OUTLINE);
         openFile.setToolTipText("Compare with a file: put a .json or .flowdebug.json file on the Old or the New side");
         openFile.addActionListener(e -> d.fileMenu(openFile));
-        buttons.add(openFile);
-        javax.swing.JButton export = new javax.swing.JButton("Export…");
+        FlowButton export = new FlowButton("Export…", FlowTheme.ICON_EXPORT, FlowButton.Style.OUTLINE);
         export.setToolTipText("Save the Old data, the New data or the differences to a file");
         export.addActionListener(e -> d.exportMenu(export));
-        buttons.add(export);
-        javax.swing.JButton copy = new javax.swing.JButton("Copy Differences");
-        javax.swing.JButton close = new javax.swing.JButton(closeLabel);
-        buttons.add(copy);
-        buttons.add(close);
-        JPanel bottom = new JPanel(new BorderLayout());
-        bottom.add(editing, BorderLayout.WEST);
-        bottom.add(buttons, BorderLayout.EAST);
-        bottom.setBorder(JBUI.Borders.emptyTop(8));
+        FlowButton copy = new FlowButton("Copy Differences", FlowTheme.ICON_COPY, FlowButton.Style.OUTLINE);
+        copy.setToolTipText("Copy the list of differences as text");
+        FlowButton close = new FlowButton(closeLabel, null, FlowButton.Style.OUTLINE);
+        // the editing buttons on the left, the files and Close on the right; they wrap (then show icons only) when narrow
+        FlowToolbar bar = new FlowToolbar();
+        bar.addGroup(false, 0, d.undo, d.redo);
+        bar.addGroup(false, 1, d.history, d.reset);
+        bar.addGroup(false, 2, d.saveEdits);
+        bar.addTrailingGroup(1, swap);
+        bar.addTrailingGroup(1, openFile, export, copy);
+        bar.addTrailingGroup(2, close);
+        JPanel note = new JPanel(new FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0));
+        note.add(d.editHint);
+        note.add(d.seeChanges);
+        JPanel bottom = new JPanel(new BorderLayout(0, JBUI.scale(4)));
+        bottom.add(note, BorderLayout.NORTH);
+        bottom.add(bar, BorderLayout.CENTER);
+        bottom.setBorder(JBUI.Borders.compound(JBUI.Borders.customLine(FlowTheme.CARD_BORDER, 1, 0, 0, 0), JBUI.Borders.emptyTop(8)));
         JPanel root = new JPanel(new BorderLayout());
         root.add(d.createCenterPanel(), BorderLayout.CENTER);
         root.add(bottom, BorderLayout.SOUTH);
         int menu = java.awt.Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx();
         key(root, javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_Z, menu), "undo", d::undo);
+        com.intellij.openapi.project.DumbAwareAction.create(e -> d.find()).registerCustomShortcutSet(
+                new com.intellij.openapi.actionSystem.CustomShortcutSet(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_F, menu)),
+                root, d.disposable);
         key(root, javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_Z, menu | java.awt.event.InputEvent.SHIFT_DOWN_MASK), "redo", d::redo);
         key(root, javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_S, menu), "save", d::saveTextEdits);
         d.updateEditButtons();
@@ -200,7 +207,7 @@ public final class FlowCompareDialog {
         this.title = title;
         this.left = left;
         this.right = right;
-        this.all = FlowValueDiff.compare(left, right);
+        this.all = compareShown(); // as shown: as saved, without Java internals when they are hidden
         this.leftTitle = leftTitle;
         this.rightTitle = rightTitle;
         onlyChanges.addActionListener(e -> refill());
@@ -230,6 +237,11 @@ public final class FlowCompareDialog {
                     }
                     case 1 -> {
                         setIpad(JBUI.insetsLeft(r.depth() * 16));
+                        if (parents.contains(r.label())) {
+                            append(collapsed.contains(r.label()) ? "▸ " : "▾ ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                        } else {
+                            append("   ", SimpleTextAttributes.REGULAR_ATTRIBUTES);
+                        }
                         append(r.name(), r.depth() == 0 ? SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES : SimpleTextAttributes.REGULAR_ATTRIBUTES);
                         if (r.type() != null && !r.type().isEmpty()) append("  " + r.type(), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
                         setToolTipText(r.label());
@@ -248,6 +260,16 @@ public final class FlowCompareDialog {
         for (int i = 0; i < 4; i++) table.getColumnModel().getColumn(i).setCellRenderer(renderer);
         table.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override public void mouseClicked(java.awt.event.MouseEvent e) {
+                if (e.getClickCount() == 1 && table.columnAtPoint(e.getPoint()) == 1) {
+                    int r = table.rowAtPoint(e.getPoint());
+                    String label = r < 0 ? null : shown.get(r).label();
+                    if (label != null && parents.contains(label) && e.getX() - table.getCellRect(r, 1, false).x
+                            < JBUI.scale(16) * (shown.get(r).depth() + 1) + JBUI.scale(8)) { // the ▸ / ▾ in front of the name
+                        if (!collapsed.remove(label)) collapsed.add(label);
+                        refill();
+                    }
+                    return;
+                }
                 if (e.getClickCount() != 2) return;
                 int r = table.rowAtPoint(e.getPoint()), c = table.columnAtPoint(e.getPoint());
                 if (r >= 0 && c >= 2) editCell(shown.get(r), c == 2);
@@ -283,11 +305,55 @@ public final class FlowCompareDialog {
         row.add(views, BorderLayout.WEST);
         row.add(chips, BorderLayout.CENTER);
         row.add(onlyChanges, BorderLayout.EAST);
-        top.add(row, BorderLayout.NORTH);
+        FlowToolbar shape = new FlowToolbar();
+        FlowButton expand = new FlowButton("Expand All", com.intellij.icons.AllIcons.Actions.Expandall, FlowButton.Style.OUTLINE);
+        expand.setToolTipText("Open every field (Tree) or block (JSON, Text)");
+        expand.addActionListener(e -> expandAll());
+        FlowButton collapse = new FlowButton("Collapse All", com.intellij.icons.AllIcons.Actions.Collapseall, FlowButton.Style.OUTLINE);
+        collapse.setToolTipText("Fold every field (Tree) or block (JSON, Text): the values' own fields show; click ▸ to open one");
+        collapse.addActionListener(e -> collapseAll());
+        shape.addGroup(false, 0, expand, collapse);
+        List<FlowButton> sorts = new ArrayList<>();
+        for (com.example.flowtracker.model.FlowValueShape.Sort so : com.example.flowtracker.model.FlowValueShape.Sort.values()) {
+            FlowButton b = new FlowButton(so.label, null, FlowButton.Style.SEGMENT);
+            b.setToolTipText(so == com.example.flowtracker.model.FlowValueShape.Sort.AS_SAVED ? "The fields in the order they were saved"
+                    : "The fields sorted by name (lists keep their order); only how they are shown");
+            b.addActionListener(e -> setSort(so));
+            sortButtons.put(so, b);
+            sorts.add(b);
+        }
+        shape.addGroup(true, 3, sorts.toArray(new FlowButton[0]));
+        sortButtons.get(sort).setSelected(true);
+        FlowButton internals = new FlowButton("Hide Internals", com.intellij.icons.AllIcons.Actions.ToggleVisibility, FlowButton.Style.SEGMENT);
+        internals.setSelected(com.example.flowtracker.model.FlowValueShape.hideInternals());
+        internals.setToolTipText("<html><b>Hide Internals</b>: what a language or its tools put inside a value, left out (only how it is shown).<br>"
+                + "Java, Kotlin, Scala, Groovy: a String's bytes, coder and hash as its text; an enum as its name; "
+                + "BigDecimal, ArrayList and lazy values as what they hold;<br>compiler and framework fields "
+                + "(this$0, $outer, x$delegate, $$_hibernate_interceptor, metaClass, modCount…).<br>"
+                + ".NET: $id / $type / $ref, {$values} as its list, &lt;Name&gt;k__BackingField as Name. "
+                + "Python and JavaScript: __dunder__ names, __proto__, __typename, py/… keys.<br>"
+                + "One setting for Debug Data, Compare, Compare Pasted Data and Stop at Value.</html>");
+        internals.addActionListener(e -> {
+            com.example.flowtracker.model.FlowValueShape.setHideInternals(!com.example.flowtracker.model.FlowValueShape.hideInternals());
+            internals.setSelected(com.example.flowtracker.model.FlowValueShape.hideInternals());
+            refreshAll();
+        });
+        shape.addGroup(true, 1, internals);
+        filter.getTextEditor().getEmptyText().setText("Filter the fields (name, value or type) · Ctrl+F");
+        filter.addDocumentListener(new com.intellij.ui.DocumentAdapter() {
+            @Override protected void textChanged(@NotNull javax.swing.event.DocumentEvent e) { refreshAll(); }
+        });
+        JPanel shapeRow = new JPanel(new BorderLayout(JBUI.scale(8), 0));
+        shapeRow.add(shape, BorderLayout.WEST);
+        shapeRow.add(filter, BorderLayout.CENTER);
+        JPanel rows = new JPanel(new BorderLayout(0, JBUI.scale(6)));
+        rows.add(row, BorderLayout.NORTH);
+        rows.add(shapeRow, BorderLayout.SOUTH);
+        top.add(rows, BorderLayout.NORTH);
         top.add(hint, BorderLayout.SOUTH);
         top.setBorder(JBUI.Borders.emptyBottom(8));
 
-        cards.add(new JBScrollPane(table), "TREE");
+        cards.add(FlowScroll.wheel(new JBScrollPane(table)), "TREE");
         made.add("TREE");
         JPanel panel = new JPanel(new BorderLayout());
         panel.add(top, BorderLayout.NORTH);
@@ -416,7 +482,7 @@ public final class FlowCompareDialog {
         String t = leftTitle;
         leftTitle = rightTitle;
         rightTitle = t;
-        all = FlowValueDiff.compare(left, right);
+        all = compareShown();
         fillChips();
         refill();
         if (table != null) {
@@ -440,12 +506,15 @@ public final class FlowCompareDialog {
         this.view = view;
         if (made.add(view)) {
             boolean json = view.equals("JSON");
-            String a = json ? FlowValueText.valueJson(left, true) : FlowValueDiff.withoutIds(FlowValueText.toText(left));
-            String b = json ? FlowValueText.valueJson(right, true) : FlowValueDiff.withoutIds(FlowValueText.toText(right));
+            FlowValue l = shown(left), r = shown(right);
+            String a = json ? FlowValueText.valueJson(l, sort == com.example.flowtracker.model.FlowValueShape.Sort.AS_SAVED) : FlowValueDiff.withoutIds(FlowValueText.toText(l));
+            String b = json ? FlowValueText.valueJson(r, sort == com.example.flowtracker.model.FlowValueShape.Sort.AS_SAVED) : FlowValueDiff.withoutIds(FlowValueText.toText(r));
             DiffContentFactory f = DiffContentFactory.getInstance();
             com.intellij.openapi.fileTypes.FileType type = FileTypeManager.getInstance().getFileTypeByExtension(json ? "json" : "txt");
             DiffRequestPanel diff = DiffManager.getInstance().createRequestPanel(project, disposable, null);
-            com.intellij.diff.contents.DocumentContent da = f.createEditable(project, a, type), db = f.createEditable(project, b, type);
+            // sorted or filtered: only to look at (edits are made to the data as saved)
+            com.intellij.diff.contents.DocumentContent da = shaping() ? f.create(project, a, type) : f.createEditable(project, a, type);
+            com.intellij.diff.contents.DocumentContent db = shaping() ? f.create(project, b, type) : f.createEditable(project, b, type);
             docs.put(view, new com.intellij.diff.contents.DocumentContent[]{da, db});
             // typing or pasting: the counts follow at once (as a preview until Save Edits)
             com.intellij.openapi.editor.event.DocumentListener typed = new com.intellij.openapi.editor.event.DocumentListener() {
@@ -457,6 +526,13 @@ public final class FlowCompareDialog {
             diff.setRequest(new SimpleDiffRequest(title, da, db, "OLD  ·  " + leftTitle, "NEW  ·  " + rightTitle));
             diff.getComponent().setName(view);
             cards.add(diff.getComponent(), view);
+            // every { } / [ ] block foldable with the gutter's arrows, once the viewer has made its editors
+            // (again once the diff is worked out: it folds unchanged lines of its own then)
+            for (int delay : new int[]{300, 1200, 2500}) {
+                javax.swing.Timer foldable = new javax.swing.Timer(delay, e -> foldViewers(false));
+                foldable.setRepeats(false);
+                foldable.start();
+            }
         }
         ((CardLayout) cards.getLayout()).show(cards, view);
         viewButtons.forEach((k, b) -> b.setSelected(k.equals(view)));
@@ -468,6 +544,11 @@ public final class FlowCompareDialog {
 
     /** Tree: a value changed by double-click (a field with fields inside is changed as JSON). */
     private void editCell(FlowValueDiff.Row row, boolean onLeft) {
+        if (shaping()) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(cards, "The values are sorted or filtered: show them As Saved with no "
+                    + "filter to change them.", "Compare");
+            return;
+        }
         String path = onLeft ? row.leftPath() : row.rightPath();
         if (path == null) {
             com.intellij.openapi.ui.Messages.showInfoMessage(cards, row.name() + " isn't in the " + (onLeft ? "old" : "new")
@@ -535,7 +616,7 @@ public final class FlowCompareDialog {
 
     /** JSON / Text: what was changed on either side is read back (maps stay maps, unchanged values keep their ids). */
     private void saveTextEdits() {
-        if (view.equals("TREE")) return;
+        if (view.equals("TREE") || shaping()) return;
         com.intellij.diff.contents.DocumentContent[] d = docs.get(view);
         String[] was = shownTexts.get(view);
         if (d == null || was == null) return;
@@ -687,7 +768,7 @@ public final class FlowCompareDialog {
         JPanel p = new JPanel(new BorderLayout(0, JBUI.scale(6)));
         p.add(new JBLabel("▶ marks where you are. Go To goes back (or forward) to a step; Revert undoes a saved change; "
                 + "Show Changes shows what it did."), BorderLayout.NORTH);
-        p.add(new JBScrollPane(list), BorderLayout.CENTER);
+        p.add(FlowScroll.wheel(new JBScrollPane(list)), BorderLayout.CENTER);
         p.add(actions, BorderLayout.SOUTH);
         p.setPreferredSize(new Dimension(JBUI.scale(760), JBUI.scale(380)));
         com.intellij.openapi.ui.DialogBuilder b = new com.intellij.openapi.ui.DialogBuilder(cards);
@@ -893,7 +974,7 @@ public final class FlowCompareDialog {
 
     /** Everything compared and shown again after a change. */
     private void refreshAll() {
-        all = FlowValueDiff.compare(left, right);
+        all = compareShown();
         fillChips();
         refill();
         for (String k : new String[]{"JSON", "TEXT"}) {
@@ -914,7 +995,7 @@ public final class FlowCompareDialog {
         history.setEnabled(steps.size() > 1 || leftSnap != null && !leftSnap.edits.isEmpty()
                 || rightSnap != null && !rightSnap.edits.isEmpty());
         seeChanges.setVisible(position > 0);
-        saveEdits.setVisible(!view.equals("TREE"));
+        saveEdits.setVisible(!view.equals("TREE") && !shaping());
     }
 
     /** The rows that differ as text: "~ nightlyRates › \"goa\": 2500.0 → 2600.0". */
@@ -932,15 +1013,88 @@ public final class FlowCompareDialog {
     /** All rows, or the ones that differ (with the rows above them, so each difference shows where it is). */
     private void refill() {
         shown.clear();
-        if (!onlyChanges.isSelected()) {
-            shown.addAll(all);
-        } else {
-            for (int i = 0; i < all.size(); i++) {
-                if (all.get(i).kind() == FlowValueDiff.Kind.SAME && !leadsToChange(i)) continue;
-                shown.add(all.get(i));
-            }
+        parents.clear();
+        for (int i = 0; i + 1 < all.size(); i++) if (all.get(i + 1).depth() > all.get(i).depth()) parents.add(all.get(i).label());
+        int hideUnder = Integer.MAX_VALUE; // the rows under a folded row are hidden
+        for (int i = 0; i < all.size(); i++) {
+            FlowValueDiff.Row r = all.get(i);
+            if (r.depth() > hideUnder) continue;
+            hideUnder = Integer.MAX_VALUE;
+            if (onlyChanges.isSelected() && r.kind() == FlowValueDiff.Kind.SAME && !leadsToChange(i)) continue;
+            shown.add(r);
+            if (collapsed.contains(r.label()) && parents.contains(r.label())) hideUnder = r.depth();
         }
         model.fireTableDataChanged();
+    }
+
+    // ---------- sort, filter, expand and collapse (only how the values are shown) ----------
+
+    private boolean shaping() {
+        // sorted, filtered or without Java internals: a copy is shown, so it is only to look at
+        return !com.example.flowtracker.model.FlowValueShape.plain(sort, filter.getText()) || hidingInternals();
+    }
+
+    private FlowValue shown(FlowValue v) {
+        FlowValue w = hidingInternals() ? com.example.flowtracker.model.FlowValueShape.withoutInternals(v) : v;
+        return shaping() ? com.example.flowtracker.model.FlowValueShape.apply(w, sort, filter.getText()) : w;
+    }
+
+    /** True when Java internals are left out of what is shown (the setting on, and either value has some). */
+    private boolean hidingInternals() {
+        return com.example.flowtracker.model.FlowValueShape.hideInternals()
+                && (com.example.flowtracker.model.FlowValueShape.hasInternals(left) || com.example.flowtracker.model.FlowValueShape.hasInternals(right));
+    }
+
+    /** The two values compared as they are shown (sorted, filtered). */
+    private List<FlowValueDiff.Row> compareShown() {
+        return FlowValueDiff.compare(shown(left), shown(right));
+    }
+
+    private void setSort(com.example.flowtracker.model.FlowValueShape.Sort s) {
+        sort = s;
+        sortButtons.forEach((k, b) -> b.setSelected(k == s));
+        refreshAll();
+    }
+
+    /** Every row open (Tree), or every block (JSON, Text). */
+    private void expandAll() {
+        collapsed.clear();
+        refill();
+        foldViewers(false);
+    }
+
+    /** The values' own fields only, each folded (Tree), or every block but the outermost (JSON, Text). */
+    private void collapseAll() {
+        collapsed.clear();
+        for (FlowValueDiff.Row r : all) if (r.depth() >= 1 && parents.contains(r.label())) collapsed.add(r.label());
+        refill();
+        foldViewers(true);
+    }
+
+    /** Folds (or opens) the { } / [ ] blocks of the JSON and Text views' editors. */
+    private void foldViewers(boolean collapse) {
+        if (view.equals("TREE")) return;
+        java.awt.Component card = null;
+        for (java.awt.Component c : cards.getComponents()) if (view.equals(c.getName())) card = c;
+        if (card == null) return;
+        for (com.intellij.openapi.editor.Editor ed : com.intellij.openapi.editor.EditorFactory.getInstance().getAllEditors()) {
+            if (javax.swing.SwingUtilities.isDescendingFrom(ed.getComponent(), card)) FlowCodeView.fold(ed, view.equals("JSON"), collapse);
+        }
+    }
+
+    /** Ctrl+F: IntelliJ's find bar in the JSON / Text view's editor that has the focus, else the filter. */
+    private void find() {
+        if (!view.equals("TREE")) {
+            for (com.intellij.openapi.editor.Editor ed : com.intellij.openapi.editor.EditorFactory.getInstance().getAllEditors()) {
+                java.awt.Component owner = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
+                if (owner != null && javax.swing.SwingUtilities.isDescendingFrom(owner, ed.getComponent()) && project != null) {
+                    com.intellij.find.EditorSearchSession.start(ed, project);
+                    return;
+                }
+            }
+        }
+        filter.requestFocusInWindow();
+        filter.selectText();
     }
 
     /** True when a row is a parent of a row that differs. */

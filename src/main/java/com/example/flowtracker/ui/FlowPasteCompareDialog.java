@@ -48,6 +48,8 @@ public final class FlowPasteCompareDialog {
     private final String title;
     /** The saved value on the left (null when both sides are pasted). */
     private final @Nullable FlowValue saved;
+    /** The saved value is shown as JSON (else as text). */
+    private boolean savedAsJson = true;
     private final @Nullable FlowWindow window;
     /** The editing view and the result of Compare, in the same window. */
     private final JPanel views = new JPanel(new java.awt.CardLayout());
@@ -92,7 +94,9 @@ public final class FlowPasteCompareDialog {
     /** The saved value on the left, as JSON or as indented text. */
     private void showSaved(boolean json) {
         if (saved == null) return;
-        left.setText(json ? FlowValueText.valueJson(saved, true) : FlowValueDiff.withoutIds(FlowValueText.toText(saved)));
+        FlowValue v = com.example.flowtracker.model.FlowValueShape.hideInternals()
+                ? com.example.flowtracker.model.FlowValueShape.withoutInternals(saved) : saved;
+        left.setText(json ? FlowValueText.valueJson(v, true) : FlowValueDiff.withoutIds(FlowValueText.toText(v)));
         left.setCaretPosition(0);
     }
 
@@ -112,8 +116,8 @@ public final class FlowPasteCompareDialog {
             json.setToolTipText("The saved value as JSON (compared field by field with pasted JSON)");
             text.setToolTipText("The saved value as indented text: name = value {type}");
             json.setSelected(true);
-            json.addActionListener(e -> { showSaved(true); json.setSelected(true); text.setSelected(false); });
-            text.addActionListener(e -> { showSaved(false); text.setSelected(true); json.setSelected(false); });
+            json.addActionListener(e -> { savedAsJson = true; showSaved(true); json.setSelected(true); text.setSelected(false); });
+            text.addActionListener(e -> { savedAsJson = false; showSaved(false); text.setSelected(true); json.setSelected(false); });
             format.addGroup(true, 3, json, text);
             leftHead.add(format, BorderLayout.EAST);
         }
@@ -145,6 +149,20 @@ public final class FlowPasteCompareDialog {
         openFile.setToolTipText("Put a file's text on the right side (or on the left when that is empty)");
         openFile.addActionListener(e -> openFile());
         leftButtons.add(openFile);
+        com.intellij.ui.components.JBCheckBox internals = new com.intellij.ui.components.JBCheckBox("Hide Internals",
+                com.example.flowtracker.model.FlowValueShape.hideInternals());
+        internals.setToolTipText("<html><b>Hide Internals</b>: what a language or its tools put inside a value, left out (only how it is shown).<br>"
+                + "Java, Kotlin, Scala, Groovy: a String's bytes, coder and hash as its text; an enum as its name; "
+                + "BigDecimal, ArrayList and lazy values as what they hold;<br>compiler and framework fields "
+                + "(this$0, $outer, x$delegate, $$_hibernate_interceptor, metaClass, modCount…).<br>"
+                + ".NET: $id / $type / $ref, {$values} as its list, &lt;Name&gt;k__BackingField as Name. "
+                + "Python and JavaScript: __dunder__ names, __proto__, __typename, py/… keys.<br>"
+                + "One setting for Debug Data, Compare, Compare Pasted Data and Stop at Value.</html>");
+        internals.addActionListener(e -> {
+            com.example.flowtracker.model.FlowValueShape.setHideInternals(internals.isSelected());
+            if (saved != null) showSaved(savedAsJson);
+        });
+        leftButtons.add(internals);
         JPanel rightButtons = new JPanel(new FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0));
         rightButtons.add(compare);
         rightButtons.add(close);
@@ -168,7 +186,7 @@ public final class FlowPasteCompareDialog {
         title.setFont(JBUI.Fonts.label().asBold());
         kind.setForeground(UIUtil.getContextHelpForeground());
         p.add(head, BorderLayout.NORTH);
-        p.add(new JBScrollPane(area), BorderLayout.CENTER);
+        p.add(FlowScroll.wheel(new JBScrollPane(area)), BorderLayout.CENTER);
         p.add(kind, BorderLayout.SOUTH);
         return p;
     }
@@ -261,6 +279,10 @@ public final class FlowPasteCompareDialog {
             shown = built.disposable();
             view = built.root();
         } else {
+            if (com.example.flowtracker.model.FlowValueShape.hideInternals()) { // JSON on one side only: still without internals
+                a = com.example.flowtracker.model.FlowValueShape.withoutInternalsJson(a);
+                b = com.example.flowtracker.model.FlowValueShape.withoutInternalsJson(b);
+            }
             FlowTextFormat.Detected da = FlowTextFormat.detect(a), db = FlowTextFormat.detect(b);
             String ext = da.extension().equals(db.extension()) ? da.extension() : "txt";
             com.intellij.openapi.Disposable d = com.intellij.openapi.util.Disposer.newDisposable("TraceWeave paste diff");

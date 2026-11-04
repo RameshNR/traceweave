@@ -451,6 +451,32 @@ class FlowDebugDataTest {
     }
 
     @Test
+    void aVariableAlongTheFlowInTheFlowsOrder() {
+        FlowSnapshot at60 = snapshot("Flow 1", "30.00");
+        at60.line = 60;
+        at60.savedAt = 1;
+        FlowSnapshot at42 = snapshot("Flow 1", "12.50");
+        at42.savedAt = 2; // saved later, but its line comes first in the flow
+        FlowSnapshot again = snapshot("Flow 1", "30.00");
+        again.line = 60;
+        again.savedAt = 3;
+        FlowSnapshot otherFlow = snapshot("Flow 2", "99.00");
+        FlowSnapshot otherName = snapshot("Flow 1", "1.00");
+        otherName.name = "cart";
+        FlowEntry l42 = com.example.flowtracker.Fixtures.line("CartServlet.java", "CartServlet", "doPost()", 42, "x();");
+        FlowEntry l60 = com.example.flowtracker.Fixtures.line("CartServlet.java", "CartServlet", "doPost()", 60, "y();");
+        l42.fileUrl = l60.fileUrl = at42.fileUrl;
+
+        List<FlowValueTrail.Stop> trail = FlowValueTrail.along(List.of(at60, at42, again, otherFlow, otherName), at60, List.of(l42, l60));
+        assertEquals(List.of(at42, at60, again), trail.stream().map(FlowValueTrail.Stop::value).toList(),
+                "the flow's order, then when saved; only this variable in this flow");
+        assertEquals(List.of(1, 2, 2), trail.stream().map(FlowValueTrail.Stop::step).toList());
+        assertTrue(trail.get(0).same(), "the first has nothing before it");
+        assertEquals(1, trail.get(1).changed(), "the total changed from 12.50 to 30.00");
+        assertTrue(trail.get(2).same(), "saved again with the same data");
+    }
+
+    @Test
     void flowNamesInDebugDataAndTheFlowTabAreNotRenamedTogether() {
         FlowStore flows = new FlowStore();
         FlowDebugStore store = new FlowDebugStore();

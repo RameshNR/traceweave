@@ -28,6 +28,8 @@ public final class FlowLook implements PersistentStateComponent<FlowLook.State> 
         public Background diagramBackground = Background.THEME;
         /** Background of the images Copy PNG / Copy Sequence PNG make: LIGHT or DARK. */
         public Background imageBackground = Background.LIGHT;
+        /** Lines dragged by hand in the Flow Diagram may run across the classes (false: they keep off them). */
+        public boolean linesOverBoxes = false;
     }
 
     private State state = new State();
@@ -67,6 +69,14 @@ public final class FlowLook implements PersistentStateComponent<FlowLook.State> 
     public void setImageBackground(Background b) {
         state.imageBackground = b == Background.DARK ? Background.DARK : Background.LIGHT;
         fire();
+    }
+
+    public boolean isLinesOverBoxes() { return state.linesOverBoxes; }
+
+    public void setLinesOverBoxes(boolean on) {
+        if (state.linesOverBoxes == on) return;
+        state.linesOverBoxes = on;
+        for (Runnable r : listeners) r.run();
     }
 
     public void addListener(Runnable l) { listeners.add(l); }

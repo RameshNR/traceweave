@@ -23,6 +23,22 @@ public final class FlowCompat {
     private static final MethodHandle COMPUTE = find(ReadAction.class, "compute",
             MethodType.methodType(Object.class, ThrowableComputable.class));
 
+    /**
+     * A class's JVM name ("com.shop.Order$Line"): its qualified name, with "$" before each nested class's name; null
+     * for an anonymous or local class. What {@code ClassUtil.getJVMClassName} gives, without that method (deprecated
+     * from IntelliJ IDEA 2025.2; its replacement isn't in 2023.1).
+     */
+    public static @org.jetbrains.annotations.Nullable String jvmName(@org.jetbrains.annotations.Nullable com.intellij.psi.PsiClass c) {
+        if (c == null || c instanceof com.intellij.psi.PsiAnonymousClass || c.getName() == null) return null;
+        com.intellij.psi.PsiClass outer = c.getContainingClass();
+        if (outer != null) {
+            String o = jvmName(outer);
+            return o == null ? null : o + "$" + c.getName();
+        }
+        if (!(c.getParent() instanceof com.intellij.psi.PsiFile)) return null; // a local class
+        return c.getQualifiedName();
+    }
+
     /** Runs {@code action} in a read action, waiting for it, and returns its result. */
     @SuppressWarnings("unchecked")
     public static <T> T read(ThrowableComputable<T, RuntimeException> action) {
