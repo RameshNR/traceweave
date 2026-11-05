@@ -33,7 +33,7 @@ Make sure you have the following installed:
 | Java (plugin code) | 17 (what IntelliJ IDEA 2023.x runs on) | `build.gradle.kts` → `java.toolchain` |
 | Gradle | 9.6.0 | `gradle/wrapper/gradle-wrapper.properties` |
 | IntelliJ Platform Gradle Plugin | 2.19.0 | `build.gradle.kts` → `plugins` |
-| Plugin version | 1.4.0 | `build.gradle.kts` → `version` |
+| Plugin version | 1.4.1 | `build.gradle.kts` → `version` |
 | Plugin ID | `io.github.rameshnr.flowtracker` (kept from Flow Tracker; never change it once published) | `plugin.xml` → `<id>` |
 
 
@@ -116,16 +116,16 @@ Check the folder: it must contain `product-info.json`. Write the path in `build.
 The installable plugin is written to:
 
 ```
-build\distributions\traceweave-code-flow-tracker-1.4.0.zip
+build\distributions\traceweave-code-flow-tracker-1.4.1.zip
 ```
 
 Install it in IntelliJ IDEA:
 
 - **Settings** → **Plugins** → ⚙️ → **Install Plugin from Disk…**
-- Select `build\distributions\traceweave-code-flow-tracker-1.4.0.zip`
+- Select `build\distributions\traceweave-code-flow-tracker-1.4.1.zip`
 - Restart the IDE when asked
 
-To release a new version, change `version = "1.4.0"` in `build.gradle.kts`, add its change notes in `plugin.xml`, and build again.
+To release a new version, change `version = "1.4.1"` in `build.gradle.kts`, add its change notes in `plugin.xml`, and build again.
 
 
 ## Commands
@@ -277,6 +277,8 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 - **Selecting a flow** (or one of its lines or values) in the list selects it in the Flow tab too. **Renaming** a flow here renames it in Debug Data only; the Flow tab keeps its name (and the other way round).
 - **Settings** (the gear at the end of the toolbar) holds **Layout** (the list and the value **side by side**, **top and bottom**, or *Auto*: above each other when the tool window is narrow, so the value is never squeezed out) and Capture Data's *When* and *What*.
 - The tab looks like the Flow tab (its panel background, the list and the value on rounded cards, the same buttons, and **Use IntelliJ Theme** applies to it too). Its buttons wrap and get shorter (icons only) when the tool window is narrow.
+- **The value's toolbar** (shown while a value is selected): the view button (**Tree**, **JSON** or **Text**, its ▾ picks), **Expand / Collapse** (the selected field with what is inside it, or the whole value), **Add / Edit / Remove / Reset**, **Export**, then **Find** (shows the field filter; click again to hide it) and **Settings** (the fields' order: As Saved, A → Z, Z → A; Hide Internals). Copy is in the right-click menu (Ctrl+C).
+- **A line's values** (a line picked in the list): pick a field and Add, Edit, Remove and Reset work in its value; with the line itself picked, **+** adds a new value at that line. Editing a value saved with internals edits it as shown (`"BK-1042"`, not its bytes): its data becomes the value as shown, one step in its History that Revert takes back.
 - **Delete** removes the field selected on the right when you clicked there last (History → Revert puts it back). With values or lines selected on the left, it moves them to the Recycle Bin. With **flows** selected, it deletes the flows (here and in the Flow tab): at once when they have nothing in either screen, else after one confirmation that says what goes (Debug Data's values first, then the Flow tab's lines).
 - Keys (they work wherever the focus is in the tab, before the IDE's own shortcuts): **Delete** deletes (in the Recycle Bin: for good), **Ctrl+C** copies the selected values (on a field: its value), **Ctrl+V** pastes into a field, **Insert** adds a field, **F2** renames a flow or line in the list, or edits a field, **Ctrl+D** Compare, **Ctrl+F** Find.
 - **Delete** moves saved values to the tab's **Recycle Bin** (**← Back to Saved Values** leaves it): **Restore** brings them back, **Delete Permanently** removes them (the bin keeps the latest 200).
@@ -428,6 +430,8 @@ The toolbar belongs to the selected tab and sits above the tabs.
 - When **Connect the Flow to…** finds several ways from one method to the other, the **ways panel** opens over the diagram: each way as a card with its steps. **Hover a way** to see it drawn on the tab (a preview); click it to add it. Ways already on the tab are left out (a filter shows *All*, *On the tab* or *New* ones) and they can be sorted.
 - **Minimize** the panel to a bar (a click opens it again; clicking elsewhere on the tab hides the bar), drag it anywhere on the tab, or **Full Screen**: the ways in a large window, **Connect the Flow: Choose a Way**.
 - In the large window, hovering a way previews it on the diagram behind the window too. A way you **click** stays previewed: move the mouse to another way to see that one, and out of the list to see the clicked one again. **Add** (or double-click) adds it.
+- **The ways show as they are found**: Choose a Way opens with the first one, and the others join the list while the search goes on. A colored line under the title says where it is: *Looking for more ways…* (blue, with a spinner), *Completed* (green), *Paused* (amber) or a failure (red).
+- **Pause / Resume** (one button): Pause stops the search where it is; Resume goes on from there (what was checked isn't checked again). **Load More** shows the next 10 ways; it is on only when there are more (the search looks one way further than it shows), else greyed out. **Cancel** on the "Looking for the ways…" card stops the search at once.
 
 ![Ways on the tab](src/main/resources/images/traceweave-ways-onscreen.png)
 
@@ -469,7 +473,9 @@ The toolbar belongs to the selected tab and sits above the tabs.
 
 *History, Save, Reset and Close*
 
-- Every change is listed on the right. **Undo** / **Redo**, or click a step to go back to it. The History stays after **Save** and when the window is opened again (while the IDE runs); saved steps are marked ✔. Clicking a step from before an earlier Save and saving it brings the flow back to that state. A change that leaves the diagram as it is (for example **Auto Layout** clicked again) isn't added.
+- **Sync** (the toolbar button before Settings) saves by itself, a moment after each change: **the layout** (positions, lines moved or styled, box colors and formats, notes; on by default), or **everything** (also classes, methods, lines and calls, like Save without asking). Its **▾** (or Settings → *Sync*) picks which, or Off.
+- Every change is listed on the right. **Undo** / **Redo**, or click a step to go back to it. The History stays after **Save** and when the window is opened again (while the IDE runs); saved steps are marked **✔ Saved**, and steps whose layout Sync saved **✔ Layout saved**.
+- **Ctrl+click Close** (or a tab's **✕**) closes all the tabs; each tab with changes asks once. Clicking a step from before an earlier Save and saving it brings the flow back to that state. A change that leaves the diagram as it is (for example **Auto Layout** clicked again) isn't added.
 - The buttons at the bottom right are **Close · Save · Reset**. Close and Save are split buttons: their **▾** opens a menu above the button.
 
   | Button | Click | ▾ |

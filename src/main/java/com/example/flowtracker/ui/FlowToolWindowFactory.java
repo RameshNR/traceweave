@@ -797,8 +797,12 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
     }
 
     /** Width of the line-number column inside a code block, measured from the line row's x. */
+    /**
+     * The line-number gutter: room for a 6-digit number (lines up to 999999) right-aligned 10px from its end, with
+     * the tag's bar (3px) and a gap before it, so the bar never covers a digit.
+     */
     private static int gutterWidth(FontMetrics codeMetrics) {
-        return Math.max(JBUI.scale(34), codeMetrics.stringWidth("0000") + JBUI.scale(8));
+        return Math.max(JBUI.scale(34), codeMetrics.stringWidth("000000") + JBUI.scale(10 + 3 + 6));
     }
 
     /** Chevron center x for a row, matching where BasicTreeUI paints the expand icon. */

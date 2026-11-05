@@ -36,6 +36,129 @@ public final class FlowWaysDialog extends DialogWrapper {
     private final JEditorPane details = new JEditorPane();
     private final String from, to, there;
     private @Nullable Component parent;
+    private final JBLabel head = new JBLabel();
+    /** The search's state: a spinner (or an icon) and what it says, with Stop / Load More. */
+    private final JPanel searching = new JPanel(new BorderLayout(JBUI.scale(8), 0));
+    private final JBLabel searchText = new JBLabel();
+    private final JBLabel stateIcon = new JBLabel();
+    private final com.intellij.util.ui.AsyncProcessIcon spinner = new com.intellij.util.ui.AsyncProcessIcon("TraceWeave ways");
+    /** Pause while it looks, Resume when paused (it goes on from where it stopped); off once it is done. */
+    private final FlowButton pauseButton = new FlowButton("Pause", com.intellij.icons.AllIcons.Actions.Pause, FlowButton.Style.OUTLINE);
+    private final FlowButton moreButton = new FlowButton("Load More", com.intellij.icons.AllIcons.Actions.Refresh, FlowButton.Style.OUTLINE);
+    private @Nullable Runnable onPause, onResume, onMore;
+    private boolean pausedNow;
+
+    static final java.awt.Color DONE = new com.intellij.ui.JBColor(new java.awt.Color(0x1F8A3B), new java.awt.Color(0x5FB865));
+
+    /**
+     * The window for ways that are still being found: open it with the first one, then {@link #added()} for each one
+     * after it, {@link #progress} for how far the search is, and {@link #completed} / {@link #paused} /
+     * {@link #failed} when it ends. Show it with showAndGet(); {@link #picked()} is the way taken.
+     *
+     * @param pause  what Pause does (the search stops where it is; the window stays)
+     * @param resume what Resume does (it goes on from where it paused; {@link #searching} is called for it)
+     * @param more   what Load More does (it looks for more ways, going on from where it ended)
+     */
+    public static FlowWaysDialog live(@Nullable Component parent, FlowCallPath.Ways ways, String from, String to, String action,
+                                      Function<FlowCallPath.Step, FlowWaysList.Where> where, String there,
+                                      @Nullable java.util.function.Predicate<FlowCallPath.Way> onTab,
+                                      @Nullable java.util.function.Consumer<FlowCallPath.Way> onHover,
+                                      Runnable pause, Runnable resume, Runnable more) {
+        FlowWaysDialog d = new FlowWaysDialog(parent, ways, from, to, action, where, there);
+        if (onTab != null) d.ways_.setThere(onTab);
+        if (onHover != null) d.ways_.onHover(onHover);
+        d.onPause = pause;
+        d.onResume = resume;
+        d.onMore = more;
+        d.searching.setVisible(true);
+        d.searching("Looking for more ways…");
+        return d;
+    }
+
+    /** The way taken (after showAndGet() returned true), or null. */
+    public @Nullable FlowCallPath.Way picked() {
+        return ways_.waysList().getSelectedValue();
+    }
+
+    /** More ways were added to the list given (the cards, the counts and the title follow; the pick stays). */
+    public void added() {
+        ways_.refresh();
+        updateHead();
+    }
+
+    /** Looking (again): the spinner, what it says; Pause on (amber), Load More off. */
+    public void searching(String text) {
+        state(null, FlowTheme.ACCENT, text);
+        spinner.setVisible(true);
+        spinner.resume();
+        pauseButton(false, true);
+        moreButton.setEnabled(false);
+        moreButton.setToolTipText("While it looks, the ways join the list by themselves");
+    }
+
+    /** The button as Pause (amber) or Resume (green), on or off. */
+    private void pauseButton(boolean resume, boolean on) {
+        pausedNow = resume;
+        pauseButton.setText(resume ? "Resume" : "Pause");
+        pauseButton.setIcon(resume ? com.intellij.icons.AllIcons.Actions.Execute : com.intellij.icons.AllIcons.Actions.Pause);
+        pauseButton.setAccent(!on ? null : resume ? DONE : FlowTheme.WARNING);
+        pauseButton.setEnabled(on);
+        pauseButton.setToolTipText(!on ? "The search is done: every way it looked for is listed"
+                : resume ? "Go on looking from where it paused (what was checked isn't checked again)"
+                : "Pause the search: the ways found so far stay; Resume goes on from here");
+    }
+
+    /** How far the search is, e.g. "Looking for more ways… 120 methods read" (while looking). */
+    public void progress(String text) {
+        if (spinner.isVisible()) searchText.setText(text);
+    }
+
+    /**
+     * The search went through (green). @param more there may be more ways (it stopped at its limit): Load More is on;
+     * else every way was found and it is off.
+     */
+    public void completed(String text, boolean more) {
+        state(com.intellij.icons.AllIcons.General.InspectionsOK, DONE, text);
+        pauseButton(false, false);
+        moreButton.setEnabled(more);
+        moreButton.setToolTipText(more ? "Show the next " + FlowCallPath.MAX_WAYS + " ways" : "Every way was found: there are no others");
+    }
+
+    /** Paused (amber): Resume goes on from where it stopped. */
+    public void paused(String text) {
+        state(com.intellij.icons.AllIcons.Actions.Pause, FlowTheme.WARNING, text);
+        pauseButton(true, true);
+        moreButton.setEnabled(false);
+        moreButton.setToolTipText("Resume first: it goes on from where it paused");
+    }
+
+    /** It couldn't read the code (red): Load More tries again. */
+    public void failed(String text) {
+        state(com.intellij.icons.AllIcons.General.Error, FlowTheme.DANGER, text);
+        pauseButton(true, true);
+        pauseButton.setToolTipText("Try again, from where it was");
+        moreButton.setEnabled(false);
+    }
+
+    /** An ended state (or, with no icon, looking): the icon in place of the spinner, the text in its color. */
+    private void state(@Nullable javax.swing.Icon icon, java.awt.Color color, String text) {
+        if (icon != null) {
+            spinner.suspend();
+            spinner.setVisible(false);
+        }
+        stateIcon.setIcon(icon);
+        stateIcon.setVisible(icon != null);
+        searchText.setForeground(color);
+        searchText.setText(text);
+        updateHead();
+        searching.revalidate();
+        searching.repaint();
+    }
+
+    private void updateHead() {
+        int n = ways.ways().size();
+        head.setText(n + (n == 1 ? " way" : " ways") + " from " + from + " to " + to);
+    }
 
     /**
      * @param where  where each step is: in the flow (its method, its class) or new
@@ -103,6 +226,10 @@ public final class FlowWaysDialog extends DialogWrapper {
     }
 
     private void setup(String action) {
+        com.intellij.openapi.util.Disposer.register(getDisposable(), spinner);
+        searching.setVisible(false);
+        spinner.suspend();
+        stateIcon.setVisible(false);
         setTitle("Connect the Flow: Choose a Way");
         setOKButtonText(action);
         ways_.waysList().addListSelectionListener(e -> {
@@ -121,8 +248,7 @@ public final class FlowWaysDialog extends DialogWrapper {
 
     @Override
     protected JComponent createCenterPanel() {
-        int n = ways.ways().size();
-        JBLabel head = new JBLabel(n + (n == 1 ? " way" : " ways") + " from " + from + " to " + to);
+        updateHead();
         head.setFont(JBUI.Fonts.label().deriveFont(java.awt.Font.BOLD, JBUI.Fonts.label().getSize2D() + 2f));
         JBLabel sub = new JBLabel("<html>The first one carries what the start works with (it is the closest). What is in " + there
                 + " already is marked; pick a way to see the lines it adds, double-click to take it.</html>");
@@ -130,6 +256,38 @@ public final class FlowWaysDialog extends DialogWrapper {
         JPanel top = new JPanel(new BorderLayout(0, JBUI.scale(4)));
         top.add(head, BorderLayout.NORTH);
         top.add(sub, BorderLayout.CENTER);
+        // the search goes on while the window is open: more ways join the list as they are found
+        searching.setOpaque(false);
+        JPanel spin = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, JBUI.scale(6), 0));
+        spin.setOpaque(false);
+        spin.add(spinner);
+        spin.add(stateIcon);
+        spin.add(searchText);
+        searchText.setFont(JBUI.Fonts.label().asBold());
+        searching.add(spin, BorderLayout.CENTER);
+        pauseButton.addActionListener(e -> {
+            if (!pauseButton.isEnabled()) return;
+            if (pausedNow) {
+                Runnable r = onResume;
+                if (r != null) r.run();
+            } else {
+                Runnable r = onPause;
+                if (r != null) r.run();
+                int n = ways.ways().size();
+                paused("Paused: " + n + (n == 1 ? " way" : " ways") + " found. Resume goes on from here.");
+            }
+        });
+        moreButton.addActionListener(e -> {
+            Runnable r = onMore;
+            if (r != null && moreButton.isEnabled()) r.run();
+        });
+        JPanel actions = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, JBUI.scale(6), 0));
+        actions.setOpaque(false);
+        actions.add(pauseButton);
+        actions.add(moreButton);
+        searching.add(actions, BorderLayout.EAST);
+        searching.setBorder(JBUI.Borders.emptyTop(6));
+        top.add(searching, BorderLayout.SOUTH);
         top.setBorder(JBUI.Borders.emptyBottom(10));
 
         JBScrollPane right = FlowScroll.wheel(new JBScrollPane(details));

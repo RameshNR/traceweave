@@ -290,8 +290,11 @@ final class FlowDiagramHost {
         close.setBorder(BorderFactory.createEmptyBorder());
         close.setContentAreaFilled(false);
         close.setFocusable(false);
-        close.setToolTipText("Close this tab (asks first)");
-        close.addActionListener(e -> closePage(page));
+        close.setToolTipText("Close this tab (asks first). Ctrl+click: close all the tabs");
+        close.addActionListener(e -> {
+            if (com.example.flowtracker.ui.FlowButton.ctrl(e)) closeAll(); // every tab (each with changes asks)
+            else closePage(page);
+        });
         h.add(dot);
         h.add(javax.swing.Box.createHorizontalStrut(JBUI.scale(6)));
         h.add(name);
@@ -570,11 +573,15 @@ final class FlowDiagramHost {
 
     /** The window's ✕: every tab with changes not applied asks first. */
     private boolean mayCloseAll() {
+        List<FlowDiagramDialog> discarded = new ArrayList<>();
         for (FlowDiagramDialog p : new ArrayList<>(pages)) {
             if (!p.hasChanges()) continue;
             select(p);
-            if (!p.mayClose()) return false;
+            if (!p.mayClose()) return false; // Keep Editing: nothing is dropped, every tab stays as it was
+            discarded.add(p);
         }
+        // each said Discard once: closing the window (which checks again) doesn't ask a second time
+        for (FlowDiagramDialog p : discarded) p.dropWithoutAsking();
         return true;
     }
 

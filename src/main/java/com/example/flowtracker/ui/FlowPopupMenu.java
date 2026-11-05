@@ -80,6 +80,7 @@ public final class FlowPopupMenu {
         panel.add(list, BorderLayout.CENTER);
         Dimension pref = list.getPreferredSize();
         panel.setPreferredSize(new Dimension(Math.max(JBUI.scale(260), pref.width + JBUI.scale(8)), pref.height + JBUI.scale(2)));
+        if (rightAligned) x = owner.getWidth() - panel.getPreferredSize().width; // its right edge at the owner's right edge
 
         JBPopup popup = JBPopupFactory.getInstance().createComponentPopupBuilder(panel, list)
                 .setRequestFocus(true)
@@ -124,11 +125,32 @@ public final class FlowPopupMenu {
             }
         });
         popup.show(new RelativePoint(owner, new Point(x, y)));
+        // the popup's window may sit off the point asked for (its border, the screen's scale): moved so the menu
+        // itself starts exactly there (under a button: at its left edge, or ending at its right edge)
+        int wantX = x, wantY = y;
+        SwingUtilities.invokeLater(() -> {
+            if (popup.isDisposed() || !panel.isShowing() || !owner.isShowing()) return;
+            Point want = owner.getLocationOnScreen();
+            want.translate(wantX, wantY);
+            Point got = panel.getLocationOnScreen();
+            if (got.equals(want)) return;
+            Point at = popup.getLocationOnScreen();
+            popup.setLocation(new Point(at.x + want.x - got.x, at.y + want.y - got.y));
+        });
     }
 
-    /** Below a button, lined up with its left edge. */
+    /** Below a button (with a small gap), lined up with its left edge. */
     public void showBelow(JComponent button) {
-        show(button, 0, button.getHeight() + JBUI.scale(4));
+        show(button, 0, button.getHeight() + JBUI.scale(6));
+    }
+
+    /** Lined up with the owner's right edge (set by {@link #showBelowRight}). */
+    private boolean rightAligned;
+
+    /** Below a button, ending at its right edge (e.g. a button at the right end of a toolbar). */
+    public void showBelowRight(JComponent button) {
+        rightAligned = true;
+        show(button, 0, button.getHeight() + JBUI.scale(6));
     }
 
     /** The next row that can be run, up or down (round the end). */

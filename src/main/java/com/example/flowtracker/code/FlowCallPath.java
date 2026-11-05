@@ -66,7 +66,7 @@ public final class FlowCallPath {
     /** How many calls deep it looks, and how many methods it reads at most. */
     static final int MAX_DEPTH = 12, MAX_METHODS = 4000;
     /** How many ways it finds at most. */
-    public static final int MAX_WAYS = 8;
+    public static final int MAX_WAYS = 10;
     /** What a call costs: one that uses the tracked values, and one that doesn't. */
     private static final int ON_TRACK = 1, OFF_TRACK = 4;
 
@@ -122,6 +122,9 @@ public final class FlowCallPath {
 
         /** @param methods how many methods were read so far; @param ways how many ways were found so far */
         void read(int methods, int ways);
+
+        /** A way was found (each once, in the order they are found: the closest first). */
+        default void found(Way way) {}
     }
 
     private static final com.intellij.openapi.diagnostic.Logger LOG =
@@ -157,17 +160,53 @@ public final class FlowCallPath {
      */
     public static Ways ways(Project project, FlowEntry from, FlowEntry to, @Nullable List<FlowEntry> flowLines, int max,
                             Progress progress) {
+        return session(project, from, to, flowLines, max).next(max, progress);
+    }
+
+    /**
+     * A search that can be paused and gone on with: {@link Session#next} finds ways up to a number, and stops when
+     * told; the next call goes on from where it was (what was read and found is kept), e.g. to resume it or to find
+     * more ways. Read the code in a read action, one call at a time.
+     *
+     * @param cap how often one method may be gone on from (more allows more ways through it; the most ways wanted)
+     */
+    public static Session session(Project project, FlowEntry from, FlowEntry to, @Nullable List<FlowEntry> flowLines, int cap) {
         PsiElement startAt = elementAt(project, from);
         PsiMethod a = methodAt(startAt);
         PsiElement endAt = elementAt(project, to);
         PsiMethod e = methodAt(endAt);
-        if (a == null) return new Ways(List.of(), describe(from) + " isn't inside a Java or Kotlin method.");
-        if (e == null) return new Ways(List.of(), describe(to) + " isn't inside a Java or Kotlin method.");
+        if (a == null) return new Session(null, new Ways(List.of(), describe(from) + " isn't inside a Java or Kotlin method."));
+        if (e == null) return new Session(null, new Ways(List.of(), describe(to) + " isn't inside a Java or Kotlin method."));
         if (a.equals(e)) {
             Step only = step(project, a, List.of(), "");
-            return new Ways(List.of(new Way(List.of(only), List.of(), 0, List.of())), "Both lines are in " + a.getName() + "().");
+            return new Session(null, new Ways(List.of(new Way(List.of(only), List.of(), 0, List.of())),
+                    "Both lines are in " + a.getName() + "()."));
         }
-        return new Search(project, a, e, startAt, flowLines, Math.max(1, max), progress).run(from, to);
+        return new Session(new Search(project, a, e, startAt, flowLines, Math.max(1, cap), from, to), null);
+    }
+
+    /** A search kept between runs (see {@link #session}). */
+    public static final class Session {
+        private final @Nullable Search search;
+        private final @Nullable Ways fixed;
+
+        private Session(@Nullable Search search, @Nullable Ways fixed) {
+            this.search = search;
+            this.fixed = fixed;
+        }
+
+        /**
+         * Goes on until {@code max} ways are found in all (those found before count), it is told to stop, or there is
+         * nothing left to look at. The ways are every one found so far; each new one is told to {@code progress}.
+         */
+        public Ways next(int max, Progress progress) {
+            return fixed != null ? fixed : search.next(Math.max(1, max), progress);
+        }
+
+        /** True when every way there is was found (nothing is left to look at). */
+        public boolean exhausted() {
+            return fixed != null || search.exhausted();
+        }
     }
 
     /** One search: the methods' calls are read once and shared by the ways. */
@@ -177,10 +216,19 @@ public final class FlowCallPath {
         final ProjectFileIndex index;
         final GlobalSearchScope scope;
         final String base;
-        final int startOffset, max;
+        final int startOffset, cap;
         final @Nullable PsiElement startStatement;
         final Set<String> startNames;
-        final Progress progress;
+        final FlowEntry from, to;
+        Progress progress = Progress.NONE;
+        // where the search is (kept between runs: a pause or more ways goes on from here)
+        // fixed (cost, order) entries: on equal cost the call made first in the code wins (bookTrip() before a later
+        // cancelBooking() that also reaches the end)
+        final PriorityQueue<State> queue = new PriorityQueue<>(Comparator.comparingInt(State::cost).thenComparingInt(State::order));
+        final Map<PsiMethod, Integer> taken = new HashMap<>(); // how often each method was gone on from (≤ cap)
+        final List<Way> ways = new ArrayList<>();
+        final Set<String> seen = new HashSet<>();
+        int read, order;
         /** The calls each method makes, by the method they reach (read once). */
         final Map<PsiMethod, Map<PsiMethod, Edge>> edges = new HashMap<>();
         final List<String> unresolved = new ArrayList<>(), outside = new ArrayList<>(); // for the log
@@ -197,13 +245,14 @@ public final class FlowCallPath {
             }
         }
 
-        Search(Project project, PsiMethod a, PsiMethod e, PsiElement startAt, @Nullable List<FlowEntry> flowLines, int max,
-               Progress progress) {
+        Search(Project project, PsiMethod a, PsiMethod e, PsiElement startAt, @Nullable List<FlowEntry> flowLines, int cap,
+               FlowEntry from, FlowEntry to) {
             this.project = project;
             this.a = a;
             this.e = e;
-            this.max = max;
-            this.progress = progress;
+            this.cap = cap;
+            this.from = from;
+            this.to = to;
             index = ProjectFileIndex.getInstance(project);
             scope = GlobalSearchScope.projectScope(project);
             base = project.getBasePath();
@@ -221,32 +270,52 @@ public final class FlowCallPath {
             } else {
                 startNames = spread(a, namesOn(startAt), startOffset);
             }
+            queue.add(new State(a, 0, order++, null, List.of(), "", startNames, 0));
         }
 
-        Ways run(FlowEntry from, FlowEntry to) {
-            // fixed (cost, order) entries: on equal cost the call made first in the code wins (bookTrip() before a
-            // later cancelBooking() that also reaches the end)
-            PriorityQueue<State> queue = new PriorityQueue<>(Comparator.comparingInt(State::cost).thenComparingInt(State::order));
-            int order = 0;
-            queue.add(new State(a, 0, order++, null, List.of(), "", startNames, 0));
-            Map<PsiMethod, Integer> taken = new HashMap<>(); // how often each method was gone on from (≤ max)
-            List<Way> ways = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
-            int read = 0;
+        /** True when nothing is left to look at (every way there is was found). */
+        boolean exhausted() {
+            return queue.isEmpty() || read >= MAX_METHODS;
+        }
+
+        Ways next(int max, Progress progress) {
+            this.progress = progress;
             while (!queue.isEmpty() && read < MAX_METHODS && ways.size() < max) {
                 if (progress.cancelled()) break;
+                com.intellij.openapi.progress.ProgressManager.checkCanceled(); // Cancel: the code lookups stop too
                 State s = queue.poll();
-                if (s.method.equals(e)) {
-                    Way w = way(s);
-                    if (seen.add(w.chain())) ways.add(w);
-                    progress.read(read, ways.size());
-                    continue;
+                try {
+                    advance(s);
+                } catch (com.intellij.openapi.progress.ProcessCanceledException stopped) {
+                    queue.add(s); // not done: the next run takes it again (nothing of it was kept)
+                    throw stopped;
                 }
-                int n = taken.merge(s.method, 1, Integer::sum);
-                if (n > max || s.depth >= MAX_DEPTH) continue;
-                read++;
-                if (read % 25 == 0) progress.read(read, ways.size());
-                for (Map.Entry<PsiMethod, Edge> next : edges(s.method).entrySet()) {
+            }
+            return result(max);
+        }
+
+        /** Takes one partial way on: the end (a way found), or the calls its method makes. */
+        private void advance(State s) {
+            if (s.method.equals(e)) {
+                Way w = way(s);
+                if (seen.add(w.chain())) {
+                    ways.add(w);
+                    progress.found(w); // shown at once, while the search goes on
+                }
+                progress.read(read, ways.size());
+                return;
+            }
+            int n = taken.getOrDefault(s.method, 0) + 1;
+            if (n > cap || s.depth >= MAX_DEPTH) {
+                taken.put(s.method, n);
+                return;
+            }
+            Map<PsiMethod, Edge> out = edges(s.method); // may be stopped: then nothing is changed yet
+            taken.put(s.method, n);
+            read++;
+            if (read % 25 == 0) progress.read(read, ways.size());
+            {
+                for (Map.Entry<PsiMethod, Edge> next : out.entrySet()) {
                     PsiMethod t = next.getKey();
                     if (s.has(t)) continue; // no going round in circles
                     List<PsiElement> all = next.getValue().calls();
@@ -265,7 +334,12 @@ public final class FlowCallPath {
                             s.depth + 1));
                 }
             }
+        }
+
+        /** The ways found so far, and what to say about them. */
+        private Ways result(int max) {
             progress.read(read, ways.size());
+            List<Way> ways = new ArrayList<>(this.ways);
             if (!ways.isEmpty()) {
                 Way best = ways.get(0);
                 String msg = (ways.size() == 1 ? "Found the way from " : "Found " + ways.size() + " ways from ")
@@ -330,6 +404,7 @@ public final class FlowCallPath {
             Map<PsiMethod, List<PsiElement>> calls = new LinkedHashMap<>();
             Map<PsiMethod, String> via = new HashMap<>();
             for (PsiElement call : callsOf(m, m.equals(a) ? startOffset : -1)) {
+                com.intellij.openapi.progress.ProgressManager.checkCanceled(); // a method with many calls: Cancel still stops it
                 List<Target> targets = new ArrayList<>(targetsOf(call));
                 targets.addAll(threadTargets(call)); // a task given to a thread / executor: its run() / call()
                 targets.addAll(apiTargets(call)); // an HTTP call to a path: the method that handles it

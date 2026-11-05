@@ -8,6 +8,21 @@
     <!-- <description> comes from src/main/plugin-description.html (see build.gradle.kts). -->
 
     <change-notes><![CDATA[
+<h3>1.4.1</h3>
+<ul>
+  <li>Connect the Flow: Choose a Way opens with the first way found and the others join the list while the search
+      goes on. Pause / Resume (it goes on from where it paused), Load More (10 ways at a time, off when there are no
+      others) and a colored state: searching, completed, paused or failed. Cancel stops the search at once.</li>
+  <li>Flow Diagram Sync (before Settings): saves by itself, the layout (positions, lines, looks, notes; the default)
+      or everything; the History marks the saved steps. Ctrl+click Close (or a tab's ✕) closes all the tabs, asking
+      once per tab with changes.</li>
+  <li>Debug Data: one toolbar for the value (a view button with ▾, Expand / Collapse following the selection, Find
+      showing the field filter, Settings with the fields' order and Hide Internals); hidden while nothing is
+      selected. Add, Edit, Remove and Reset work on a line's values too (+ adds a new value at the line). Editing a
+      value saved with internals edits it as shown ("BK-1042", not its bytes).</li>
+  <li>The Flow window's line numbers have room for 6 digits: a tag's bar no longer covers them. Menus open right
+      under their button, with a small gap.</li>
+</ul>
 <h3>1.4.0</h3>
 <ul>
   <li>New: <b>Stop at Value</b> tab. Stop the debugger on the line where a value shows up (e.g. BK-1044), without

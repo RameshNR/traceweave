@@ -111,10 +111,11 @@ public final class FlowWaysList extends JPanel {
         setOpaque(false);
         this.all = ways.ways();
         this.where = where;
-        long through = all.stream().filter(w -> newClasses(w) == 0).count();
-        allButton = new FlowButton("All " + all.size(), null, FlowButton.Style.SEGMENT);
-        thereButton = new FlowButton("Through " + there + " " + through, null, FlowButton.Style.SEGMENT);
-        newButton = new FlowButton("With new classes " + (all.size() - through), null, FlowButton.Style.SEGMENT);
+        this.thereText = there;
+        allButton = new FlowButton("All", null, FlowButton.Style.SEGMENT);
+        thereButton = new FlowButton("Through " + there, null, FlowButton.Style.SEGMENT);
+        newButton = new FlowButton("With new classes", null, FlowButton.Style.SEGMENT);
+        counts();
         allButton.setToolTipText("Every way found");
         thereButton.setToolTipText("Only the ways whose classes are all on " + there + " already");
         newButton.setToolTipText("Only the ways that bring classes " + there + " doesn't have yet");
@@ -211,6 +212,22 @@ public final class FlowWaysList extends JPanel {
         add(top, BorderLayout.NORTH);
         add(scroll, BorderLayout.CENTER);
         setFilter(0);
+    }
+
+    private final String thereText;
+
+    /** The filters' counts, from the ways there are now. */
+    private void counts() {
+        long through = all.stream().filter(w -> newClasses(w) == 0).count();
+        allButton.setText("All " + all.size());
+        thereButton.setText("Through " + thereText + " " + through);
+        newButton.setText("With new classes " + (all.size() - through));
+    }
+
+    /** The ways list changed (a search added ways while it is shown): counts and cards again, the pick kept. */
+    public void refresh() {
+        counts();
+        fill();
     }
 
     /** One click takes a way (the diagram's panel); else a double-click (the window). */

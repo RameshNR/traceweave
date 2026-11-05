@@ -209,7 +209,8 @@ final class FlowDiagramSearch {
     private static final class Renderer extends ColoredListCellRenderer<Item> {
         @Override
         protected void customizeCellRenderer(@NotNull JList<? extends Item> list, Item it, int index, boolean selected, boolean focus) {
-            setBorder(JBUI.Borders.empty(0, it.method() == null ? 10 : 30, 0, 10));
+            setBorder(JBUI.Borders.empty(0, 10, 0, 10));
+            setIconTextGap(JBUI.scale(6));
             if (it.method() == null) {
                 setIcon(AllIcons.Nodes.Class);
                 append(it.box().name, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
@@ -218,7 +219,11 @@ final class FlowDiagramSearch {
                 append("   " + (file.isEmpty() ? "" : file + "  ·  ") + n + (n == 1 ? " method" : " methods"),
                         SimpleTextAttributes.GRAYED_ATTRIBUTES);
             } else {
-                setIcon(AllIcons.Nodes.Method);
+                // under its class row (when classes are listed): indented, the icon moving with the name
+                boolean underClass = false;
+                for (int i = 0; i < list.getModel().getSize() && !underClass; i++) underClass = list.getModel().getElementAt(i).method() == null;
+                setIcon(underClass ? new com.intellij.ui.RowIcon(com.intellij.util.ui.EmptyIcon.create(JBUI.scale(16)), AllIcons.Nodes.Method)
+                        : AllIcons.Nodes.Method);
                 append(it.method().name, SimpleTextAttributes.REGULAR_ATTRIBUTES);
                 append("   " + it.box().name, SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 String project = it.box().project();

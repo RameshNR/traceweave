@@ -319,6 +319,62 @@ public class FlowCallPathTest extends LightJavaCodeInsightFixtureTestCase {
         // the single way the Flow tab takes is the first one
         assertEquals(best.lines().stream().map(x -> x.fileName + ":" + x.line).toList(),
                 FlowCallPath.betweenMethods(getProject(), List.of(start), end).lines().stream().map(x -> x.fileName + ":" + x.line).toList());
+
+        // each way is told as soon as it is found (the window shows it while the search goes on), in the same order
+        List<String> told = new java.util.ArrayList<>();
+        int[] readWhenFirst = {-1};
+        int[] readCalls = {0};
+        FlowCallPath.Ways again = FlowCallPath.ways(getProject(), start, end, List.of(start), FlowCallPath.MAX_WAYS,
+                new FlowCallPath.Progress() {
+                    @Override public boolean cancelled() { return false; }
+                    @Override public void read(int methods, int ways) { readCalls[0]++; }
+                    @Override public void found(FlowCallPath.Way way) {
+                        if (told.isEmpty()) readWhenFirst[0] = readCalls[0];
+                        told.add(way.chain());
+                    }
+                });
+        assertEquals(again.ways().stream().map(FlowCallPath.Way::chain).toList(), told);
+        assertTrue("the first way is told before the search ends", readWhenFirst[0] < readCalls[0]);
+
+        // stopped after the first way: it ends there, with that way
+        List<String> one = new java.util.ArrayList<>();
+        FlowCallPath.Ways stopped = FlowCallPath.ways(getProject(), start, end, List.of(start), FlowCallPath.MAX_WAYS,
+                new FlowCallPath.Progress() {
+                    @Override public boolean cancelled() { return !one.isEmpty(); }
+                    @Override public void read(int methods, int ways) {}
+                    @Override public void found(FlowCallPath.Way way) { one.add(way.chain()); }
+                });
+        assertEquals(1, stopped.ways().size());
+        assertEquals(one, List.of(stopped.ways().get(0).chain()));
+        assertTrue(stopped.message(), stopped.message().contains("Stopped"));
+
+        // paused after the first way, then resumed: it goes on from there (no way twice, nothing read again) and
+        // ends with the same ways as a search that never paused
+        FlowCallPath.Session session = FlowCallPath.session(getProject(), start, end, List.of(start), 64);
+        List<String> paused = new java.util.ArrayList<>();
+        int[] readAtPause = {0};
+        session.next(FlowCallPath.MAX_WAYS, new FlowCallPath.Progress() {
+            @Override public boolean cancelled() { return !paused.isEmpty(); }
+            @Override public void read(int methods, int ways) { readAtPause[0] = methods; }
+            @Override public void found(FlowCallPath.Way way) { paused.add(way.chain()); }
+        });
+        assertEquals(1, paused.size());
+        assertFalse(session.exhausted());
+        List<String> resumed = new java.util.ArrayList<>();
+        int[] firstRead = {-1};
+        FlowCallPath.Ways all = session.next(FlowCallPath.MAX_WAYS, new FlowCallPath.Progress() {
+            @Override public boolean cancelled() { return false; }
+            @Override public void read(int methods, int ways) { if (firstRead[0] < 0) firstRead[0] = methods; }
+            @Override public void found(FlowCallPath.Way way) { resumed.add(way.chain()); }
+        });
+        assertFalse("the first way isn't found again", resumed.contains(paused.get(0)));
+        assertTrue("the count of methods read goes on (" + firstRead[0] + " after " + readAtPause[0] + ")",
+                firstRead[0] >= readAtPause[0]);
+        List<String> both = new java.util.ArrayList<>(paused);
+        both.addAll(resumed);
+        assertEquals(again.ways().stream().map(FlowCallPath.Way::chain).toList(), both);
+        assertEquals(both, all.ways().stream().map(FlowCallPath.Way::chain).toList());
+        assertTrue("every way there is was found", session.exhausted());
     }
 
     /** A call through an interface reaches its implementation (e.g. a Spring bean injected as its interface). */

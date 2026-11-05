@@ -247,10 +247,13 @@ public final class FlowDiagramDialog {
         FlowButton close = new FlowButton("Close", null, FlowButton.Style.OUTLINE);
         FlowButton save = new FlowButton("Save", null, FlowButton.Style.PRIMARY);
         FlowButton reset = new FlowButton("Reset", null, FlowButton.Style.OUTLINE);
-        close.setToolTipText("Close this tab (asks first when it has changes not saved); ▾ for all the tabs");
+        close.setToolTipText("Close this tab (asks first when it has changes not saved). Ctrl+click: close all the tabs; ▾ for more");
         save.setToolTipText("Save the diagram to its flow; the tab stays open. ▾ Save All: every tab");
         reset.setToolTipText("Drop the changes made since the last Save; the tab stays open");
-        close.addActionListener(e -> doCancelAction());
+        close.addActionListener(e -> {
+            if (FlowButton.ctrl(e) && host != null) host.closeAll(); // Ctrl+click: every tab (each with changes asks)
+            else doCancelAction();
+        });
         save.addActionListener(e -> doOKAction());
         reset.addActionListener(e -> dropChanges());
         close.setDropDown("Close all the tabs", () -> FlowMenus.above(close,
@@ -293,7 +296,7 @@ public final class FlowDiagramDialog {
 
     /** This window's copy of the flow's history; stored back on Apply. */
     private final FlowDiagram.History history;
-    private final int openPosition;
+    private int openPosition;
     private String openSignature;
     /** The diagram as the window opened it (to tell whether anything was done). */
     private FlowDiagram openDiagram;
@@ -470,11 +473,24 @@ public final class FlowDiagramDialog {
         copySequence.setDropDown("Copy with a light or dark background", () -> backgroundMenu(copySequence, this::copySequenceImage));
         settings = button("Settings", FlowTheme.ICON_SETTINGS, FlowButton.Style.OUTLINE,
                 "Backgrounds of this window and of the copied images", () -> settingsMenu(settings));
+        syncButton = button("Sync", FlowTheme.ICON_SYNC, FlowButton.Style.OUTLINE, "", () -> {
+            look.setDiagramSync(!look.isDiagramSync());
+            if (look.isDiagramSync()) {
+                say(look.isDiagramSyncAll() ? "Sync on: every change is saved to the flow by itself."
+                        : "Sync on: the layout is saved by itself (positions, lines, looks and notes).");
+                syncSoon();
+            } else {
+                say("Sync off: Save keeps the changes.");
+            }
+        });
+        syncButton.setDropDown("What Sync saves: the layout only, or everything", () -> syncMenu(syncButton));
+        updateSyncButton();
         updateCopyTips(copyPng, copySequence);
         painter.linesOverBoxes = look.isLinesOverBoxes();
         look.addListener(lookChanged = () -> {
             updateCopyTips(copyPng, copySequence);
             painter.linesOverBoxes = look.isLinesOverBoxes();
+            updateSyncButton();
             root.repaint();
         });
 
@@ -489,7 +505,7 @@ public final class FlowDiagramDialog {
         toolbar.addGroup(false, 1, layout);
         // Copying and the window's settings sit at the end of the toolbar.
         toolbar.addTrailingGroup(1, copyPng, copySequence);
-        toolbar.addTrailingGroup(1, settings);
+        toolbar.addTrailingGroup(1, syncButton, settings);
         toolbar.setBorder(JBUI.Borders.emptyBottom(8));
 
         JBScrollPane scroll = com.example.flowtracker.ui.FlowScroll.wheel(new JBScrollPane(canvas));
@@ -555,7 +571,7 @@ public final class FlowDiagramDialog {
         side.add(com.example.flowtracker.ui.FlowScroll.wheel(new JBScrollPane(historyList, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
                 ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER)), BorderLayout.CENTER);
         JBLabel hint = new JBLabel("<html>Click a step to go back to it; Save uses the selected step. "
-                + "✔ marks applied steps. The History stays while the IDE runs.</html>");
+                + "✔ Saved: in the flow; ✔ Layout saved: its layout, by Sync. The History stays while the IDE runs.</html>");
         hint.setForeground(FlowTheme.FG_MUTED);
         hint.setFont(JBUI.Fonts.smallFont());
         side.add(hint, BorderLayout.SOUTH);
@@ -677,6 +693,84 @@ public final class FlowDiagramDialog {
         diagram.spreadOut(painter.measure(), BOX_GAP, selectedBox());
         if (!history.change(label, diagram)) say("Nothing changed: “" + label + "” leaves the diagram as it is.");
         refresh();
+        syncSoon();
+    }
+
+    // ---------- Sync: saved by itself ----------
+
+    /** Sync in the toolbar (before Settings): on = filled; its ▾ picks what it saves. */
+    private FlowButton syncButton;
+    /** A moment after the last change (a drag, a few quick edits…), the save. */
+    private final javax.swing.Timer syncTimer = new javax.swing.Timer(1200, e -> syncNow());
+
+    {
+        syncTimer.setRepeats(false);
+    }
+
+    private void updateSyncButton() {
+        if (syncButton == null) return;
+        boolean on = look.isDiagramSync();
+        syncButton.setSelected(on);
+        syncButton.setText(on ? (look.isDiagramSyncAll() ? "Sync: All" : "Sync: Layout") : "Sync");
+        syncButton.setToolTipText(!on ? "Sync is off: Save keeps the changes. Click to save by itself (▾: the layout only, or everything)"
+                : look.isDiagramSyncAll() ? "Sync is on: every change is saved to the flow by itself, like Save. Click to turn it off"
+                : "Sync is on: the layout (positions, lines, looks, notes) is saved by itself; added or removed classes, "
+                + "methods and lines wait for Save. Click to turn it off");
+    }
+
+    private void syncMenu(FlowButton under) {
+        boolean on = look.isDiagramSync(), all = look.isDiagramSyncAll();
+        new com.example.flowtracker.ui.FlowPopupMenu().header("SYNC SAVES")
+                .item(on && !all ? AllIcons.Actions.Checked : FlowTheme.ICON_LAYOUT, "The Layout Only",
+                        "Positions, lines (moved, shapes, colors), boxes' colors and formats, notes", null, () -> {
+                            look.setDiagramSyncAll(false);
+                            look.setDiagramSync(true);
+                            syncSoon();
+                        })
+                .item(on && all ? AllIcons.Actions.Checked : FlowTheme.ICON_SYNC, "Everything",
+                        "Also added or removed classes, methods, lines and calls: like Save, without asking", null, () -> {
+                            look.setDiagramSyncAll(true);
+                            look.setDiagramSync(true);
+                            syncSoon();
+                        })
+                .item(!on ? AllIcons.Actions.Checked : AllIcons.Actions.Cancel, "Off", "Save keeps the changes", null,
+                        () -> look.setDiagramSync(false))
+                .showBelow(under);
+    }
+
+    /** Sync is on: the save waits a moment for more changes (one save for a burst of them). */
+    private void syncSoon() {
+        if (look.isDiagramSync() && !disposed && !applied) syncTimer.restart();
+    }
+
+    /**
+     * Saves by itself: everything (like Save, without asking; the tab shows the flow as it is then), or only the
+     * layout: positions, line routes, shapes and colors, boxes' looks and notes. Changes to classes, methods and lines
+     * wait for Save then; when there are none, nothing is left unsaved.
+     */
+    private void syncNow() {
+        if (disposed || applied || project.isDisposed() || !look.isDiagramSync()) return;
+        if (!store.getFlowNames().contains(flowName) || !store.getEntriesOf(flowName).equals(entriesAtOpen)) return; // changed elsewhere: Save says
+        if (look.isDiagramSyncAll()) {
+            if (hasChanges() && applyChanges(false)) load(project, this);
+            return;
+        }
+        if (host != null) host.activate(this); // the tab's flow is the one written
+        List<FlowDiagramLook> looks = diagram.looks();
+        if (!FlowDiagram.sameLooks(looks, store.getDiagramLooks())) {
+            store.setDiagramLooks(looks);
+            say("Layout saved.");
+        }
+        layoutSaved.add(history.current()); // the History marks it
+        store.setDiagramHistory(history);
+        historyList.repaint();
+        // only the layout changed (no class, method or line): nothing is left to save
+        List<FlowEntry> now = store.getEntries();
+        if (diagram.apply(history.current().base(), now).entries().equals(now)) {
+            openDiagram = diagram.copy();
+            openPosition = history.position;
+            openSignature = diagram.signature();
+        }
     }
 
     private void undo() {
@@ -697,6 +791,7 @@ public final class FlowDiagramDialog {
             selection = FlowDiagramPainter.Selection.NONE;
         }
         refresh();
+        syncSoon(); // Undo / Redo / a History step: Sync saves that too
     }
 
     /** Updates buttons, the History list and the canvas after any change. */
@@ -795,74 +890,228 @@ public final class FlowDiagramDialog {
                     + " lines, " + label(to) + ": " + (e == null ? "none" : "1") + ").", false);
             return;
         }
-        if (busy.running()) return; // one search at a time
-        java.util.concurrent.atomic.AtomicBoolean stop = new java.util.concurrent.atomic.AtomicBoolean();
-        busy.start("Looking for the ways from " + label(from) + " to " + label(to), "Reading the code…",
-                "Following the calls (up to " + 12 + " deep) for up to " + com.example.flowtracker.code.FlowCallPath.MAX_WAYS + " ways",
-                () -> stop.set(true));
-        say("Looking for the ways from " + label(from) + " to " + label(to) + "…");
-        new com.intellij.openapi.progress.Task.Backgroundable(project, "Finding the ways between two methods", true) {
-            private com.example.flowtracker.code.FlowCallPath.Ways found;
-
-            @Override
-            public void run(@NotNull com.intellij.openapi.progress.ProgressIndicator indicator) {
-                // a method connected to a method: all of it is looked at, following what its flow lines work with
-                com.example.flowtracker.code.FlowCallPath.Progress progress = new com.example.flowtracker.code.FlowCallPath.Progress() {
-                    @Override public boolean cancelled() {
-                        return stop.get() || indicator.isCanceled();
-                    }
-
-                    @Override public void read(int methods, int ways) {
-                        String text = methods + (methods == 1 ? " method" : " methods") + " read · " + ways
-                                + (ways == 1 ? " way" : " ways") + " found";
-                        indicator.setText2(text);
-                        javax.swing.SwingUtilities.invokeLater(() -> busy.progress(text));
-                    }
-                };
-                found = FlowCompat.read(() -> com.example.flowtracker.code.FlowCallPath.ways(project, starts.get(0), e, starts,
-                        com.example.flowtracker.code.FlowCallPath.MAX_WAYS, progress));
-                PATH_LOG.info("  " + found.message() + " " + found.ways().stream().map(w -> w.chain()).toList());
-            }
-
-            @Override
-            public void onSuccess() {
-                busy.stop();
-                if (isDisposed()) return;
-                if (found == null || found.ways().isEmpty()) {
-                    tell(found == null ? "No way was found." : found.message(), false);
-                    return;
-                }
-                // the ways in a large window first; afterwards, selecting the method shows them as a bar in the tab
-                // (open it: hover a way to see it on the diagram, click it to add it)
-                Found f = new Found(found, from.id, to.id);
-                waysFor.put(from.id, f);
-                List<com.example.flowtracker.code.FlowCallPath.Way> all = found.ways();
-                com.example.flowtracker.code.FlowCallPath.Way pick = com.example.flowtracker.ui.FlowWaysDialog.choose(project, canvas, found,
-                        label(from), label(to), "Add This Way", FlowDiagramDialog.this::whereOnTab, "this tab", FlowDiagramDialog.this::wayOnTab,
-                        w -> previewWay(f, w)); // the way under the mouse, drawn on the diagram behind the window
-                if (pick != null) {
-                    addPath(from, to, pick.lines(), all.size() == 1 ? found.message()
-                            : "Added way " + (all.indexOf(pick) + 1) + " of " + all.size() + ": " + pick.chain() + ".");
-                } else {
-                    say(found.message() + " The ways stay in the bar above the zoom buttons.");
-                }
-                showWays(from.id, true); // from now on: the bar on the diagram (a click opens it)
-            }
-
-            @Override
-            public void onCancel() {
-                busy.stop();
-                if (!isDisposed()) say("Stopped looking for the ways.");
-            }
-
-            @Override
-            public void onThrowable(@NotNull Throwable error) {
-                busy.stop();
-                PATH_LOG.warn("Connect the Flow failed", error);
-                if (!isDisposed()) tell("Couldn't read the code between them: " + error, false);
-            }
-        }.queue();
+        if (busy.running() || waySearch != null && waySearch.looking) return; // one search at a time
+        waySearch = new WaySearch(from, to, starts, e);
+        waySearch.begin();
     }
+
+    /** The Connect the Flow search going on (or the last one): its ways, the window showing them. */
+    private @Nullable WaySearch waySearch;
+
+    /**
+     * One Connect the Flow search between two methods. The ways show as they are found: the first opens Choose a Way,
+     * the others join its list. Pause stops it where it is and Resume goes on from there; Load More raises the limit
+     * ({@link com.example.flowtracker.code.FlowCallPath#MAX_WAYS} more each time) and goes on too. The search is
+     * kept between runs: nothing it checked is checked again.
+     */
+    private final class WaySearch {
+        final FlowDiagram.Method from, to;
+        final List<FlowEntry> starts;
+        final FlowEntry end;
+        /** The ways found, in the order found (only changed on the EDT). */
+        final List<com.example.flowtracker.code.FlowCallPath.Way> live = new ArrayList<>();
+        final java.util.Set<String> chains = new java.util.HashSet<>();
+        final Found found;
+        @Nullable com.example.flowtracker.ui.FlowWaysDialog window;
+        boolean opened, looking;
+        /** How many ways this run looks for. */
+        int max = com.example.flowtracker.code.FlowCallPath.MAX_WAYS;
+        /** The search, kept between runs (made by the first one). */
+        volatile @Nullable com.example.flowtracker.code.FlowCallPath.Session session;
+        /** The most ways a session may find: how often one method may be gone on from. */
+        static final int CAP = 400;
+        /**
+         * A way found past the number shown (the search looks one further): there is more, Load More shows it first.
+         * Only changed on the EDT.
+         */
+        final List<com.example.flowtracker.code.FlowCallPath.Way> held = new ArrayList<>();
+        /** Each run has its own number: what an earlier run says late is left out. */
+        int run;
+        java.util.concurrent.atomic.AtomicBoolean stop = new java.util.concurrent.atomic.AtomicBoolean();
+        final java.util.concurrent.atomic.AtomicReference<com.intellij.openapi.progress.ProgressIndicator> indicator =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        WaySearch(FlowDiagram.Method from, FlowDiagram.Method to, List<FlowEntry> starts, FlowEntry end) {
+            this.from = from;
+            this.to = to;
+            this.starts = starts;
+            this.end = end;
+            this.found = new Found(new com.example.flowtracker.code.FlowCallPath.Ways(live, ""), from.id, to.id);
+        }
+
+        /** The first run: "Looking for the ways…" over the drawing until the first way opens the window. */
+        void begin() {
+            busy.start("Looking for the ways from " + label(from) + " to " + label(to), "Reading the code…",
+                    "Each way shows as soon as it is found; the search goes on (up to " + max + " ways, 12 calls deep)",
+                    () -> {
+                        halt();
+                        busy.stop(); // at once: nothing waits for the search to notice
+                        if (!opened) say("Stopped looking for the ways.");
+                    });
+            say("Looking for the ways from " + label(from) + " to " + label(to) + "…");
+            start();
+        }
+
+        /** Cancel / Stop: the search ends now (the code lookups too), not after it has read everything. */
+        void halt() {
+            stop.set(true);
+            com.intellij.openapi.progress.ProgressIndicator i = indicator.get();
+            if (i != null) i.cancel();
+        }
+
+        /** Load More: the next ways (the one held back first), the search going on from where it ended. */
+        void more() {
+            if (looking) return;
+            max = live.size() + com.example.flowtracker.code.FlowCallPath.MAX_WAYS;
+            for (com.example.flowtracker.code.FlowCallPath.Way w : held) live.add(w);
+            held.clear();
+            if (window != null) {
+                window.added();
+                window.searching("Looking for more ways…");
+            }
+            start();
+        }
+
+        /** Resume: the search goes on from where it paused (what was checked isn't checked again). */
+        void resume() {
+            if (looking) return;
+            if (window != null) window.searching("Going on from where it paused…");
+            start();
+        }
+
+        private void start() {
+            int mine = ++run;
+            looking = true;
+            java.util.concurrent.atomic.AtomicBoolean halted = new java.util.concurrent.atomic.AtomicBoolean();
+            stop = halted;
+            indicator.set(null);
+            int limit = max;
+            new com.intellij.openapi.progress.Task.Backgroundable(project, "Finding the ways between two methods", true) {
+                @Override
+                public void run(@NotNull com.intellij.openapi.progress.ProgressIndicator ind) {
+                    indicator.set(ind);
+                    if (halted.get()) ind.cancel();
+                    com.example.flowtracker.code.FlowCallPath.Progress progress = new com.example.flowtracker.code.FlowCallPath.Progress() {
+                        @Override public boolean cancelled() {
+                            return halted.get() || ind.isCanceled();
+                        }
+
+                        @Override public void read(int methods, int ways) {
+                            String text = methods + (methods == 1 ? " method" : " methods") + " read · " + ways
+                                    + (ways == 1 ? " way" : " ways") + " found";
+                            ind.setText2(text);
+                            // SwingUtilities: these run while the ways window (a modal dialog) is open too
+                            javax.swing.SwingUtilities.invokeLater(() -> {
+                                if (mine != run) return;
+                                if (window != null) window.progress("Looking for more ways… " + text);
+                                else if (!opened) busy.progress(text);
+                            });
+                        }
+
+                        @Override public void found(com.example.flowtracker.code.FlowCallPath.Way way) {
+                            javax.swing.SwingUtilities.invokeLater(() -> {
+                                // an old run, cancelled, or the window closed: what comes late isn't shown
+                                if (mine != run || isDisposed() || halted.get() && window == null) return;
+                                if (!chains.add(way.chain())) return; // found before
+                                if (live.size() >= limit) { // one past the number shown: there is more (Load More shows it)
+                                    held.add(way);
+                                    return;
+                                }
+                                live.add(way);
+                                if (window != null) window.added();
+                                else if (!opened) openWindow(); // the first way: the window opens (once) and waits here
+                            });
+                        }
+                    };
+                    com.example.flowtracker.code.FlowCallPath.Ways ways;
+                    boolean exhausted;
+                    try {
+                        ways = FlowCompat.read(() -> {
+                            if (session == null) {
+                                session = com.example.flowtracker.code.FlowCallPath.session(project, starts.get(0), end, starts,
+                                        Math.max(CAP, limit));
+                            }
+                            // one more than shown: when it is found, Load More has more to show (else it is off)
+                            return session.next(limit + 1, progress); // goes on from where the last run stopped
+                        });
+                        exhausted = session.exhausted();
+                    } catch (com.intellij.openapi.progress.ProcessCanceledException stopped) {
+                        javax.swing.SwingUtilities.invokeLater(() -> ended(mine, Ending.PAUSED, null, false));
+                        throw stopped;
+                    } catch (RuntimeException failure) {
+                        PATH_LOG.warn("Connect the Flow failed", failure);
+                        javax.swing.SwingUtilities.invokeLater(() -> ended(mine, Ending.FAILED,
+                                "Couldn't read the code between them: " + failure, false));
+                        return;
+                    }
+                    PATH_LOG.info("  " + ways.message() + " " + ways.ways().stream().map(w -> w.chain()).toList());
+                    boolean paused = halted.get();
+                    boolean more = ways.ways().size() > limit; // a way past the ones shown was found: Load More
+                    String none = ways.ways().isEmpty() ? ways.message() : null;
+                    // told straight to the window (after the ways it found, sent before): the task's own onSuccess
+                    // waits until no modal window is open, and the ways window is one
+                    javax.swing.SwingUtilities.invokeLater(() -> ended(mine, paused ? Ending.PAUSED : Ending.COMPLETED, none, more));
+                }
+
+                @Override public void onCancel() {
+                    ended(mine, Ending.PAUSED, null, false);
+                }
+            }.queue();
+        }
+
+        /** The run ended: the window says how (green / amber / red), or, with no way, the message is shown. */
+        void ended(int mine, Ending how, @Nullable String message, boolean more) {
+            if (mine != run || !looking) return; // an old run, or told already
+            looking = false;
+            if (how == Ending.COMPLETED) more = !held.isEmpty(); // the way held back (sent before this) says there is more
+            busy.stop();
+            if (isDisposed()) return;
+            int n = live.size();
+            String ways = n + (n == 1 ? " way" : " ways");
+            if (window != null) {
+                switch (how) {
+                    case COMPLETED -> window.completed("Completed: found " + ways + " from " + label(from) + " to " + label(to) + "."
+                            + (more ? " There are more: Load More shows the next " + com.example.flowtracker.code.FlowCallPath.MAX_WAYS + "."
+                            : " No other ways."), more);
+                    case PAUSED -> window.paused("Paused: " + ways + " found. Resume goes on from here.");
+                    case FAILED -> window.failed(message != null ? message : "Couldn't read the code.");
+                }
+            } else if (!opened) {
+                if (how == Ending.PAUSED) say("Stopped looking for the ways.");
+                else tell(message != null ? message : "No way was found.", false);
+            }
+        }
+
+        /** The window, with the first way; the others come in while it is open. */
+        void openWindow() {
+            opened = true;
+            busy.stop();
+            waysFor.put(from.id, found);
+            com.example.flowtracker.ui.FlowWaysDialog d = com.example.flowtracker.ui.FlowWaysDialog.live(canvas, found.ways(),
+                    label(from), label(to), "Add This Way", FlowDiagramDialog.this::whereOnTab, "this tab",
+                    FlowDiagramDialog.this::wayOnTab, w -> previewWay(found, w), // the way under the mouse (or picked), on the diagram
+                    this::halt, this::resume, this::more);
+            window = d;
+            boolean ok;
+            try {
+                ok = d.showAndGet();
+            } finally {
+                window = null;
+                previewWay(found, null);
+            }
+            halt(); // a way taken (or the window closed): no need to look further
+            com.example.flowtracker.code.FlowCallPath.Way pick = ok ? d.picked() : null;
+            if (pick != null) {
+                addPath(from, to, pick.lines(), live.size() == 1 ? "Added the way: " + pick.chain() + "."
+                        : "Added way " + (live.indexOf(pick) + 1) + " of " + live.size() + ": " + pick.chain() + ".");
+            } else {
+                say(live.size() + (live.size() == 1 ? " way" : " ways") + " found. They stay in the bar above the zoom buttons.");
+            }
+            if (!isDisposed()) showWays(from.id, true); // from now on: the bar on the diagram (a click opens it)
+        }
+    }
+
+    private enum Ending { COMPLETED, PAUSED, FAILED }
 
     /** "Looking for the ways…" over the drawing while Connect the Flow reads the code. */
     private com.example.flowtracker.ui.FlowBusyOverlay busy;
@@ -1253,21 +1502,28 @@ public final class FlowDiagramDialog {
         return true;
     }
 
+    /** History steps whose layout Sync saved (their classes, methods and lines may still wait for Save). */
+    private final java.util.Set<FlowDiagram.History.Step> layoutSaved =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
     private final class HistoryRenderer extends DefaultListCellRenderer {
         @Override
         public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean selected, boolean focus) {
             JLabel l = (JLabel) super.getListCellRendererComponent(list, value, index, selected, focus);
             FlowDiagram.History.Step s = (FlowDiagram.History.Step) value;
-            String text = (s.open() ? "" : index + ". ") + s.label() + (s.applied() ? "  ✔ applied" : "");
-            l.setText(text);
+            String label = (s.open() ? "" : index + ". ") + s.label();
+            // saved to the flow (Save, or Sync of everything), or its layout saved by Sync: a green mark after it
+            String mark = s.applied() ? "✔ Saved" : layoutSaved.contains(s) ? "✔ Layout saved" : "";
+            String green = String.format("#%06x", ADDED.getRGB() & 0xFFFFFF);
+            l.setText(mark.isEmpty() ? label : "<html>" + com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(label)
+                    + " &nbsp;<span style='color:" + green + "'><b>" + mark + "</b></span></html>");
+            String text = label + (mark.isEmpty() ? "" : "  " + mark + (s.applied() ? " (to the flow)" : " (positions, lines, looks, notes)"));
             l.setToolTipText(text);
             l.setBorder(JBUI.Borders.empty(3, 6));
             if (s.open()) l.setFont(l.getFont().deriveFont(Font.BOLD));
             if (index > history.position && !selected) {
                 l.setForeground(FlowTheme.FG_DISABLED); // undone: Redo brings it back
                 l.setFont(l.getFont().deriveFont(Font.ITALIC));
-            } else if (s.applied() && !selected) {
-                l.setForeground(ADDED);
             }
             return l;
         }
@@ -1960,6 +2216,24 @@ public final class FlowDiagramDialog {
                 new FlowSettingsPopup.Choice(FlowTheme.ICON_CONNECT, "Let Lines Cross the Classes",
                         "A dragged line goes exactly where you drop it, over classes too.",
                         look::isLinesOverBoxes, () -> look.setLinesOverBoxes(true))));
+        sections.put("SYNC (SAVED BY ITSELF)", List.of(
+                new FlowSettingsPopup.Choice(FlowTheme.ICON_SYNC, "Off", "Save keeps the changes.",
+                        () -> !look.isDiagramSync(), () -> look.setDiagramSync(false)),
+                new FlowSettingsPopup.Choice(FlowTheme.ICON_LAYOUT, "Auto Save Layout Changes",
+                        "Positions, lines (moved, shapes, colors), boxes' colors and formats, notes. Added or removed classes, "
+                                + "methods and lines wait for Save.",
+                        () -> look.isDiagramSync() && !look.isDiagramSyncAll(), () -> {
+                            look.setDiagramSyncAll(false);
+                            look.setDiagramSync(true);
+                            syncSoon();
+                        }),
+                new FlowSettingsPopup.Choice(FlowTheme.ICON_SYNC, "Auto Save Everything",
+                        "Every change, also classes, methods, lines and calls: like Save, without asking.",
+                        () -> look.isDiagramSync() && look.isDiagramSyncAll(), () -> {
+                            look.setDiagramSyncAll(true);
+                            look.setDiagramSync(true);
+                            syncSoon();
+                        })));
         FlowSettingsPopup.showChoices(under, "Flow Diagram Settings", sections,
                 "Remembered for all projects. The Dark / Light switch in the drawing area's corner flips the window's background.", false);
     }

@@ -30,6 +30,10 @@ public final class FlowLook implements PersistentStateComponent<FlowLook.State> 
         public Background imageBackground = Background.LIGHT;
         /** Lines dragged by hand in the Flow Diagram may run across the classes (false: they keep off them). */
         public boolean linesOverBoxes = false;
+        /** The Flow Diagram's Sync: changes are saved by themselves (no Save needed). On by default, for the layout. */
+        public boolean diagramSync = true;
+        /** What Sync saves: true = everything (like Save); false = only the layout (positions, lines, looks, notes). */
+        public boolean diagramSyncAll = false;
     }
 
     private State state = new State();
@@ -76,6 +80,22 @@ public final class FlowLook implements PersistentStateComponent<FlowLook.State> 
     public void setLinesOverBoxes(boolean on) {
         if (state.linesOverBoxes == on) return;
         state.linesOverBoxes = on;
+        for (Runnable r : listeners) r.run();
+    }
+
+    public boolean isDiagramSync() { return state.diagramSync; }
+
+    public void setDiagramSync(boolean on) {
+        if (state.diagramSync == on) return;
+        state.diagramSync = on;
+        for (Runnable r : listeners) r.run();
+    }
+
+    public boolean isDiagramSyncAll() { return state.diagramSyncAll; }
+
+    public void setDiagramSyncAll(boolean all) {
+        if (state.diagramSyncAll == all) return;
+        state.diagramSyncAll = all;
         for (Runnable r : listeners) r.run();
     }
 

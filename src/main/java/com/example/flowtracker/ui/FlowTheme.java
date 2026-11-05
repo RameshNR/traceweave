@@ -153,7 +153,7 @@ public final class FlowTheme {
     static final Icon ICON_UP = icon("tb_up");
     static final Icon ICON_DOWN = icon("tb_down");
     public static final Icon ICON_SETTINGS = icon("tb_settings");
-    static final Icon ICON_SYNC = icon("tb_sync");
+    public static final Icon ICON_SYNC = icon("tb_sync");
     static final Icon ICON_MARKDOWN = icon("tb_markdown");
     static final Icon ICON_INFO = icon("tb_info");
     public static final Icon ICON_UNDO = icon("tb_undo");

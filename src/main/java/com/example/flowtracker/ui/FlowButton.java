@@ -85,7 +85,7 @@ public final class FlowButton extends JComponent {
                 pressed = false;
                 repaint();
                 if (fire && arrow && dropDown != null) dropDown.run();
-                else if (fire && !arrow) fireAction();
+                else if (fire && !arrow) fireAction(keys(e));
             }
         });
         addMouseMotionListener(new MouseAdapter() {
@@ -175,9 +175,20 @@ public final class FlowButton extends JComponent {
         repaint();
     }
 
-    private void fireAction() {
-        ActionEvent ev = new ActionEvent(this, ActionEvent.ACTION_PERFORMED, text);
+    private void fireAction(int modifiers) {
+        ActionEvent ev = new ActionEvent(this, ActionEvent.ACTION_PERFORMED, text, System.currentTimeMillis(), modifiers);
         for (ActionListener l : new ArrayList<>(listeners)) l.actionPerformed(ev);
+    }
+
+    /** The keys held with the click, as an ActionEvent's modifiers (e.g. Ctrl+click: Close All). */
+    private static int keys(MouseEvent e) {
+        return (e.isControlDown() ? ActionEvent.CTRL_MASK : 0) | (e.isMetaDown() ? ActionEvent.META_MASK : 0)
+                | (e.isShiftDown() ? ActionEvent.SHIFT_MASK : 0) | (e.isAltDown() ? ActionEvent.ALT_MASK : 0);
+    }
+
+    /** True when the action came from a Ctrl+click (Cmd+click on a Mac). */
+    public static boolean ctrl(ActionEvent e) {
+        return (e.getModifiers() & (ActionEvent.CTRL_MASK | ActionEvent.META_MASK)) != 0;
     }
 
     private boolean showsText() { return icon == null || !compact && text != null && !text.isEmpty(); }

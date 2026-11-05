@@ -361,15 +361,26 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             viewButtons.put(v, b);
             segments.add(b);
         }
-        views.addGroup(true, 2, segments.toArray(new FlowButton[0]));
+        viewButton.setToolTipText("How the value is shown: Tree, JSON or Text (▾)");
+        viewButton.addActionListener(e -> viewMenu());
+        viewButton.setDropDown("Show the value as a Tree, JSON or Text", this::viewMenu);
+        views.addGroup(false, 2, viewButton, expandToggle);
         views.addGroup(false, 2, addField, edit, removeField, resetValue);
-        views.addGroup(false, 2, copyValue, exportValue);
+        views.addGroup(false, 2, exportValue);
         views.setBorder(JBUI.Borders.empty(0, 2, 4, 2));
-        FlowToolbar shape = new FlowToolbar();
+        // the same toolbar: it wraps as one, so no button is left alone on a line
+        FlowToolbar shape = views;
         FlowButton expandAll = button("Expand All", AllIcons.Actions.Expandall, "Open every block of the value", this::expandValue);
         FlowButton collapseAll = button("Collapse All", AllIcons.Actions.Collapseall,
                 "Fold every block: the value's own fields show, each folded", this::collapseValue);
-        shape.addGroup(false, 0, expandAll, collapseAll);
+        expandToggle.addActionListener(e -> toggleExpand());
+        values.addTreeExpansionListener(new javax.swing.event.TreeExpansionListener() {
+            @Override public void treeExpanded(javax.swing.event.TreeExpansionEvent e) { updateExpandToggle(); }
+            @Override public void treeCollapsed(javax.swing.event.TreeExpansionEvent e) { updateExpandToggle(); }
+        });
+        values.addTreeSelectionListener(e -> updateExpandToggle());
+        updateExpandToggle();
+        // (Expand / Collapse sits next to the view)
         List<FlowButton> sorts = new ArrayList<>();
         for (com.example.flowtracker.model.FlowValueShape.Sort so : com.example.flowtracker.model.FlowValueShape.Sort.values()) {
             FlowButton b = new FlowButton(so.label, null, FlowButton.Style.SEGMENT);
@@ -379,8 +390,7 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             sortButtons.put(so, b);
             sorts.add(b);
         }
-        shape.addGroup(true, 3, sorts.toArray(new FlowButton[0]));
-        sortButtons.get(sort).setSelected(true);
+        sortButtons.get(sort).setSelected(true); // the order is picked in the value's Settings (⚙)
         FlowButton internals = new FlowButton("Hide Internals", AllIcons.Actions.ToggleVisibility, FlowButton.Style.SEGMENT);
         internals.setSelected(com.example.flowtracker.model.FlowValueShape.hideInternals());
         internals.setToolTipText("<html><b>Hide Internals</b>: what a language or its tools put inside a value, left out (only how it is shown).<br>"
@@ -395,28 +405,47 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             internals.setSelected(com.example.flowtracker.model.FlowValueShape.hideInternals());
             reshape();
         });
-        shape.addGroup(true, 1, internals);
+        // (Hide Internals is in the value's Settings)
+        // at the end: Find shows (or hides) the field filter; Settings holds the fields' order
+        findButton.setToolTipText("Filter the fields (name, value or type); click again to hide it (Ctrl+F)");
+        findButton.addActionListener(e -> showFind(!filterRow.isVisible()));
+        FlowButton valueSettings = button("Settings", FlowTheme.ICON_SETTINGS, "How the value is shown: the order of its fields, Hide Internals",
+                () -> {});
+        valueSettings.addActionListener(e -> {
+            com.example.flowtracker.ui.FlowPopupMenu m = new com.example.flowtracker.ui.FlowPopupMenu().header("ORDER OF THE FIELDS");
+            for (com.example.flowtracker.model.FlowValueShape.Sort so : com.example.flowtracker.model.FlowValueShape.Sort.values()) {
+                m.item(so == sort ? AllIcons.Actions.Checked : AllIcons.ObjectBrowser.Sorted, so.label,
+                        so == com.example.flowtracker.model.FlowValueShape.Sort.AS_SAVED ? "As they were saved" : "By name",
+                        null, () -> setSort(so));
+            }
+            // Hide Internals: one setting for Debug Data, Compare, Compare Pasted Data and Stop at Value
+            boolean hidden = com.example.flowtracker.model.FlowValueShape.hideInternals();
+            m.separator().header("SHOW")
+                    .item(hidden ? AllIcons.Actions.Checked : AllIcons.Actions.ToggleVisibility, "Hide Internals",
+                            "Strings as text, no compiler fields", null, () -> {
+                                com.example.flowtracker.model.FlowValueShape.setHideInternals(!hidden);
+                                internals.setSelected(!hidden);
+                                reshape();
+                            });
+            m.showBelowRight(valueSettings); // it ends where the button ends
+        });
+        shape.addTrailingGroup(1, findButton, valueSettings);
         valueFilter.getTextEditor().getEmptyText().setText("Filter the fields (name, value or type)");
         valueFilter.setToolTipText("Only the fields that have this text, with the fields around them (Ctrl+F)");
         valueFilter.addDocumentListener(new DocumentAdapter() {
             @Override protected void textChanged(@NotNull DocumentEvent e) { reshape(); }
         });
-        JPanel shapeRow = new JPanel(new ShapeRowLayout(shape, valueFilter));
-        shapeRow.setOpaque(false);
-        shapeRow.add(shape);
-        shapeRow.add(valueFilter);
-        shapeRow.setBorder(JBUI.Borders.empty(0, 2, 6, 2));
-        shapeRow.addComponentListener(new java.awt.event.ComponentAdapter() {
-            @Override public void componentResized(java.awt.event.ComponentEvent e) { // side by side, or the filter under
-                if (shapeRow.getLayout().preferredLayoutSize(shapeRow).height != shapeRow.getHeight()) {
-                    javax.swing.SwingUtilities.invokeLater(shapeRow::revalidate);
-                }
-            }
-        });
-        JPanel tools = new JPanel(new BorderLayout());
+        filterRow.setLayout(new BorderLayout());
+        filterRow.setOpaque(false);
+        filterRow.add(valueFilter, BorderLayout.CENTER);
+        filterRow.setBorder(JBUI.Borders.empty(0, 2, 6, 2));
+        filterRow.setVisible(false); // Find shows it
+        JPanel tools = valueTools;
+        tools.setLayout(new BorderLayout());
         tools.setOpaque(false);
-        tools.add(views, BorderLayout.NORTH);
-        tools.add(shapeRow, BorderLayout.SOUTH);
+        tools.add(shape, BorderLayout.CENTER);
+        tools.add(filterRow, BorderLayout.SOUTH);
+        tools.setVisible(false); // shown with a value
         JPanel head = new JPanel(new BorderLayout());
         head.add(valueTitle, BorderLayout.CENTER);
         head.add(tools, BorderLayout.SOUTH);
@@ -473,68 +502,6 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         });
         showFlowName();
         reload();
-    }
-
-    /**
-     * The buttons that shape the value (expand, sort, Java internals) and the filter box: side by side while the
-     * buttons fit on one line next to a filter box of a useful width, else the filter box on a line of its own under
-     * them, as wide as the pane. Nothing is stretched or cut.
-     */
-    private static final class ShapeRowLayout implements java.awt.LayoutManager {
-        private final FlowToolbar bar;
-        private final JComponent filter;
-
-        ShapeRowLayout(FlowToolbar bar, JComponent filter) {
-            this.bar = bar;
-            this.filter = filter;
-        }
-
-        private static int gap() { return JBUI.scale(8); }
-        private static int filterMin() { return JBUI.scale(180); }
-
-        /** The inner width, and whether both fit on one line in it (the toolbar is told what is left for it). */
-        private boolean side(java.awt.Container parent) {
-            java.awt.Insets in = parent.getInsets();
-            int w = parent.getWidth() - in.left - in.right;
-            if (w <= 0) return true;
-            boolean side = bar.fitsOneLine(w - filterMin() - gap());
-            bar.reserve(side ? filterMin() + gap() : 0);
-            return side;
-        }
-
-        @Override public void addLayoutComponent(String name, java.awt.Component comp) {}
-        @Override public void removeLayoutComponent(java.awt.Component comp) {}
-
-        @Override
-        public Dimension preferredLayoutSize(java.awt.Container parent) {
-            java.awt.Insets in = parent.getInsets();
-            boolean side = side(parent);
-            Dimension b = bar.getPreferredSize(), f = filter.getPreferredSize();
-            int h = side ? Math.max(b.height, f.height) : b.height + gap() / 2 + f.height;
-            return new Dimension(b.width + (side ? gap() + filterMin() : 0) + in.left + in.right, h + in.top + in.bottom);
-        }
-
-        @Override
-        public Dimension minimumLayoutSize(java.awt.Container parent) {
-            return new Dimension(0, preferredLayoutSize(parent).height);
-        }
-
-        @Override
-        public void layoutContainer(java.awt.Container parent) {
-            java.awt.Insets in = parent.getInsets();
-            int x = in.left, y = in.top, w = parent.getWidth() - in.left - in.right;
-            boolean side = side(parent);
-            Dimension b = bar.getPreferredSize(), f = filter.getPreferredSize();
-            if (side) {
-                int h = Math.max(b.height, f.height);
-                bar.setBounds(x, y + (h - b.height) / 2, b.width, b.height);
-                int fx = x + b.width + gap();
-                filter.setBounds(fx, y + (h - f.height) / 2, Math.max(0, x + w - fx), f.height);
-            } else {
-                bar.setBounds(x, y, Math.min(w, b.width), b.height);
-                filter.setBounds(x, y + b.height + gap() / 2, w, f.height);
-            }
-        }
     }
 
     private static FlowButton button(String text, javax.swing.Icon icon, String tip, Runnable action) {
@@ -665,9 +632,11 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             all.children.add(v);
         }
         showValue(null, all, null);
+        lineSnapshots = saved;
         valueTitle.setText("<html><b>" + saved.size() + (saved.size() == 1 ? " value" : " values") + "</b> at " + first.where()
                 + (first.method().isEmpty() ? "" : " in " + first.method())
-                + " · pick one in the list to edit it</html>");
+                + " · pick a field to edit it</html>");
+        updateButtons();
     }
 
     private List<String> expandedGroupKeys() {
@@ -924,6 +893,8 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         java.awt.Rectangle seen = values.getVisibleRect();
         shownSnapshot = s;
         shownRoot = root;
+        valueTools.setVisible(true);
+        lineSnapshots = null; // a line's values set it again after this
         DefaultMutableTreeNode top = node(null, shown(root), "", com.example.flowtracker.model.FlowHuntStore.get(project).pinned());
         values.setModel(new DefaultTreeModel(top));
         values.expandPath(new TreePath(top.getPath()));
@@ -1013,7 +984,11 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         asText.setEditable(false);
         values.setModel(new DefaultTreeModel(new DefaultMutableTreeNode()));
         valueTitle.setText("");
+        valueTools.setVisible(false); // nothing selected: no buttons, just the hint
     }
+
+    /** The value's buttons and the field filter (hidden while no value is selected). */
+    private final JPanel valueTools = new JPanel();
 
     /** Every field selected in the value tree (Ctrl+click / Shift+click), in tree order. */
     private List<String> selectedValuePaths() {
@@ -1037,10 +1012,37 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
 
     // ---------- JSON / text, copy and export ----------
 
+    /** Tree, JSON or Text: one button showing the view, its ▾ (or a click) picks another. */
+    private final FlowButton viewButton = new FlowButton("Tree", AllIcons.Actions.ShowAsTree, FlowButton.Style.OUTLINE);
+
+    private static javax.swing.Icon viewIcon(View v) {
+        return switch (v) {
+            case TREE -> AllIcons.Actions.ShowAsTree;
+            case JSON -> AllIcons.FileTypes.Json;
+            default -> AllIcons.FileTypes.Text;
+        };
+    }
+
+    private void viewMenu() {
+        com.example.flowtracker.ui.FlowPopupMenu m = new com.example.flowtracker.ui.FlowPopupMenu().header("SHOW THE VALUE AS");
+        for (View v : View.values()) {
+            String hint = switch (v) { // short: the menu stays narrow (the button's tooltip says more)
+                case TREE -> "As the debugger shows it";
+                case JSON -> "Objects, maps and lists";
+                default -> "name = value {type}";
+            };
+            m.item(v == view ? AllIcons.Actions.Checked : viewIcon(v), v.label, hint, null, () -> setView(v));
+        }
+        m.showBelow(viewButton);
+    }
+
     private void setView(View v) {
         if (textEditing) stopTextEdit();
         view = v;
         viewButtons.forEach((k, b) -> b.setSelected(k == v));
+        viewButton.setText(v.label);
+        viewButton.setIcon(viewIcon(v));
+        updateExpandToggle();
         ((CardLayout) valueCards.getLayout()).show(valueCards, v == View.TREE ? View.TREE.name() : View.JSON.name());
         refreshText();
     }
@@ -1324,10 +1326,26 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         addField.setEnabled(editable && shownSnapshot == s && !textEditing);
         resetValue.setEnabled(editable && shownSnapshot == s && FlowDebugStore.isChanged(s));
         edit.setEnabled(editable && shownSnapshot == s && !textEditing && (view != View.TREE || selectedValuePath() != null));
+        // a line's values: a field picked in one of them is edited in that value
+        FlowSnapshot inLine = view == View.TREE && !showingBin && !shaping() ? lineValueOfSelection() : null;
+        boolean lineShown = shownSnapshot == null && lineSnapshots != null && !showingBin && !textEditing;
+        if (lineShown) {
+            addField.setEnabled(true);
+            addField.setToolTipText(inLine == null ? "Add a new value at this line (Insert)"
+                    : "Add a field under the selected one, in its value (Insert)");
+        } else {
+            addField.setToolTipText("Add a field under the selected one (or under the value itself) (Insert)");
+        }
+        if (inLine != null) {
+            edit.setEnabled(true);
+            addField.setEnabled(true);
+            resetValue.setEnabled(FlowDebugStore.isChanged(inLine));
+        }
         edit.setToolTipText(view == View.TREE ? "Change the selected field's name or value (F2; kept in History)"
                 : "Edit the whole value as " + (view == View.JSON ? "JSON" : "text") + ", then Apply (kept in History)");
         String fieldPath = selectedValuePath();
-        removeField.setEnabled(editable && shownSnapshot == s && fieldPath != null && !fieldPath.isEmpty());
+        removeField.setEnabled(editable && shownSnapshot == s && fieldPath != null && !fieldPath.isEmpty()
+                || inLine != null && fieldPath != null && fieldPath.contains("."));
         newValue.setEnabled(!showingBin);
         history.setEnabled(saved && !s.edits.isEmpty());
         delete.setEnabled(!showingBin && (!selectedSnapshots().isEmpty() || !selectedFlows().isEmpty()));
@@ -1413,6 +1431,7 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     }
 
     private void editSelected() {
+        if (!toOwnValue()) return;
         FlowSnapshot s = shownSnapshot;
         if (s == null || showingBin) return;
         if (blockedByShape()) return;
@@ -1525,6 +1544,7 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     }
 
     private void resetShown() {
+        if (!toOwnValue()) return;
         FlowSnapshot s = shownSnapshot;
         if (s == null || showingBin || !FlowDebugStore.isChanged(s)) return;
         if (textEditing) stopTextEdit();
@@ -1562,6 +1582,11 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     }
 
     private void addFieldToSelected() {
+        if (shownSnapshot == null && lineSnapshots != null && lineValueOfSelection() == null) {
+            newValueAt(lineSnapshots.get(0)); // the line itself (or nothing) picked: a new value at that line
+            return;
+        }
+        if (!toOwnValue()) return;
         FlowSnapshot s = shownSnapshot;
         if (s == null || showingBin) return;
         if (blockedByShape()) return;
@@ -1729,6 +1754,7 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
      * goes with it. The last ones go first, so the others' places stay right.
      */
     private void removeSelectedField() {
+        if (!toOwnValue()) return;
         FlowSnapshot s = shownSnapshot;
         if (s == null || showingBin) return;
         if (blockedByShape()) return;
@@ -1946,9 +1972,113 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
 
     /** True (and says why) when the value is sorted or filtered and so can't be edited. */
     private boolean blockedByShape() {
-        if (!shaping()) return false;
-        status.setText("The value is sorted or filtered: show it As Saved with no filter to edit it.");
-        return true;
+        if (shaping()) {
+            status.setText("The value is sorted or filtered: show it As Saved with no filter to edit it.");
+            return true;
+        }
+        withoutInternalsToEdit();
+        return false;
+    }
+
+    /**
+     * A value saved with internals (a String's bytes…), edited while they are hidden: its data becomes the value as
+     * shown (one step in its History, so Revert brings the raw data back). Then the edit works on what is shown:
+     * "BK-1042", not its bytes, and the fields' places are the ones on screen.
+     */
+    private void withoutInternalsToEdit() {
+        FlowSnapshot s = shownSnapshot;
+        if (s == null || !com.example.flowtracker.model.FlowValueShape.hideInternals()
+                || !com.example.flowtracker.model.FlowValueShape.hasInternals(s.value)) return;
+        List<String> picked = selectedValuePaths();
+        store.replaceValue(s, com.example.flowtracker.model.FlowValueShape.withoutInternals(s.value).copy(), "internals left out");
+        showValue(s, s.value, picked.isEmpty() ? null : picked.get(0));
+    }
+
+    /** The values of the line shown together (a line picked in the list), or null. */
+    private @Nullable List<FlowSnapshot> lineSnapshots;
+
+    /**
+     * A field picked in a line's values: that value is shown on its own, with the field selected, so Add, Edit,
+     * Remove and Reset work on it. False when there is none (nothing to edit).
+     */
+    private boolean toOwnValue() {
+        if (shownSnapshot != null) return true;
+        List<FlowSnapshot> line = lineSnapshots;
+        String p = selectedValuePath();
+        if (line == null || p == null || p.isEmpty()) return false;
+        int dot = p.indexOf('.');
+        int i;
+        try {
+            i = Integer.parseInt(dot < 0 ? p : p.substring(0, dot));
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        if (i < 0 || i >= line.size()) return false;
+        FlowSnapshot s = line.get(i);
+        select(s);
+        showValue(s, s.value, dot < 0 ? null : p.substring(dot + 1));
+        return shownSnapshot == s;
+    }
+
+    /** The saved value the selected field of a line's values belongs to, or null. */
+    private @Nullable FlowSnapshot lineValueOfSelection() {
+        List<FlowSnapshot> line = lineSnapshots;
+        String p = selectedValuePath();
+        if (shownSnapshot != null || line == null || p == null || p.isEmpty()) return null;
+        int dot = p.indexOf('.');
+        try {
+            int i = Integer.parseInt(dot < 0 ? p : p.substring(0, dot));
+            return i >= 0 && i < line.size() ? line.get(i) : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** Expand or Collapse: the selected field (with what is inside it), or (none selected) the whole value. */
+    private final FlowButton expandToggle = new FlowButton("", AllIcons.Actions.Expandall, FlowButton.Style.OUTLINE);
+    /** Without a field selected (and in JSON / Text): the whole value was opened last (the next click folds it). */
+    private boolean allOpen;
+
+    /** The selected field when it has fields inside it (else null: the button works on the whole value). */
+    private @Nullable TreePath expandTarget() {
+        if (view != View.TREE) return null;
+        TreePath p = values.getSelectionPath();
+        return p != null && !((DefaultMutableTreeNode) p.getLastPathComponent()).isLeaf() ? p : null;
+    }
+
+    private void updateExpandToggle() {
+        TreePath p = expandTarget();
+        boolean collapse = p != null ? values.isExpanded(p) : allOpen;
+        String what = p != null ? "“" + ((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject() + "”" : "the whole value";
+        if (p != null && ((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject() instanceof Field f) what = "“" + f.value().name + "”";
+        expandToggle.setIcon(collapse ? AllIcons.Actions.Collapseall : AllIcons.Actions.Expandall);
+        expandToggle.setToolTipText((collapse ? "Collapse " : "Expand ") + what
+                + (p != null ? " (with what is inside it)" : "") + ". Select a field to open or fold just it.");
+    }
+
+    private void toggleExpand() {
+        TreePath p = expandTarget();
+        if (p != null) {
+            if (values.isExpanded(p)) {
+                values.collapsePath(p);
+            } else {
+                expandUnder((DefaultMutableTreeNode) p.getLastPathComponent());
+            }
+        } else {
+            if (allOpen) collapseValue();
+            else expandValue();
+            allOpen = !allOpen;
+        }
+        updateExpandToggle();
+    }
+
+    /** Opens a field and every field inside it. */
+    private void expandUnder(DefaultMutableTreeNode n) {
+        values.expandPath(new TreePath(n.getPath()));
+        for (int i = 0; i < n.getChildCount(); i++) {
+            DefaultMutableTreeNode c = (DefaultMutableTreeNode) n.getChildAt(i);
+            if (!c.isLeaf()) expandUnder(c);
+        }
     }
 
     private void expandValue() {
@@ -1969,9 +2099,25 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         if (view != View.TREE) {
             asText.find();
         } else {
+            showFind(true);
+        }
+    }
+
+    /** Find on the value's toolbar: shows (or hides) the field filter. Hidden, it filters nothing. */
+    private final FlowButton findButton = new FlowButton("Find", AllIcons.Actions.Find, FlowButton.Style.OUTLINE);
+    private final JPanel filterRow = new JPanel();
+
+    private void showFind(boolean show) {
+        filterRow.setVisible(show);
+        findButton.setSelected(show);
+        if (show) {
             valueFilter.requestFocusInWindow();
             valueFilter.selectText();
+        } else if (!valueFilter.getText().isEmpty()) {
+            valueFilter.setText(""); // hidden: every field shows again
         }
+        valueTools.revalidate();
+        valueTools.repaint();
     }
 
     private static com.intellij.openapi.actionSystem.AnAction menuItem(String text, @Nullable String keys, @Nullable javax.swing.Icon icon,
@@ -2001,6 +2147,30 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         store.add(s);
         select(s);
         status.setText("Added " + s.name + ". Add, edit or remove its fields on the right.");
+    }
+
+    /** A value added by hand at a line: its file, line, class, method and flow are the line's. */
+    private void newValueAt(FlowSnapshot like) {
+        String[] f = fieldDialog("New Value at " + like.where(), "", "", true);
+        if (f == null || f[0].isEmpty()) return;
+        FlowSnapshot s = new FlowSnapshot();
+        s.name = f[0];
+        s.flowName = like.flowName;
+        s.fileUrl = like.fileUrl;
+        s.fileName = like.fileName;
+        s.className = like.className;
+        s.methodName = like.methodName;
+        s.line = like.line;
+        FlowValue v = FlowValueText.fromJson(f[0], f[1]);
+        if (v == null) {
+            v = new FlowValue(f[0]);
+            v.value = f[1].strip();
+        }
+        v.type = "added by hand";
+        s.value = v;
+        store.add(s);
+        select(s);
+        status.setText("Added " + s.name + " at " + like.where() + ". Add, edit or remove its fields on the right.");
     }
 
     private void showHistory() {
