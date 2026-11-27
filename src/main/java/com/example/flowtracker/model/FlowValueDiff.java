@@ -21,6 +21,19 @@ import java.util.regex.Pattern;
  * </ul>
  */
 public final class FlowValueDiff {
+    /**
+     * Where two texts differ: how many characters they share at the start and at the end (not overlapping), so only
+     * the middle is marked, e.g. "BK-1042" and "BK-1043" share 6 at the start and none at the end.
+     */
+    public static int[] differingSpan(String a, String b) {
+        int max = Math.min(a.length(), b.length());
+        int start = 0;
+        while (start < max && a.charAt(start) == b.charAt(start)) start++;
+        int end = 0;
+        while (end < max - start && a.charAt(a.length() - 1 - end) == b.charAt(b.length() - 1 - end)) end++;
+        return new int[]{start, end};
+    }
+
     private FlowValueDiff() {}
 
     public enum Kind { SAME, CHANGED, ADDED, REMOVED }

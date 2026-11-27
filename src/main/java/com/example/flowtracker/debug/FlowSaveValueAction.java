@@ -34,6 +34,11 @@ public final class FlowSaveValueAction extends AnAction implements DumbAware {
         XValue value = XDebuggerTreeActionBase.getSelectedValue(e.getDataContext());
         XValueNodeImpl node = XDebuggerTreeActionBase.getSelectedNode(e.getDataContext());
         if (project == null || value == null) return;
+        // the fields pinned (flagged) in the debugger's tree are bookmarked too
+        if (node != null) {
+            java.util.Set<String> pins = FlowEvaluatePins.keysUnder(project, node);
+            if (!pins.isEmpty()) com.example.flowtracker.model.FlowHuntStore.get(project).addPins(pins);
+        }
         FlowDebugCapture.save(project, node != null ? node.getName() : "value", value);
     }
 }

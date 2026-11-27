@@ -316,6 +316,31 @@ public final class FlowWaysList extends JPanel {
         }
     }
 
+    /**
+     * Why a way is offered, in a plain sentence: what of the start it uses, how it gets there (an interface, an API
+     * call, an event, another thread…), and what it adds. E.g. "Uses request from the start, through an interface;
+     * adds 1 new class."
+     */
+    public static String why(FlowCallPath.Way w, int newClasses) {
+        List<String> parts = new java.util.ArrayList<>();
+        parts.add(w.carries().isEmpty() ? "Doesn't use the start's data" : "Uses " + String.join(", ", w.carries()) + " from the start");
+        java.util.Set<String> how = new java.util.LinkedHashSet<>();
+        for (FlowCallPath.Step s : w.steps()) {
+            String v = s.via().toLowerCase(Locale.ROOT);
+            if (v.isEmpty()) continue;
+            if (v.contains("implements")) how.add("through an interface");
+            if (v.startsWith("api call")) how.add("through an HTTP call (" + s.via().substring("API call ".length()).strip() + ")");
+            if (v.contains("spring event")) how.add("through a Spring event");
+            if (v.startsWith("handed to")) how.add(s.via()); // e.g. handed to ThreadManager.addProcessor(), which runs its runProcess()
+            else if (v.contains("thread") || v.contains("task given to")) how.add("in another thread");
+            if (v.contains("method reference")) how.add("through a method reference");
+        }
+        String sentence = parts.get(0) + (how.isEmpty() ? (w.calls() == 1 ? ", calling it directly" : ", by plain calls")
+                : ", " + String.join(", ", how));
+        return sentence + "; " + (newClasses == 0 ? "everything is on the tab already." : "adds " + newClasses
+                + (newClasses == 1 ? " new class." : " new classes."));
+    }
+
     /** True when the way is there already (nothing to add): by the test given, else every method of it is there. */
     public boolean isThere(FlowCallPath.Way w) {
         java.util.function.Predicate<FlowCallPath.Way> t = thereTest;
@@ -353,7 +378,8 @@ public final class FlowWaysList extends JPanel {
 
     /** A way as a card: its number, Recommended, the chain (marked), calls, lines, new classes, what it carries. */
     private final class Card extends JPanel implements ListCellRenderer<FlowCallPath.Way> {
-        private final JBLabel number = new JBLabel(), badge = new JBLabel(), chain = new JBLabel(), meta = new JBLabel();
+        private final JBLabel number = new JBLabel(), badge = new JBLabel(), chain = new JBLabel(), meta = new JBLabel(),
+                why = new JBLabel();
         private boolean selected, hovered, there;
 
         Card() {
@@ -369,7 +395,12 @@ public final class FlowWaysList extends JPanel {
             first.add(badge, BorderLayout.CENTER);
             add(first, BorderLayout.NORTH);
             add(chain, BorderLayout.CENTER);
-            add(meta, BorderLayout.SOUTH);
+            JPanel last = new JPanel(new BorderLayout(0, JBUI.scale(2)));
+            last.setOpaque(false);
+            why.setFont(JBUI.Fonts.smallFont());
+            last.add(why, BorderLayout.NORTH);
+            last.add(meta, BorderLayout.SOUTH);
+            add(last, BorderLayout.SOUTH);
         }
 
         @Override
@@ -395,6 +426,8 @@ public final class FlowWaysList extends JPanel {
                     + " · " + (fresh == 0 ? "all on it already" : fresh + (fresh == 1 ? " new class" : " new classes"))
                     + (w.carries().isEmpty() ? "" : " · carries " + String.join(", ", w.carries())) + (via.isEmpty() ? "" : " · " + via));
             meta.setForeground(FlowTheme.FG_MUTED);
+            why.setText("<html><div style='width:" + width + "px'><b>Why:</b> " + StringUtil.escapeXmlEntities(why(w, fresh)) + "</div></html>");
+            why.setForeground(there ? FlowTheme.FG_MUTED : FlowTheme.FG);
             return this;
         }
 

@@ -398,7 +398,7 @@ public final class FlowDiagramDialog {
         for (int i = 0; i < history.steps.size(); i++) {
             FlowDiagram.History.Step s = history.steps.get(i);
             List<FlowEntry> base = rebase(s.base(), now, added, removed);
-            history.steps.set(i, new FlowDiagram.History.Step(s.label(),
+            history.replace(i, new FlowDiagram.History.Step(s.label(),
                     s.diagram().synced(base, added, calls, pool, measure, BOX_GAP), base, s.applied(), s.open()));
         }
         diagram = diagram.synced(currentBase, added, calls, pool, measure, BOX_GAP);
@@ -467,10 +467,11 @@ public final class FlowDiagramDialog {
                 "Arrange the classes in call order, left to right; lines and notes moved by hand find their own way again", this::autoLayout);
         FlowButton copyPng = button("Copy PNG", FlowTheme.ICON_IMAGE, FlowButton.Style.OUTLINE,
                 "Copy this diagram as a PNG image", () -> copyClassImage(look.getImageBackground()));
-        copyPng.setDropDown("Copy with a light or dark background", () -> backgroundMenu(copyPng, this::copyClassImage));
+        copyPng.setDropDown("Copy with a light or dark background, or as Mermaid, PlantUML or SVG",
+                () -> backgroundMenu(copyPng, this::copyClassImage, true));
         FlowButton copySequence = button("Copy Sequence PNG", FlowTheme.ICON_SEQUENCE, FlowButton.Style.OUTLINE,
                 "Copy the calls as a sequence diagram, as a PNG image", () -> copySequenceImage(look.getImageBackground()));
-        copySequence.setDropDown("Copy with a light or dark background", () -> backgroundMenu(copySequence, this::copySequenceImage));
+        copySequence.setDropDown("Copy with a light or dark background, or save as PNG", () -> backgroundMenu(copySequence, this::copySequenceImage, false));
         settings = button("Settings", FlowTheme.ICON_SETTINGS, FlowButton.Style.OUTLINE,
                 "Backgrounds of this window and of the copied images", () -> settingsMenu(settings));
         syncButton = button("Sync", FlowTheme.ICON_SYNC, FlowButton.Style.OUTLINE, "", () -> {
@@ -505,7 +506,8 @@ public final class FlowDiagramDialog {
         toolbar.addGroup(false, 1, layout);
         // Copying and the window's settings sit at the end of the toolbar.
         toolbar.addTrailingGroup(1, copyPng, copySequence);
-        toolbar.addTrailingGroup(1, syncButton, settings);
+        toolbar.addTrailingGroup(1, syncButton, settings,
+                com.example.flowtracker.ui.FlowShortcuts.button("Flow Diagram", com.example.flowtracker.ui.FlowShortcuts.FLOW_DIAGRAM));
         toolbar.setBorder(JBUI.Borders.emptyBottom(8));
 
         JBScrollPane scroll = com.example.flowtracker.ui.FlowScroll.wheel(new JBScrollPane(canvas));
@@ -761,7 +763,7 @@ public final class FlowDiagramDialog {
             store.setDiagramLooks(looks);
             say("Layout saved.");
         }
-        layoutSaved.add(history.current()); // the History marks it
+        history.layoutSaved.add(history.current()); // the History marks it (kept with it)
         store.setDiagramHistory(history);
         historyList.repaint();
         // only the layout changed (no class, method or line): nothing is left to save
@@ -890,7 +892,8 @@ public final class FlowDiagramDialog {
                     + " lines, " + label(to) + ": " + (e == null ? "none" : "1") + ").", false);
             return;
         }
-        if (busy.running() || waySearch != null && waySearch.looking) return; // one search at a time
+        if (busy.running() || waySearch != null && waySearch.looking && waySearch.window != null) return; // one search at a time
+        if (waySearch != null && waySearch.looking) waySearch.halt(); // the last one, still looking in the background: a new one instead
         waySearch = new WaySearch(from, to, starts, e);
         waySearch.begin();
     }
@@ -1020,6 +1023,7 @@ public final class FlowDiagramDialog {
                                 live.add(way);
                                 if (window != null) window.added();
                                 else if (!opened) openWindow(); // the first way: the window opens (once) and waits here
+                                else bar("searching…"); // the window closed: the ways bar fills
                             });
                         }
                     };
@@ -1066,6 +1070,7 @@ public final class FlowDiagramDialog {
             if (how == Ending.COMPLETED) more = !held.isEmpty(); // the way held back (sent before this) says there is more
             busy.stop();
             if (isDisposed()) return;
+            if (window == null && opened) bar(how == Ending.PAUSED ? "paused" : null); // the bar: done
             int n = live.size();
             String ways = n + (n == 1 ? " way" : " ways");
             if (window != null) {
@@ -1099,7 +1104,7 @@ public final class FlowDiagramDialog {
                 window = null;
                 previewWay(found, null);
             }
-            halt(); // a way taken (or the window closed): no need to look further
+            // the window closed (a way taken or not): the search goes on, the ways bar fills (Pause / Cancel stop it)
             com.example.flowtracker.code.FlowCallPath.Way pick = ok ? d.picked() : null;
             if (pick != null) {
                 addPath(from, to, pick.lines(), live.size() == 1 ? "Added the way: " + pick.chain() + "."
@@ -1107,7 +1112,15 @@ public final class FlowDiagramDialog {
             } else {
                 say(live.size() + (live.size() == 1 ? " way" : " ways") + " found. They stay in the bar above the zoom buttons.");
             }
-            if (!isDisposed()) showWays(from.id, true); // from now on: the bar on the diagram (a click opens it)
+            if (!isDisposed()) {
+                showWays(from.id, true); // from now on: the bar on the diagram (a click opens it)
+                bar(looking ? "searching…" : null);
+            }
+        }
+
+        /** The ways bar on the diagram, when it shows this search's ways: counted again, with the search's state. */
+        void bar(@Nullable String state) {
+            if (waysPanel != null && from.id.equals(waysOf)) waysPanel.refresh(state);
         }
     }
 
@@ -1502,10 +1515,6 @@ public final class FlowDiagramDialog {
         return true;
     }
 
-    /** History steps whose layout Sync saved (their classes, methods and lines may still wait for Save). */
-    private final java.util.Set<FlowDiagram.History.Step> layoutSaved =
-            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-
     private final class HistoryRenderer extends DefaultListCellRenderer {
         @Override
         public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean selected, boolean focus) {
@@ -1513,7 +1522,7 @@ public final class FlowDiagramDialog {
             FlowDiagram.History.Step s = (FlowDiagram.History.Step) value;
             String label = (s.open() ? "" : index + ". ") + s.label();
             // saved to the flow (Save, or Sync of everything), or its layout saved by Sync: a green mark after it
-            String mark = s.applied() ? "✔ Saved" : layoutSaved.contains(s) ? "✔ Layout saved" : "";
+            String mark = s.applied() ? "✔ Saved" : history.layoutSaved.contains(s) ? "✔ Layout saved" : "";
             String green = String.format("#%06x", ADDED.getRGB() & 0xFFFFFF);
             l.setText(mark.isEmpty() ? label : "<html>" + com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(label)
                     + " &nbsp;<span style='color:" + green + "'><b>" + mark + "</b></span></html>");
@@ -2163,12 +2172,56 @@ public final class FlowDiagramDialog {
 
     // ---------- copy as PNG ----------
 
+    /** Save as PNG: the image as a .png file. */
+    private void savePng(BufferedImage image, String suffix) {
+        com.intellij.openapi.fileChooser.FileSaverDescriptor descriptor = FlowCompat.saverDescriptor("Save as PNG",
+                "The diagram as an image file", "png");
+        com.intellij.openapi.vfs.VirtualFileWrapper target = com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
+                .createSaveFileDialog(descriptor, project).save((com.intellij.openapi.vfs.VirtualFile) null,
+                        com.example.flowtracker.model.FlowTransfer.fileNameFor(flowName).replace(".flow.json", suffix + ".png"));
+        if (target == null) return;
+        try {
+            javax.imageio.ImageIO.write(image, "png", target.getFile());
+            say("Saved " + target.getFile().getName() + " (" + image.getWidth() + " \u00d7 " + image.getHeight() + ").");
+        } catch (java.io.IOException ex) {
+            tell("Couldn't write the image: " + ex.getMessage(), false);
+        }
+    }
+
+    /** Text on the clipboard (the diagram as Mermaid or PlantUML). */
+    private void copyText(String text, String format) {
+        com.intellij.openapi.ide.CopyPasteManager.getInstance().setContents(new java.awt.datatransfer.StringSelection(text));
+        say("Copied the diagram as " + format + " (" + diagram.boxes.size() + (diagram.boxes.size() == 1 ? " class, " : " classes, ")
+                + diagram.links.size() + (diagram.links.size() == 1 ? " call)." : " calls)."));
+    }
+
+    /** Save as SVG: the drawing as shapes and text, to edit elsewhere. */
+    private void saveSvg() {
+        com.intellij.openapi.fileChooser.FileSaverDescriptor descriptor = FlowCompat.saverDescriptor("Save as SVG",
+                "The diagram as shapes and text (draw.io, Inkscape, a browser)", "svg");
+        com.intellij.openapi.vfs.VirtualFileWrapper target = com.intellij.openapi.fileChooser.FileChooserFactory.getInstance()
+                .createSaveFileDialog(descriptor, project).save((com.intellij.openapi.vfs.VirtualFile) null,
+                        com.example.flowtracker.model.FlowTransfer.fileNameFor(flowName).replace(".flow.json", ".svg"));
+        if (target == null) return;
+        try {
+            java.nio.file.Files.writeString(target.getFile().toPath(), FlowDiagramExport.svg(diagram, painter), java.nio.charset.StandardCharsets.UTF_8);
+            say("Saved the diagram as " + target.getFile().getName() + ".");
+        } catch (java.io.IOException ex) {
+            tell("Couldn't write the file: " + ex.getMessage(), false);
+        }
+    }
+
     private void copyClassImage(FlowLook.Background background) {
-        copyImage(painter.classImage(diagram, flowName + " – Flow Diagram", imagePalette(background)), "the flow diagram", background);
+        copyImage(painter.classImage(diagram, imageTitle("Flow Diagram"), imagePalette(background)), "the flow diagram", background);
     }
 
     private void copySequenceImage(FlowLook.Background background) {
-        copyImage(painter.sequenceImage(diagram, flowName + " – Sequence Diagram", imagePalette(background)), "the sequence diagram", background);
+        copyImage(painter.sequenceImage(diagram, imageTitle("Sequence Diagram"), imagePalette(background)), "the sequence diagram", background);
+    }
+
+    /** An image's title: the IntelliJ project, the flow and what it is ("travel-multi-project · Flow 1 – Flow Diagram"). */
+    private String imageTitle(String what) {
+        return project.getName() + " \u00b7 " + flowName + " \u2013 " + what;
     }
 
     private static FlowDiagramPainter.Palette imagePalette(FlowLook.Background background) {
@@ -2182,13 +2235,30 @@ public final class FlowDiagramDialog {
     }
 
     /** The ▾ of a copy button: copy with a light or a dark background (the default one is checked). */
-    private void backgroundMenu(FlowButton under, java.util.function.Consumer<FlowLook.Background> copy) {
+    private void backgroundMenu(FlowButton under, java.util.function.Consumer<FlowLook.Background> copy, boolean formats) {
         Map<String, List<FlowSettingsPopup.Choice>> sections = new LinkedHashMap<>();
+        if (formats) { // the diagram in formats people edit elsewhere (wikis, Markdown, draw.io…)
+            sections.put("SAVE", List.of(new FlowSettingsPopup.Choice(FlowTheme.ICON_EXPORT, "Save as PNG\u2026",
+                    "The diagram as a .png file (the default background).", () -> false,
+                    () -> savePng(painter.classImage(diagram, imageTitle("Flow Diagram"), imagePalette(look.getImageBackground())), ""))));
+            sections.put("OTHER FORMATS", List.of(
+                    new FlowSettingsPopup.Choice(FlowTheme.ICON_COPY, "Copy as Mermaid", "A flowchart for Markdown, GitHub, GitLab and wikis.",
+                            () -> false, () -> copyText(FlowDiagramExport.mermaid(diagram), "Mermaid")),
+                    new FlowSettingsPopup.Choice(FlowTheme.ICON_COPY, "Copy as PlantUML", "For PlantUML, Confluence and design docs.",
+                            () -> false, () -> copyText(FlowDiagramExport.plantUml(diagram), "PlantUML")),
+                    new FlowSettingsPopup.Choice(FlowTheme.ICON_EXPORT, "Save as SVG\u2026", "Shapes and text to edit in draw.io, Inkscape, a browser.",
+                            () -> false, this::saveSvg)));
+        }
         sections.put("BACKGROUND", List.of(
                 new FlowSettingsPopup.Choice(FlowTheme.ICON_LIGHT, "Copy with Light Background", "White, for documents and light chats.",
                         () -> look.getImageBackground() == FlowLook.Background.LIGHT, () -> copy.accept(FlowLook.Background.LIGHT)),
                 new FlowSettingsPopup.Choice(FlowTheme.ICON_DARK, "Copy with Dark Background", "For dark documents, slides and chats.",
                         () -> look.getImageBackground() == FlowLook.Background.DARK, () -> copy.accept(FlowLook.Background.DARK))));
+        if (!formats) { // the sequence diagram: Save as PNG too
+            sections.put("SAVE", List.of(new FlowSettingsPopup.Choice(FlowTheme.ICON_EXPORT, "Save as PNG\u2026",
+                    "The sequence diagram as a .png file (the default background).", () -> false,
+                    () -> savePng(painter.sequenceImage(diagram, imageTitle("Sequence Diagram"), imagePalette(look.getImageBackground())), " sequence"))));
+        }
         FlowSettingsPopup.showChoices(under, "Copy Image", sections,
                 "✔ marks the button's default. Change it in this window's Settings.", true);
     }
@@ -2376,7 +2446,7 @@ public final class FlowDiagramDialog {
         }
         // The current step may be one from before an earlier Apply: it applies to the lines it was made on.
         FlowDiagram.History.Step step = history.current();
-        history.steps.set(history.position, new FlowDiagram.History.Step(step.label(), diagram.copy(), step.base(),
+        history.replace(history.position, new FlowDiagram.History.Step(step.label(), diagram.copy(), step.base(),
                 step.applied(), step.open())); // keeps box positions moved since the last change
         FlowDiagram.Result result = diagram.apply(step.base(), now);
         List<FlowDiagramLook> looks = diagram.looks();

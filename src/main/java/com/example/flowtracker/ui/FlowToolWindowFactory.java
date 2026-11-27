@@ -233,7 +233,26 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         // Record: every line where the debugger stops is added, in execution order.
         FlowRecorder recorder = FlowRecorder.get(project);
         FlowButton record = new FlowButton("Record", FlowTheme.ICON_RECORD, FlowButton.Style.OUTLINE);
-        record.addActionListener(e -> recorder.toggle());
+        com.example.flowtracker.debug.FlowRequestRecorder requests = com.example.flowtracker.debug.FlowRequestRecorder.get(project);
+        record.addActionListener(e -> {
+            if (requests.isRecording()) requests.stop(); // a request being recorded: Stop makes its flow now
+            else recorder.toggle();
+        });
+        // ▾: Record a Request: the methods one request runs, without breakpoints, as a new flow
+        record.setDropDown("Record a Request: the methods one request runs become a flow (no breakpoints)", () -> {
+            Map<String, List<FlowSettingsPopup.Choice>> sections = new LinkedHashMap<>();
+            sections.put("", List.of(
+                    new FlowSettingsPopup.Choice(FlowTheme.ICON_RECORD, "Record (where the debugger stops)",
+                            "Every line where the debugger stops is added, in the order it runs.", recorder::isRecording, recorder::toggle),
+                    new FlowSettingsPopup.Choice(AllIcons.Actions.StartDebugger, requests.isRecording() ? "Stop Recording the Request" : "Record a Request",
+                            "Send one request to the app (running in Debug): every method of the project it runs becomes a new flow, in "
+                                    + "the order it ran. No breakpoints; the app never stops.",
+                            requests::isRecording, () -> {
+                                if (requests.isRecording()) requests.stop();
+                                else requests.start();
+                            })));
+            FlowSettingsPopup.showChoices(record, "Record", sections, null, true);
+        });
 
         // Walk-through: open each saved line in the editor in turn (also Alt+[ / Alt+]).
         FlowButton prevStep = new FlowButton("Previous Step", FlowTheme.ICON_PREV, FlowButton.Style.OUTLINE);
@@ -250,7 +269,7 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
             else copyToClipboard(textFor(store, visible(store, filter[0])));
         };
         copy.addActionListener(e -> copyAll.run());
-        copy.setDropDown("More ways to copy: the Original Log only", () -> {
+        copy.setDropDown("More ways to copy: the Original Log, a summary, an HTML page", () -> {
             Map<String, List<FlowSettingsPopup.Choice>> sections = new LinkedHashMap<>();
             sections.put("", List.of(
                     new FlowSettingsPopup.Choice(FlowTheme.ICON_COPY, "Copy",
@@ -260,6 +279,21 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
                             (store.isNestedCallLog() ? "Each call nested under the line that makes it" : "The plain list of this view")
                                     + " (what the Markdown copy ends with), as plain text.",
                             () -> false, () -> FlowCopy.copyOriginalLog(project, visible(store, filter[0]))),
+                    new FlowSettingsPopup.Choice(FlowTheme.ICON_NOTE, "Copy Flow Summary",
+                            "A few sentences about the flow: where it starts, what calls what, notes and tags. "
+                                    + "Written here from the flow (no AI, nothing is sent anywhere).",
+                            () -> false, () -> {
+                                String summary = com.example.flowtracker.copy.FlowSummary.of(visible(store, filter[0]), store.getCalls().links());
+                                copyToClipboard(summary);
+                                com.example.flowtracker.copy.FlowCopy.notify(project, "Flow summary copied:\n" + summary,
+                                        com.intellij.notification.NotificationType.INFORMATION);
+                            }),
+                    new FlowSettingsPopup.Choice(AllIcons.Actions.Lightning, com.example.flowtracker.copy.FlowAi.enabled()
+                            ? "Write Summary with AI\u2026" : "Write Summary with AI (off)",
+                            com.example.flowtracker.copy.FlowAi.enabled()
+                                    ? "Shows exactly what would be sent to " + com.example.flowtracker.copy.FlowAi.destination() + "; only Send sends it."
+                                    : "AI Summary is off: nothing is sent. Turn it on yourself in Settings \u2192 AI Summary.",
+                            () -> false, () -> FlowAiDialogs.writeSummary(project, visible(store, filter[0]), store.getCalls().links())),
                     new FlowSettingsPopup.Choice(FlowTheme.ICON_EXPORT, "Export as HTML Page\u2026",
                             "One page with the diagram and the lines" + (store.isCopyAllFlows() ? " of every flow" : "")
                                     + ", to open in any browser or send to someone without the plugin.",
@@ -485,15 +519,17 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         Disposer.register(toolWindow.getDisposable(), () -> store.removeWalkListener(followWalk));
 
         Runnable recordMode = () -> SwingUtilities.invokeLater(() -> {
-            boolean on = recorder.isRecording();
-            record.setSelected(on);
-            record.setText(on ? "Recording" : "Record");
-            record.setToolTipText(on
-                    ? "Recording: every line where the debugger stops is added. Click to stop."
+            boolean on = recorder.isRecording(), request = requests.isRecording();
+            record.setSelected(on || request);
+            record.setText(request ? "Recording Request\u2026" : on ? "Recording" : "Record");
+            record.setToolTipText(request ? "Recording a request: send it to the app now. Click to stop and make its flow."
+                    : on ? "Recording: every line where the debugger stops is added. Click to stop."
                     : "Record: add every line where the debugger stops (breakpoints and steps), in the "
-                    + "order it runs. Turns Sync off.");
+                    + "order it runs. Turns Sync off. \u25be Record a Request: the methods one request runs, no breakpoints.");
         });
         recorder.addListener(recordMode);
+        requests.addListener(recordMode);
+        Disposer.register(toolWindow.getDisposable(), () -> requests.removeListener(recordMode));
         Disposer.register(toolWindow.getDisposable(), () -> recorder.removeListener(recordMode));
         recordMode.run();
 
@@ -1665,6 +1701,14 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         items.add(new FlowMenuPopup.Item("Export Flow\u2026", FlowTheme.ICON_EXPORT, !store.getEntries().isEmpty(),
                 () -> exportFlow(project, store)));
         items.add(new FlowMenuPopup.Item("Import Flow\u2026", FlowTheme.ICON_IMPORT, true, () -> importFlow(project, store)));
+        items.add(new FlowMenuPopup.Item("New Flow from Stack Trace\u2026", AllIcons.Debugger.Db_exception_breakpoint, true,
+                () -> flowFromStackTrace(project, store)));
+        items.add(null);
+        // flow checks: its calls as they are now are what to expect; a later check tells the ones that are gone
+        boolean marked = !store.getExpectedCalls(store.getActiveFlowName()).isEmpty();
+        items.add(new FlowMenuPopup.Item(marked ? "Mark Calls as Expected Again" : "Mark Calls as Expected", AllIcons.Actions.Checked,
+                store.getEntries().size() > 1, () -> markExpected(project, store)));
+        items.add(new FlowMenuPopup.Item("Check Calls Against the Code", AllIcons.Actions.Find, marked, () -> checkCalls(project, store)));
         FlowMenuPopup.show(store, anchor, items);
     }
 
@@ -1703,15 +1747,100 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
                         FlowTransfer.fileNameFor(store.getActiveFlowName())));
         if (target == null) return;
         try {
-            FlowTransfer.write(project, store.getActiveFlowName(), store.getEntries(), store.getDiagramLooks(),
-                    target.getFile().toPath());
+            // one file to share: the lines, the diagram's look and the flow's Debug Data values
+            String flowName = store.getActiveFlowName();
+            List<com.example.flowtracker.model.FlowSnapshot> values = new ArrayList<>();
+            for (com.example.flowtracker.model.FlowSnapshot s : com.example.flowtracker.model.FlowDebugStore.get(project).getSnapshots()) {
+                if (flowName.equals(s.flowName)) values.add(s);
+            }
+            FlowTransfer.write(project, flowName, store.getEntries(), store.getDiagramLooks(), values, target.getFile().toPath());
             // Let the IDE see the new file: an asynchronous refresh (a synchronous one on the EDT is a slow, write-access operation).
             LocalFileSystem.getInstance().refreshNioFiles(java.util.List.of(target.getFile().toPath()), true, false, null);
-            notify(project, "Exported \u201c" + store.getActiveFlowName() + "\u201d to " + target.getFile().getName(),
-                    NotificationType.INFORMATION);
+            notify(project, "Exported \u201c" + flowName + "\u201d to " + target.getFile().getName()
+                    + (values.isEmpty() ? "" : ", with its " + values.size() + (values.size() == 1 ? " Debug Data value" : " Debug Data values"))
+                    + ": one file a teammate opens with Import Flow.", NotificationType.INFORMATION);
         } catch (IOException ex) {
             Messages.showErrorDialog(project, "Couldn't write the file: " + ex.getMessage(), "Export Flow");
         }
+    }
+
+    /**
+     * New Flow from Stack Trace: a pasted exception's frames, the project's lines of them, as a new flow in the order
+     * the code ran (libraries left out; with "Caused by:", the root cause).
+     */
+    private static void flowFromStackTrace(Project project, FlowStore store) {
+        com.intellij.ui.components.JBTextArea text = new com.intellij.ui.components.JBTextArea(16, 90);
+        text.setFont(com.intellij.util.ui.JBUI.Fonts.create(java.awt.Font.MONOSPACED, com.intellij.util.ui.JBUI.Fonts.label().getSize()));
+        text.getEmptyText().setText("Paste a stack trace, e.g. from a log or the Run window");
+        try { // a trace on the clipboard: there already
+            Object clip = java.awt.Toolkit.getDefaultToolkit().getSystemClipboard().getData(java.awt.datatransfer.DataFlavor.stringFlavor);
+            if (clip instanceof String s && com.example.flowtracker.code.FlowStackTrace.parse(s) != null) text.setText(s);
+        } catch (Exception ignored) {
+            // nothing usable on the clipboard
+        }
+        com.intellij.openapi.ui.DialogBuilder d = new com.intellij.openapi.ui.DialogBuilder(project);
+        d.setTitle("New Flow from Stack Trace");
+        javax.swing.JPanel p = new javax.swing.JPanel(new java.awt.BorderLayout(0, com.intellij.util.ui.JBUI.scale(6)));
+        com.intellij.ui.components.JBLabel hint = new com.intellij.ui.components.JBLabel("<html>The project's lines of the trace become a new "
+                + "flow, in the order the code ran (the first call first). Library frames are left out; with \u201cCaused by:\u201d, "
+                + "the root cause is taken.</html>");
+        hint.setForeground(com.intellij.util.ui.UIUtil.getContextHelpForeground());
+        p.add(hint, java.awt.BorderLayout.NORTH);
+        p.add(new com.intellij.ui.components.JBScrollPane(text), java.awt.BorderLayout.CENTER);
+        d.setCenterPanel(p);
+        d.setPreferredFocusComponent(text);
+        if (!d.showAndGet()) return;
+        com.example.flowtracker.code.FlowStackTrace.Trace trace = com.example.flowtracker.code.FlowStackTrace.parse(text.getText());
+        if (trace == null) {
+            Messages.showWarningDialog(project, "No frames (lines like \u201cat com.shop.Order.pay(Order.java:42)\u201d) were found.",
+                    "New Flow from Stack Trace");
+            return;
+        }
+        List<FlowEntry> lines = new ArrayList<>();
+        boolean done = com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously(
+                () -> lines.addAll(FlowCompat.read(() -> com.example.flowtracker.code.FlowStackTrace.lines(project, trace))),
+                "Finding the trace's lines in the code", true, project);
+        if (!done) return;
+        if (lines.isEmpty()) {
+            Messages.showWarningDialog(project, "None of the trace's " + trace.frames().size() + " frames is in this project's code "
+                    + "(they are all in libraries, or the classes weren't found: is the project indexed?).", "New Flow from Stack Trace");
+            return;
+        }
+        String exception = trace.exception().isEmpty() ? "Stack trace" : trace.exception();
+        int colon = exception.indexOf(':');
+        store.newFlow("Trace: " + (colon > 0 ? exception.substring(0, colon) : exception), lines);
+        notify(project, "New flow \u201c" + store.getActiveFlowName() + "\u201d: " + lines.size() + (lines.size() == 1 ? " line" : " lines")
+                + " of the project's code from the trace's " + trace.frames().size() + " frames, the first call first.",
+                NotificationType.INFORMATION);
+    }
+
+    /** The flow's calls in the code now, as they are (also the ones connected by hand), then {@code done} with them. */
+    private static void callsNow(Project project, FlowStore store, java.util.function.Consumer<Set<String>> done) {
+        List<FlowEntry> lines = store.getEntries();
+        FlowSync.callsFor(project, List.of(lines), result -> done.accept(FlowSync.withManual(result.get(0), lines).links()));
+    }
+
+    /** Mark Calls as Expected: the flow's calls now are what a check expects. */
+    private static void markExpected(Project project, FlowStore store) {
+        String flow = store.getActiveFlowName();
+        callsNow(project, store, links -> {
+            store.setExpectedCalls(flow, links);
+            notify(project, "\u201c" + flow + "\u201d: " + links.size() + (links.size() == 1 ? " call" : " calls")
+                    + " marked as expected. When the code no longer makes one of them, TraceWeave tells you "
+                    + "(Flows \u2192 Check Calls Against the Code checks at once).", NotificationType.INFORMATION);
+        });
+    }
+
+    /** Check Calls Against the Code: the expected calls the code doesn't make any more, and the new ones. */
+    private static void checkCalls(Project project, FlowStore store) {
+        String flow = store.getActiveFlowName();
+        List<String> expected = store.getExpectedCalls(flow);
+        callsNow(project, store, links -> {
+            List<String> gone = com.example.flowtracker.code.FlowCallCheck.missing(expected, links);
+            notify(project, com.example.flowtracker.code.FlowCallCheck.report(flow, gone,
+                    com.example.flowtracker.code.FlowCallCheck.added(expected, links)),
+                    gone.isEmpty() ? NotificationType.INFORMATION : NotificationType.WARNING);
+        });
     }
 
     /** Reads a .flow.json file into a new flow and shows it. */
@@ -1724,7 +1853,11 @@ public final class FlowToolWindowFactory implements ToolWindowFactory, DumbAware
         try {
             FlowTransfer.Imported flow = FlowTransfer.read(project, Path.of(file.getPath()));
             store.newFlow(flow.name(), flow.entries(), flow.looks());
-            String text = "Imported \u201c" + store.getActiveFlowName() + "\u201d (" + flow.entries().size() + " lines)";
+            // its Debug Data values (a shared flow has them): in Debug Data, under the new flow
+            for (com.example.flowtracker.model.FlowSnapshot s : flow.values()) s.flowName = store.getActiveFlowName();
+            if (!flow.values().isEmpty()) com.example.flowtracker.model.FlowDebugStore.get(project).addAll(flow.values());
+            String text = "Imported \u201c" + store.getActiveFlowName() + "\u201d (" + flow.entries().size() + " lines"
+                    + (flow.values().isEmpty() ? "" : ", " + flow.values().size() + (flow.values().size() == 1 ? " Debug Data value" : " Debug Data values")) + ")";
             if (flow.missing() > 0) {
                 notify(project, text + ". " + flow.missing() + " of them point to files that aren't in this project; "
                         + "they're marked \u201cfile missing\u201d.", NotificationType.WARNING);

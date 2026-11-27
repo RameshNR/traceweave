@@ -49,10 +49,12 @@ public final class FlowCopy {
     private static String format(FlowStore store, List<FlowEntry> picked, List<FlowEntry> all, FlowSync.Calls calls,
                                  String title, boolean markdown) {
         if (markdown) {
-            String md = FlowMarkdown.toMarkdown(picked, store.isFlatView(), calls.links(), store.isSequenceDiagram(), title);
+            String md = FlowMarkdown.toMarkdown(picked, store.isFlatView(), calls.links(), store.isSequenceDiagram(), title,
+                    store.getProjectName());
             return picked.isEmpty() ? md : md + originalLog(store, picked, all, calls);
         }
-        return plainText(store, picked, all);
+        String text = plainText(store, picked, all);
+        return store.getProjectName().isBlank() || text.isEmpty() ? text : "Project: " + store.getProjectName() + "\n\n" + text;
     }
 
     /** The plain copy of the current view: indented text (Grouped) or numbered steps / optimized log (Flat). */
@@ -114,7 +116,8 @@ public final class FlowCopy {
             notify(project, "Nothing to copy: this flow has no lines yet", NotificationType.INFORMATION);
             return;
         }
-        toClipboard(originalLogText(store, picked, store.getEntries(), store.getCalls()));
+        String log = originalLogText(store, picked, store.getEntries(), store.getCalls());
+        toClipboard(store.getProjectName().isBlank() ? log : "Project: " + store.getProjectName() + "\n\n" + log);
         notify(project, "Copied the Original Log (" + picked.size() + (picked.size() == 1 ? " line)" : " lines)"),
                 NotificationType.INFORMATION);
     }
@@ -225,7 +228,7 @@ public final class FlowCopy {
                 .createSaveFileDialog(descriptor, project).save(dir, file);
         if (target == null) return;
         java.nio.file.Path path = target.getFile().toPath();
-        try {
+        try { // the page follows the reader's system; its Light · Dark · System switch changes it
             java.nio.file.Files.writeString(path, FlowHtml.page(title, markdown));
         } catch (java.io.IOException e) {
             com.intellij.openapi.ui.Messages.showErrorDialog(project, "Couldn't write the page: " + e.getMessage(), "Export as HTML Page");

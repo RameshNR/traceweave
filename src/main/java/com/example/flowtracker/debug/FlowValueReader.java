@@ -30,11 +30,11 @@ import java.util.function.Consumer;
  */
 public final class FlowValueReader {
     /** How deep children are read: the value, its fields, their fields, ... */
-    public static final int DEPTH = 4;
+    public static final int DEPTH = 8;
     /** Children read per value (a big list keeps its first ones and says how many more there are). */
     static final int MAX_CHILDREN = 100;
     /** Values read in total, so a huge object graph doesn't fill the workspace file. */
-    static final int MAX_VALUES = 3000;
+    static final int MAX_VALUES = 20000;
     /** Longest value text kept. */
     static final int MAX_TEXT = 2000;
     static final long TIMEOUT_SECONDS = 20;

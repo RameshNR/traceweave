@@ -16,6 +16,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class FlowHtmlTest {
 
     @Test
+    void theProjectIsOnTopOfTheCopyAndOfEachDiagram() {
+        FlowEntry main = line("Main.java", "Main", "main()", 19, "bookingService.bookTrip(101);");
+        FlowEntry book = line("BookingService.java", "BookingService", "bookTrip()", 33, "if (a < b || c) {");
+        Set<String> links = Set.of(FlowSync.link(FlowSync.methodKey(main), FlowSync.methodKey(book)));
+        for (boolean sequence : new boolean[]{true, false}) {
+            String md = FlowMarkdown.toMarkdown(List.of(main, book), false, links, sequence, "Flow 2", "travel-multi-project");
+            assertTrue(md.contains("**📁 Project: travel-multi-project**"), md);
+            assertTrue(md.contains("```mermaid\n---\ntitle: \"travel-multi-project · TravelBooking\"\n---\n"
+                    + (sequence ? "sequenceDiagram" : "flowchart TD")), md);
+        }
+    }
+
+    @Test
     void theMarkdownBecomesAPage() {
         FlowEntry main = line("Main.java", "Main", "main()", 19, "bookingService.bookTrip(101);");
         FlowEntry book = line("BookingService.java", "BookingService", "bookTrip()", 33, "if (a < b || c) {");
@@ -26,7 +39,8 @@ class FlowHtmlTest {
         assertTrue(page.startsWith("<!doctype html>"));
         assertTrue(page.contains("<title>Flow 2</title>"));
         assertTrue(page.contains("<h1>🧭 Flow 2</h1>"), "the heading");
-        assertTrue(page.contains("<pre class=\"mermaid\">sequenceDiagram"), "the diagram, for mermaid.js");
+        assertTrue(page.contains("<pre class=\"mermaid\">---\ntitle: "), "the diagram, for mermaid.js, with its title (the modules)");
+        assertTrue(page.contains("TravelBooking") && page.contains("sequenceDiagram"), page);
         assertTrue(page.contains("&lt;br/&gt;"), "the diagram's own markup is text for mermaid, not HTML");
         assertTrue(page.contains("<table>") && page.contains("<th>Project</th>"), "the summary table");
         assertTrue(page.contains("<code><span"), "the colored code is kept as HTML");

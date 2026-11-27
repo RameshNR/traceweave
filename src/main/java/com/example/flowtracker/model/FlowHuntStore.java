@@ -46,7 +46,8 @@ public final class FlowHuntStore implements PersistentStateComponent<FlowHuntSto
         public List<Stop> stops = new ArrayList<>();
 
         public String valuesText() {
-            if (isWatch()) return targetText() + (when.equals("VALUE") ? " = " + String.join(" | ", active()) : "");
+            if (isWatch()) return targetText() + (when.equals("VALUE") ? " = " + String.join(" | ", active())
+                    : when.equals("CONDITION") && !values.isEmpty() ? " if " + values.get(0) : "");
             return String.join(all ? " + " : " | ", active());
         }
 
@@ -361,6 +362,19 @@ public final class FlowHuntStore implements PersistentStateComponent<FlowHuntSto
     public void togglePin(String key) {
         if (!state.pinned.remove(key)) state.pinned.add(key);
         fire();
+    }
+
+    /** Bookmarks these fields too (e.g. the ones pinned in the debugger); true when any was new. */
+    public boolean addPins(java.util.Collection<String> keys) {
+        boolean added = false;
+        for (String k : keys) {
+            if (!state.pinned.contains(k)) {
+                state.pinned.add(k);
+                added = true;
+            }
+        }
+        if (added) fire();
+        return added;
     }
 
     public void addListener(Runnable r) { listeners.add(r); }

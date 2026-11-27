@@ -19,9 +19,15 @@ public final class FlowHtml {
     static final String MERMAID = "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs";
 
     public static String page(String title, String markdown) {
+        return page(title, markdown, "system");
+    }
+
+    /** @param theme "light", "dark" or "system" (the reader's system setting); the page has a switch too */
+    public static String page(String title, String markdown, String theme) {
+        String attr = "light".equals(theme) || "dark".equals(theme) ? " data-theme=\"" + theme + "\"" : "";
         return """
                 <!doctype html>
-                <html lang="en">
+                <html lang="en"%s>
                 <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -30,8 +36,13 @@ public final class FlowHtml {
                 <style>
                 :root { --bg:#f7f8fa; --card:#ffffff; --fg:#1e1f22; --muted:#6c707e; --line:#dfe1e5; --accent:#3574f0; --code:#f2f3f5; }
                 @media (prefers-color-scheme: dark) {
-                  :root { --bg:#151a23; --card:#19202b; --fg:#dfe3ea; --muted:#8b93a3; --line:#283041; --accent:#548af7; --code:#161c26; }
+                  :root:not([data-theme="light"]) { --bg:#151a23; --card:#19202b; --fg:#dfe3ea; --muted:#8b93a3; --line:#283041; --accent:#548af7; --code:#161c26; }
                 }
+                :root[data-theme="dark"] { --bg:#151a23; --card:#19202b; --fg:#dfe3ea; --muted:#8b93a3; --line:#283041; --accent:#548af7; --code:#161c26; }
+                .theme { position:fixed; top:12px; right:14px; display:flex; gap:2px; background:var(--card); border:1px solid var(--line);
+                  border-radius:8px; padding:2px; font-size:12px; }
+                .theme button { border:0; background:transparent; color:var(--muted); padding:4px 10px; border-radius:6px; cursor:pointer; font:inherit; }
+                .theme button.on { background:var(--accent); color:#fff; }
                 body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif; }
                 main { max-width:1100px; margin:0 auto; padding:28px 20px 60px; }
                 h1 { font-size:1.7em; margin:0 0 6px; }
@@ -52,17 +63,30 @@ public final class FlowHtml {
                 </style>
                 </head>
                 <body>
+                <div class="theme" role="group" aria-label="Theme">
+                <button data-t="light">Light</button><button data-t="dark">Dark</button><button data-t="system">System</button>
+                </div>
                 <main>
                 %s
                 <footer>Made with TraceWeave - Code Flow Tracker. The diagrams are drawn by mermaid.js (needs internet; without it they show as text).</footer>
                 </main>
                 <script type="module">
                 import mermaid from '%s';
-                mermaid.initialize({ startOnLoad: true, theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default' });
+                const root = document.documentElement;
+                let saved = null;
+                try { saved = localStorage.getItem('traceweave-theme'); } catch (e) {}
+                if (saved === 'light' || saved === 'dark') root.dataset.theme = saved; else if (saved === 'system') delete root.dataset.theme;
+                const pick = root.dataset.theme || 'system';
+                document.querySelectorAll('.theme button').forEach(b => {
+                  b.classList.toggle('on', b.dataset.t === pick);
+                  b.onclick = () => { try { localStorage.setItem('traceweave-theme', b.dataset.t); } catch (e) {} location.reload(); };
+                });
+                const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+                mermaid.initialize({ startOnLoad: true, theme: dark ? 'dark' : 'default' });
                 </script>
                 </body>
                 </html>
-                """.formatted(escape(title), body(markdown), MERMAID);
+                """.formatted(attr, escape(title), body(markdown), MERMAID);
     }
 
     /** The Markdown's body as HTML. */

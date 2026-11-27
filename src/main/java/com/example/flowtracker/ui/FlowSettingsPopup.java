@@ -114,7 +114,19 @@ public final class FlowSettingsPopup {
                     holder[0].cancel();
                     new FlowRecycleBinDialog(project).show();
                 }));
+        panel.add(sectionLabel("AI SUMMARY (OPTIONAL)"));
+        boolean aiOn = com.example.flowtracker.copy.FlowAi.enabled();
+        panel.add(actionRow(FlowTheme.ICON_NOTE, aiOn ? "AI Summary: On" : "AI Summary: Off",
+                aiOn ? "Using " + com.example.flowtracker.copy.FlowAi.destination() + ". Nothing is sent without your Send."
+                        : "Off: nothing is sent anywhere. Turn on a local model or a cloud service yourself, if you want one.",
+                () -> {
+                    holder[0].cancel();
+                    FlowAiDialogs.settings(project);
+                }));
         panel.add(sectionLabel("HELP"));
+        panel.add(actionRow(com.intellij.icons.AllIcons.Actions.Help, "Keyboard Shortcuts",
+                "The Flow tab's keys (each window has its own under its ? button).",
+                () -> FlowShortcuts.show(anchor, "Flow tab", FlowShortcuts.FLOW)));
         panel.add(actionRow(FlowTheme.ICON_INFO, "Info",
                 "How TraceWeave works: adding lines, flows, views, the row action bar, Sync, recording, "
                         + "walk-through, copy formats and shortcuts.",
@@ -173,6 +185,12 @@ public final class FlowSettingsPopup {
      */
     public static void showChoices(JComponent anchor, String title, Map<String, List<Choice>> sections, @Nullable String footer,
                             boolean closeOnPick) {
+        showChoices(anchor, title, sections, footer, closeOnPick, false);
+    }
+
+    /** As {@link #showChoices(JComponent, String, Map, String, boolean)}; {@code beside}: to the right of the anchor, tops aligned (a side rail). */
+    public static void showChoices(JComponent anchor, String title, Map<String, List<Choice>> sections, @Nullable String footer,
+                                   boolean closeOnPick, boolean beside) {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBackground(FlowTheme.CARD_BG);
@@ -219,7 +237,8 @@ public final class FlowSettingsPopup {
                 .createPopup();
         holder[0] = popup;
         Dimension size = popup.getContent().getPreferredSize();
-        popup.show(new RelativePoint(anchor, new Point(anchor.getWidth() - size.width, anchor.getHeight() + FlowTheme.popupGap())));
+        popup.show(new RelativePoint(anchor, beside ? new Point(anchor.getWidth() + FlowTheme.popupGap() * 2, 0)
+                : new Point(anchor.getWidth() - size.width, anchor.getHeight() + FlowTheme.popupGap())));
     }
 
     private static JComponent sectionLabel(String text) {

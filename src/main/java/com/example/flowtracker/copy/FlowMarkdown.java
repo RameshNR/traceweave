@@ -44,6 +44,12 @@ public final class FlowMarkdown {
     /** @param title the document heading (Copy All Flows uses the flow's name) */
     public static String toMarkdown(List<FlowEntry> entries, boolean flat, Set<String> links, boolean sequence,
                              String title) {
+        return toMarkdown(entries, flat, links, sequence, title, "");
+    }
+
+    /** @param project the IntelliJ project's name, shown on top of the document and of each diagram ("" for none) */
+    public static String toMarkdown(List<FlowEntry> entries, boolean flat, Set<String> links, boolean sequence,
+                             String title, String ideProject) {
         List<FlowEntry> ordered = flat ? entries : groupedOrder(entries);
         List<Run> runs = runs(ordered);
         StringBuilder md = new StringBuilder();
@@ -56,6 +62,8 @@ public final class FlowMarkdown {
             projects.add(projectOf(e));
         }
         md.append("# 🧭 ").append(title).append("\n\n");
+        if (!ideProject.isBlank()) md.append("**📁 Project: ").append(ideProject).append("**\n\n");
+        String diagramProject = ideProject;
         md.append("> **").append(ordered.size()).append("** ").append(plural(ordered.size(), "line"))
                 .append(" · **").append(files.size()).append("** ").append(plural(files.size(), "file"))
                 .append(" · **").append(projects.size()).append("** ").append(plural(projects.size(), "project"))
@@ -78,7 +86,7 @@ public final class FlowMarkdown {
         md.append('\n');
 
         // ----- flow diagrams: one per group of connected code, arrows only for real calls -----
-        appendDiagrams(md, runs, links, sequence);
+        appendDiagrams(md, runs, links, sequence, diagramProject);
 
         // ----- details -----
         md.append("## 🧩 Details\n\n");
@@ -152,7 +160,7 @@ public final class FlowMarkdown {
      * unrelated code isn't drawn as one flow. A group is the methods linked by calls, plus the other
      * methods of the same files.
      */
-    private static void appendDiagrams(StringBuilder md, List<Run> runs, Set<String> links, boolean sequence) {
+    private static void appendDiagrams(StringBuilder md, List<Run> runs, Set<String> links, boolean sequence, String project) {
         Map<String, Node> nodes = new LinkedHashMap<>(); // flow order
         for (Run r : runs) {
             if (FlowFormat.isClassLevel(r.method) || nodes.containsKey(r.key())) continue;
@@ -182,8 +190,8 @@ public final class FlowMarkdown {
                 for (Node n : group) files.add(n.fileName);
                 md.append("### ").append(i + 1).append(". ").append(String.join(", ", files)).append("\n\n");
             }
-            if (sequence) appendSequence(md, group, calls);
-            else appendFlowchart(md, group, calls);
+            if (sequence) appendSequence(md, group, calls, project);
+            else appendFlowchart(md, group, calls, project);
         }
     }
 
@@ -209,14 +217,27 @@ public final class FlowMarkdown {
         return k;
     }
 
+    /**
+     * A diagram's title (Mermaid's front matter): the IntelliJ project, and the modules its boxes are in, e.g.
+     * "travel-multi-project · travel-api, travel-common"; nothing when there is neither.
+     */
+    static String diagramTitle(String project, List<Node> group) {
+        Set<String> modules = new LinkedHashSet<>();
+        for (Node n : group) if (!n.project.isEmpty()) modules.add(n.project);
+        String title = (project == null ? "" : project.strip());
+        String mods = String.join(", ", modules);
+        if (!mods.isEmpty() && !mods.equals(title)) title = title.isEmpty() ? mods : title + " · " + mods;
+        return title.isEmpty() ? "" : "---\ntitle: \"" + title.replace("\"", "'") + "\"\n---\n";
+    }
+
     private static void union(Map<String, String> parent, String a, String b) {
         String ra = find(parent, a), rb = find(parent, b);
         if (!ra.equals(rb)) parent.put(rb, ra);
     }
 
     /** One box per method (file name and method), arrows only for real calls between them. */
-    private static void appendFlowchart(StringBuilder md, List<Node> group, Map<String, List<String>> calls) {
-        md.append("```mermaid\nflowchart TD\n");
+    private static void appendFlowchart(StringBuilder md, List<Node> group, Map<String, List<String>> calls, String project) {
+        md.append("```mermaid\n").append(diagramTitle(project, group)).append("flowchart TD\n");
         Map<String, String> ids = new LinkedHashMap<>();
         for (Node n : group) {
             String id = "m" + (ids.size() + 1);
@@ -241,8 +262,8 @@ public final class FlowMarkdown {
      * and a dashed return. A method called from several places gets an arrow each time; its own calls are
      * shown the first time only.
      */
-    private static void appendSequence(StringBuilder md, List<Node> group, Map<String, List<String>> calls) {
-        md.append("```mermaid\nsequenceDiagram\n");
+    private static void appendSequence(StringBuilder md, List<Node> group, Map<String, List<String>> calls, String project) {
+        md.append("```mermaid\n").append(diagramTitle(project, group)).append("sequenceDiagram\n");
         Map<String, Node> methods = new LinkedHashMap<>();
         Map<String, String> ids = new LinkedHashMap<>(); // participant -> id
         for (Node n : group) {

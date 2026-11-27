@@ -54,6 +54,7 @@ public final class FlowCodeView implements Disposable {
         highlight();
         document.addDocumentListener(new DocumentListener() {
             @Override public void documentChanged(@NotNull DocumentEvent e) {
+                if (!setting && !json) recolor(); // typed text: its colors follow
                 if (!setting && onUserEdit != null) onUserEdit.run();
             }
         }, this);
@@ -85,8 +86,31 @@ public final class FlowCodeView implements Disposable {
             editor.setViewer(viewer);
         }
         folds();
+        if (!json) recolor();
+        else FlowTextColors.clear(editor);
         editor.getCaretModel().moveToOffset(0);
         editor.getScrollingModel().scrollVertically(0);
+    }
+
+    /** Colors as JSON or as value text, keeping the text (e.g. what is being typed turned out to be JSON). */
+    public void setJson(boolean asJson) {
+        if (asJson == json) return;
+        json = asJson;
+        highlight();
+        if (json) FlowTextColors.clear(editor);
+        else recolor();
+    }
+
+    private boolean recoloring;
+
+    /** Value text's colors ("name = value {Type}"), a moment after a change (not while the document is changing). */
+    private void recolor() {
+        if (recoloring) return;
+        recoloring = true;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            recoloring = false;
+            if (!editor.isDisposed() && !json) FlowTextColors.apply(editor);
+        });
     }
 
     public String getText() {
@@ -155,6 +179,17 @@ public final class FlowCodeView implements Disposable {
                 if (r != null) r.setExpanded(!collapse || b.depth() == 0);
             }
         });
+    }
+
+    /** True while IntelliJ's find bar is open over the text. */
+    public boolean isFinding() {
+        return EditorSearchSession.get(editor) != null;
+    }
+
+    /** Closes the find bar. */
+    public void closeFind() {
+        EditorSearchSession s = EditorSearchSession.get(editor);
+        if (s != null) s.close();
     }
 
     /** IntelliJ's find bar over the text (Ctrl+F). */

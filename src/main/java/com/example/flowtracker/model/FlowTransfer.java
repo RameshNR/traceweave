@@ -49,6 +49,8 @@ public final class FlowTransfer {
         List<Line> lines = new ArrayList<>();
         /** The Flow Diagram's look; its file addresses are paths like a line's {@code path}. */
         List<FlowDiagramLook> diagram;
+        /** The flow's saved debug values (Debug Data), as a .flowdebug.json file has them; none in older files. */
+        com.google.gson.JsonObject debugData;
     }
 
     @SuppressWarnings("unused")
@@ -67,8 +69,16 @@ public final class FlowTransfer {
         List<String> calls;
     }
 
-    /** A read flow: its name, the lines, its diagram's look, and how many lines point to files this project doesn't have. */
-    public record Imported(String name, List<FlowEntry> entries, List<FlowDiagramLook> looks, int missing) {}
+    /**
+     * A read flow: its name, the lines, its diagram's look, how many lines point to files this project doesn't have,
+     * and its saved debug values (empty for a file without them).
+     */
+    public record Imported(String name, List<FlowEntry> entries, List<FlowDiagramLook> looks, int missing,
+                           List<FlowSnapshot> values) {
+        public Imported(String name, List<FlowEntry> entries, List<FlowDiagramLook> looks, int missing) {
+            this(name, entries, looks, missing, List.of());
+        }
+    }
 
     private static Gson gson() {
         return new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
@@ -76,7 +86,23 @@ public final class FlowTransfer {
 
     public static void write(Project project, String name, Collection<FlowEntry> entries, List<FlowDiagramLook> looks,
                       Path target) throws IOException {
+        write(project, name, entries, looks, List.of(), target);
+    }
+
+    /** The flow, its diagram's look and its saved debug values in one file (one file to share). */
+    public static void write(Project project, String name, Collection<FlowEntry> entries, List<FlowDiagramLook> looks,
+                             List<FlowSnapshot> values, Path target) throws IOException {
         FileData data = new FileData();
+        if (!values.isEmpty()) {
+            data.debugData = com.google.gson.JsonParser.parseString(FlowDebugTransfer.toJson(values)).getAsJsonObject();
+            // the values' files as paths in the project, like the lines' (they open on a teammate's machine too)
+            for (com.google.gson.JsonElement v : data.debugData.getAsJsonArray("snapshots")) {
+                com.google.gson.JsonObject o = v.getAsJsonObject();
+                if (o.has("fileUrl") && !o.get("fileUrl").getAsString().isEmpty()) {
+                    o.addProperty("fileUrl", relativePath(project, o.get("fileUrl").getAsString()));
+                }
+            }
+        }
         data.name = name;
         data.exportedAt = OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
         for (FlowEntry e : entries) {
@@ -164,7 +190,21 @@ public final class FlowTransfer {
                 looks.add(look);
             }
         }
-        return new Imported(name, entries, looks, missing);
+        List<FlowSnapshot> values = new ArrayList<>();
+        if (data.debugData != null) {
+            values.addAll(FlowDebugTransfer.fromJson(data.debugData.toString(),
+                    FlowDebugStore.get(project).getSnapshots())); // new ids where these values are here already
+            for (FlowSnapshot s : values) { // their files on this machine, found like the lines' files
+                if (s.fileUrl == null || s.fileUrl.isEmpty() || s.fileUrl.contains("://")) continue;
+                String found = urlByPath.get(s.fileUrl);
+                if (found == null) {
+                    VirtualFile vf = resolve(project, s.fileUrl, s.fileName == null ? "" : s.fileName);
+                    found = vf != null ? vf.getUrl() : VfsUtilCore.pathToUrl(absolute(project, s.fileUrl));
+                }
+                s.fileUrl = found;
+            }
+        }
+        return new Imported(name, entries, looks, missing, values);
     }
 
     /** The file address of a path in a look ("" stays "": a custom class). */

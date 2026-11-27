@@ -234,7 +234,7 @@ final class FlowInfoDialog extends DialogWrapper {
 
                 + section(accent, "Debug Data")
                 + "<ul><li>While debugging, right-click a variable in the Variables view (or an Evaluate Expression result) → "
-                + "<b>Save to TraceWeave</b>: it is saved with its fields (4 levels deep), where the debugger stopped and "
+                + "<b>Save to TraceWeave</b>: it is saved with its fields (8 levels deep), where the debugger stopped and "
                 + "the active flow, in the <b>Debug Data</b> tab. In the editor, select an expression (or put the caret on a "
                 + "variable) → right-click → <b>Save … to TraceWeave</b>; or type one with <b>Add Expression…</b> (enabled while "
                 + "the debugger is paused).</li>"
@@ -289,6 +289,18 @@ final class FlowInfoDialog extends DialogWrapper {
                 + "(Ctrl+Shift+D) copies stops into the active flow. Deleted records and stops go to the <b>Recycle "
                 + "Bin</b>.</li>"
                 + "<li>Keys: Space starts or stops a record, Enter edits, F2 renames, Delete deletes.</li></ul>"
+                + section(accent, "New in 1.5")
+                + "<ul><li><b>Copy ▾ → Copy Flow Summary</b>: the flow in a few sentences, written here (no AI). <b>Write Summary "
+                + "with AI…</b> only when you turn AI on yourself (Settings → AI Summary: a local model or your own key); it shows "
+                + "exactly what would be sent and where, and sends only on <b>Send</b>.</li>"
+                + "<li><b>Record ▾ → Record a Request</b>: the methods one request runs, without breakpoints, as a new flow.</li>"
+                + "<li>Flows popup: <b>New Flow from Stack Trace…</b>, <b>Mark Calls as Expected</b> / <b>Check Calls Against the "
+                + "Code</b>. Export Flow puts the flow's Debug Data values in the same file.</li>"
+                + "<li>Debug Data: <b>Timeline of This Variable…</b>; Compare marks only the characters that differ.</li>"
+                + "<li>Stop at Value: <b>a condition</b> (seats &gt; 2, status == CANCELLED &amp;&amp; total &gt; 10000); opening a stop "
+                + "shows the debugger's frame when it is still paused there.</li>"
+                + "<li>Flow Diagram: Copy PNG ▾ → <b>Mermaid</b>, <b>PlantUML</b>, <b>SVG</b>; each way says <b>why</b>; the search "
+                + "goes on after Choose a Way closes. Each window's <b>?</b> lists its keyboard shortcuts.</li></ul>"
                 + section(accent, "Hide Internals")
                 + "<ul><li>On by default in Debug Data, Compare, Compare Pasted Data and Stop at Value: a String saved "
                 + "as its bytes (value, coder, hash) shows as its text; an enum as its name; BigDecimal, ArrayList and "

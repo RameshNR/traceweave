@@ -1529,6 +1529,14 @@ public final class FlowDiagram {
         int position;
         /** The flow's lines right after the last Apply (null before any). */
         @Nullable List<FlowEntry> appliedLines;
+        /** Steps whose layout Sync saved (kept with the History, so the marks stay when the window opens again). */
+        final java.util.Set<Step> layoutSaved = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+        /** Puts a step in another's place, keeping its "layout saved" mark. */
+        void replace(int index, Step with) {
+            Step was = steps.set(index, with);
+            if (layoutSaved.remove(was)) layoutSaved.add(with);
+        }
 
         static final int LIMIT = 200;
 
@@ -1567,7 +1575,7 @@ public final class FlowDiagram {
          */
         void open(String label, FlowDiagram diagram, List<FlowEntry> lines) {
             if (!steps.isEmpty() && position == steps.size() - 1 && current().open() && current().base().equals(lines)) {
-                steps.set(position, new Step(current().label(), diagram.copy(), List.copyOf(lines), current().applied(), true));
+                replace(position, new Step(current().label(), diagram.copy(), List.copyOf(lines), current().applied(), true));
             } else {
                 push(label, diagram, lines, true);
             }
@@ -1576,7 +1584,7 @@ public final class FlowDiagram {
         /** Marks the current step as applied; {@code lines} are the flow's lines after it. */
         void markApplied(List<FlowEntry> lines) {
             Step s = current();
-            steps.set(position, new Step(s.label(), s.diagram(), s.base(), true, s.open()));
+            replace(position, new Step(s.label(), s.diagram(), s.base(), true, s.open()));
             appliedLines = List.copyOf(lines);
         }
 
@@ -1586,6 +1594,7 @@ public final class FlowDiagram {
             h.steps.addAll(steps);
             h.position = position;
             h.appliedLines = appliedLines;
+            h.layoutSaved.addAll(layoutSaved);
             return h;
         }
     }

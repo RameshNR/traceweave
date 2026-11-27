@@ -44,6 +44,7 @@ public final class FlowDeleting {
             }
         }
         if (!values.isEmpty()) debug.delete(values);
+        for (String f : names) debug.forgetFlow(f); // its groups and line names too
         List<String> known = new ArrayList<>();
         for (String f : names) if (flows.getFlowNames().contains(f)) known.add(f);
         flows.deleteFlows(known);

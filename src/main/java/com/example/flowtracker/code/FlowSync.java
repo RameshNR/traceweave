@@ -147,6 +147,7 @@ public final class FlowSync {
                     List<FlowEntry> now = store.getEntries();
                     if (!now.equals(snapshot)) return;
                     store.setCalls(result.calls());
+                    FlowCallCheck.afterSync(project, withManual(result.calls(), now).links()); // expected calls still there?
                     if (store.isSyncFiles() && !result.order().equals(now)) store.setOrder(result.order());
                 })
                 .submit(AppExecutorUtil.getAppExecutorService());

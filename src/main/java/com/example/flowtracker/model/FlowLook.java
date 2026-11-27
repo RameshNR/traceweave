@@ -34,6 +34,18 @@ public final class FlowLook implements PersistentStateComponent<FlowLook.State> 
         public boolean diagramSync = true;
         /** What Sync saves: true = everything (like Save); false = only the layout (positions, lines, looks, notes). */
         public boolean diagramSyncAll = false;
+        /**
+         * AI for the flow summary: OFF (the default: nothing is sent anywhere), LOCAL (a model on this machine, e.g.
+         * Ollama) or CLOUD (a service with the user's own key). Only the user turns it on, in Settings; even then
+         * each request is shown and sent only when the user confirms it.
+         */
+        public String aiMode = "OFF";
+        public String aiLocalUrl = "http://localhost:11434";
+        public String aiLocalModel = "llama3.1";
+        /** CLAUDE (Anthropic's API) or OPENAI (any OpenAI-compatible service, at aiCloudUrl). */
+        public String aiCloudProvider = "CLAUDE";
+        public String aiCloudUrl = "https://api.openai.com/v1";
+        public String aiCloudModel = "claude-opus-5-5";
     }
 
     private State state = new State();
@@ -80,6 +92,26 @@ public final class FlowLook implements PersistentStateComponent<FlowLook.State> 
     public void setLinesOverBoxes(boolean on) {
         if (state.linesOverBoxes == on) return;
         state.linesOverBoxes = on;
+        for (Runnable r : listeners) r.run();
+    }
+
+    // ---------- AI summary (off unless the user turns it on) ----------
+
+    public String getAiMode() { return state.aiMode == null ? "OFF" : state.aiMode; }
+    public String getAiLocalUrl() { return state.aiLocalUrl; }
+    public String getAiLocalModel() { return state.aiLocalModel; }
+    public String getAiCloudProvider() { return state.aiCloudProvider; }
+    public String getAiCloudUrl() { return state.aiCloudUrl; }
+    public String getAiCloudModel() { return state.aiCloudModel; }
+
+    /** Sets the AI summary's settings (from its Settings window: the user's own choice). */
+    public void setAi(String mode, String localUrl, String localModel, String provider, String cloudUrl, String cloudModel) {
+        state.aiMode = mode;
+        state.aiLocalUrl = localUrl;
+        state.aiLocalModel = localModel;
+        state.aiCloudProvider = provider;
+        state.aiCloudUrl = cloudUrl;
+        state.aiCloudModel = cloudModel;
         for (Runnable r : listeners) r.run();
     }
 

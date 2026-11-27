@@ -33,7 +33,7 @@ Make sure you have the following installed:
 | Java (plugin code) | 17 (what IntelliJ IDEA 2023.x runs on) | `build.gradle.kts` → `java.toolchain` |
 | Gradle | 9.6.0 | `gradle/wrapper/gradle-wrapper.properties` |
 | IntelliJ Platform Gradle Plugin | 2.19.0 | `build.gradle.kts` → `plugins` |
-| Plugin version | 1.4.1 | `build.gradle.kts` → `version` |
+| Plugin version | 1.5.0 | `build.gradle.kts` → `version` |
 | Plugin ID | `io.github.rameshnr.flowtracker` (kept from Flow Tracker; never change it once published) | `plugin.xml` → `<id>` |
 
 
@@ -116,16 +116,16 @@ Check the folder: it must contain `product-info.json`. Write the path in `build.
 The installable plugin is written to:
 
 ```
-build\distributions\traceweave-code-flow-tracker-1.4.1.zip
+build\distributions\traceweave-code-flow-tracker-1.5.0.zip
 ```
 
 Install it in IntelliJ IDEA:
 
 - **Settings** → **Plugins** → ⚙️ → **Install Plugin from Disk…**
-- Select `build\distributions\traceweave-code-flow-tracker-1.4.1.zip`
+- Select `build\distributions\traceweave-code-flow-tracker-1.5.0.zip`
 - Restart the IDE when asked
 
-To release a new version, change `version = "1.4.1"` in `build.gradle.kts`, add its change notes in `plugin.xml`, and build again.
+To release a new version, change `version = "1.5.0"` in `build.gradle.kts`, add its change notes in `plugin.xml`, and build again.
 
 
 ## Commands
@@ -241,6 +241,7 @@ IntelliJ IDEA Community has no parser for JavaScript, JSP or most other language
 
 - Click **Record**, then debug as usual. Every line where the debugger stops (a breakpoint or a step) is added at the bottom, in the order it ran. Click **Recording** to stop.
 - It also picks up debug sessions that are already running. Recording turns Sync off so the execution order is kept.
+- **Record ▾ → Record a Request**: with the app running in Debug, send it one request (e.g. call an endpoint). The first thread that runs the project's code is followed, without breakpoints (the app never stops): every method of the project it enters, in the order it ran, becomes a new flow (*Request: BookingController.create()*) when the first method returns, or when you click the button again.
 
 ![Record while debugging](src/main/resources/images/traceweave-record.png)
 
@@ -248,9 +249,9 @@ IntelliJ IDEA Community has no parser for JavaScript, JSP or most other language
 
 The **Debug Data** tab of the TraceWeave tool window keeps values from the debugger, so you can compare them between debug runs and find what is hidden deep in objects (for example in the session's attributes).
 
-- **Save a value**: while debugging, right-click a variable in the debugger's **Variables** or **Watches** view, or a result in **Evaluate Expression** (or **Inspect**) → **Save to TraceWeave**. It is saved with its fields, map entries and list elements, 4 levels deep (up to 100 children each), together with where the debugger stopped (file, line, class and method) and the flow that is active. It works with any debugger IntelliJ has: Java, Kotlin, JavaScript and more.
+- **Save a value**: while debugging, right-click a variable in the debugger's **Variables** or **Watches** view, or a result in **Evaluate Expression** (or **Inspect**) → **Save to TraceWeave**. It is saved with its fields, map entries and list elements, 8 levels deep (up to 100 children each), together with where the debugger stopped (file, line, class and method) and the flow that is active. It works with any debugger IntelliJ has: Java, Kotlin, JavaScript and more.
 - **From the editor**: while the debugger is paused, select an expression (or put the caret on a variable, e.g. `request.session`) → right-click → **Save “…” to TraceWeave**: it is evaluated where the debugger stopped and saved. **Add Expression…** in the Debug Data tab does the same with an expression you type (e.g. `request.getSession().getAttribute("cart")`); it is enabled while the debugger is paused (otherwise its tooltip says to enable the debugger).
-- **Capture Data**: turn it on and debug; the variables of the current stack frame are saved by themselves (as deep as Save to TraceWeave: fields, map entries and list elements, 4 levels), **each variable on its own** (so it can be compared with the same variable saved at that line before), grouped by line. Its **▾** chooses:
+- **Capture Data**: turn it on and debug; the variables of the current stack frame are saved by themselves (as deep as Save to TraceWeave: fields, map entries and list elements, 8 levels), **each variable on its own** (so it can be compared with the same variable saved at that line before), grouped by line. Its **▾** chooses:
   - *When*: **Where the debugger stops** (at breakpoints and at each step you take), or **Every line it runs**: from a stop it steps line by line by itself, saving only what changed on each line, until it reaches the next breakpoint, where it stops as the debugger does (Resume or a step goes on from there). At most 500 lines a debug run.
   - *What*: **All variables of the method**, or **Only the line's variables**: the variables (and fields of `this`) used on the line where it is.
   Click it again (**Capturing…**) to turn it off. A variable isn't saved again at a line where it was already saved with the same data (e.g. by hand before Capture Data was on).
@@ -282,6 +283,8 @@ The **Debug Data** tab of the TraceWeave tool window keeps values from the debug
 - **Delete** removes the field selected on the right when you clicked there last (History → Revert puts it back). With values or lines selected on the left, it moves them to the Recycle Bin. With **flows** selected, it deletes the flows (here and in the Flow tab): at once when they have nothing in either screen, else after one confirmation that says what goes (Debug Data's values first, then the Flow tab's lines).
 - Keys (they work wherever the focus is in the tab, before the IDE's own shortcuts): **Delete** deletes (in the Recycle Bin: for good), **Ctrl+C** copies the selected values (on a field: its value), **Ctrl+V** pastes into a field, **Insert** adds a field, **F2** renames a flow or line in the list, or edits a field, **Ctrl+D** Compare, **Ctrl+F** Find.
 - **Delete** moves saved values to the tab's **Recycle Bin** (**← Back to Saved Values** leaves it): **Restore** brings them back, **Delete Permanently** removes them (the bin keeps the latest 200).
+- **Timeline of This Variable…** (right-click a saved value): every time it was saved at its line (any flow, any debug run), the oldest first, each with what changed since the one before (*~ reference: "BK-1042" → "BK-1043"*); **Compare with Previous** opens two in the Compare window.
+- **Compare marks only what differs inside a value**: `BK-104`**`2`** → `BK-104`**`3`** (the old part red, the new part green).
 - **Bookmarks**: hover a field's icon in the value tree and click it: the field goes to the top of its object (a blue bookmark), in every saved value of that type and in Stop at Value too. Click it again to put it back in its place.
 - **A line's values together**: click a line in the list (e.g. `BookingDto.java:28`) to see every value saved there at once (`this`, `reference`, `this.reference`), each under its name.
 - **Hide Internals** (the eye button, on by default): a String saved as its bytes shows as its text, and what other languages keep inside values goes too (see [Hide Internals](#hide-internals) below). The Compare window has the same button, and **Compare Pasted Data** a **Hide Internals** checkbox: the saved value and JSON pasted on either side are shown without them.
@@ -317,10 +320,10 @@ The **Stop at Value** tab stops the debugger on the line where a value you look 
   | `BookingWorkflow.book().booking.email` | A field inside the variable's object; `.getEmail()` and `.setEmail()` mean the same field, and deeper paths (`.traveller.name`) work |
   | `BookingWorkflow.book().return` | What `book()` returns, each time it returns (`.return.getEmail()` too) |
 
-  Then when to stop: **whenever it is set**, **only when its value changes**, **when it is set to null**, or **when it is set to a value containing** some text. **Also stop when the object's data changes** watches the fields of the object it holds too (and of the objects inside it). Nothing is added to the Breakpoints list.
+  Then when to stop: **whenever it is set**, **only when its value changes**, **when it is set to null**, **when it is set to a value containing** some text, or **when its value matches a condition**: `seats > 2`, `status == CANCELLED && total > 10000`, `traveller.name contains "Rao"`, `reference != null` (fields of the value, dots going deeper, `it` for the value itself; `== != > < >= <=` and `contains`; `&&` / `||` / `!` and brackets; numbers compared as numbers). **Also stop when the object's data changes** watches the fields of the object it holds too (and of the objects inside it). Nothing is added to the Breakpoints list.
 - **From the editor**: right-click → **TraceWeave** → **Watch “BookingDto.status”** on a field, **Watch variable “booking” in book()** on a local variable or parameter, or **Stop at Value “BK-1044”** on a selected text or string.
 - **The records** are listed on the left with their state (*Looking… 42 checked · 1 stop*, *Waiting for Debug…*, *✔ 3 stops*). **Start** (green) / **Stop** (red), **Edit**, **Rename** (F2) and **Delete** are on the toolbar and in the right-click menu; Space starts or stops, Enter edits, Delete deletes.
-- **Stops**: every place it stopped, with **When**, **Where**, **Thread** and what was **Found** (e.g. `booking in book(): (not set) → BookingDto@7927`). Filter them by text, thread or file; **Newest first / Oldest first** (or click a column's header). Double-click (or Enter) opens the line.
+- **Stops**: every place it stopped, with **When**, **Where**, **Thread** and what was **Found** (e.g. `booking in book(): (not set) → BookingDto@7927`). Filter them by text, thread or file; **Newest first / Oldest first** (or click a column's header). Double-click (or Enter) opens the line; when the debugger is still paused there, its frame is shown too.
 - **Variables at that stop**: the paused frame's variables as a **Tree** (like the debugger's Threads & Variables) or **JSON**. Hover a field's icon and click it to **bookmark** it: it goes to the top of its object, here and in Debug Data. **Hide Internals** (on by default) leaves out what the language puts inside values (see below).
 - **To Debug Data** (Ctrl+Shift+D) copies the selected stops' variables into Debug Data, in the active flow.
 - **Recycle Bin**: deleted records and stops go there; **Restore** puts them back, **Delete Forever** / **Empty Bin** remove them.
@@ -352,7 +355,9 @@ A key with `$` in it counts as one of these (e.g. a pasted `"$schema"`): turn Hi
 - **New Flow…** and **Rename Flow…** start the name as `Flow 1: ` (with the flow's number) and put the cursor after it, so you only type the name, e.g. `Flow 1: Checkout bug`. You can delete the prefix if you don't want it. Leaving just the prefix keeps the plain `Flow 1`.
 - **Delete Flow** moves the flow to the Recycle Bin, so it can be restored. Deleting the only flow empties it instead. **Delete Flows…** lists every flow with a checkbox (and what it has: `5 lines · 2 saved values`) to delete several, or all, at once.
 - **The Flow tab and Debug Data share their flows**: a flow made in one is in the other, and the flow selected in one is selected in the other. Deleting a flow deletes it in both: a flow with nothing in either (no lines, no saved values) goes at once; when either has data, one confirmation says what goes, first in the screen you are in, then in the other one (lines and values go to their Recycle Bins). **Names are not shared**: renaming a flow in one doesn't rename it in the other.
-- **Export Flow…** saves the current flow as a `.flow.json` file. Paths are stored relative to the project folder, so you can commit the file or send it to a teammate.
+- **Export Flow…** saves the current flow as a `.flow.json` file: its lines, its Flow Diagram look **and its Debug Data values**, in one file. Paths are stored relative to the project folder, so you can commit the file or send it to a teammate; **Import Flow…** brings all of it back (the values go to Debug Data, under the new flow). Older versions read the file too (without the values).
+- **New Flow from Stack Trace…** (Flows popup): paste an exception's stack trace (it is filled in when the clipboard has one). The project's lines of its frames become a new flow, in the order the code ran; library frames are left out, and with *Caused by:* the root cause is taken.
+- **Mark Calls as Expected** (Flows popup): the flow's calls as the code makes them now are what to expect. When the code no longer makes one (a call removed, a method moved), TraceWeave tells you, once, with the calls that are new; **Check Calls Against the Code** checks at once.
 - **Exported files start with the project's name** in camelCase, e.g. `travelBooking_Flow 1.flow.json`; a flow with lines from several projects gets all of them (`carSearch_hotelBooking_…`). The same goes for Debug Data and Compare exports.
 - **Import Flow…** opens a `.flow.json` file as a new flow. Files are found by relative path first, then by file name. Lines whose file isn't in the project are marked *file missing*.
 - Undo / Redo history belongs to the flow it was made in and starts empty when you switch.
@@ -361,7 +366,14 @@ A key with `$` in it counts as one of these (e.g. a pasted `"$schema"`): turn Hi
 
 - The search box above the toolbar shows only lines whose code, file, class, method, note, project or tag contains the text (or whose line number matches).
 - While a filter is on, **Copy** copies only the matching lines. Moving lines still works: hidden lines keep their places.
-- **Copy ▾** → **Copy Original Log** copies only the Original Log (the plain text the Markdown copy ends with: each call nested under the line that makes it, or the plain list of the view), without the Markdown around it.
+- **Copy ▾** → **Copy Original Log** copies only the Original Log (the plain text the Markdown copy ends with: each call nested under the line that makes it, or the plain list of the view), without the Markdown around it. **Copy Flow Summary** writes the flow in a few sentences (see [Flow Summary](#flow-summary)).
+
+<a id="flow-summary"></a>**Flow Summary (and, only if you turn it on, AI)**
+
+- **Copy ▾ → Copy Flow Summary** writes a few sentences about the flow, here on your machine (no AI, nothing is sent anywhere): where it starts, what calls what, the notes and tags, and how many lines, methods, files and projects. For example: *The flow starts in BookingController.create() (BookingController.java, travel-api). It calls BookingService.create(). BookingService.create() calls BookingDto.setReference() and TravelCodes.normalize(). Notes: … 5 lines in 4 methods, 4 files, 2 projects.*
+- **AI is off unless you turn it on.** **Settings ⚙️ → AI Summary** offers *Off* (the default), *a local model on this machine* (e.g. Ollama: nothing leaves the machine) or *a cloud service* with your own API key (Claude, or any OpenAI-compatible service; the key is kept in IntelliJ's password safe). Turning it on needs your tick (*I understand: …*).
+- Even when it is on, nothing is sent by itself: **Copy ▾ → Write Summary with AI…** first shows the **exact text** (the outline above and the flow's lines and notes) and **where it goes**; only **Send** sends it. The answer opens in a window to copy.
+
 
 **Views**
 
@@ -429,6 +441,8 @@ The toolbar belongs to the selected tab and sits above the tabs.
 
 - When **Connect the Flow to…** finds several ways from one method to the other, the **ways panel** opens over the diagram: each way as a card with its steps. **Hover a way** to see it drawn on the tab (a preview); click it to add it. Ways already on the tab are left out (a filter shows *All*, *On the tab* or *New* ones) and they can be sorted.
 - **Minimize** the panel to a bar (a click opens it again; clicking elsewhere on the tab hides the bar), drag it anywhere on the tab, or **Full Screen**: the ways in a large window, **Connect the Flow: Choose a Way**.
+- Each way says **why** it is offered: *Why: Uses request from the start, through an interface; adds 1 new class.* (an HTTP call, a Spring event, another thread… too).
+- Closing Choose a Way doesn't stop the search: the ways bar on the diagram fills as more are found (*3 ways · searching…*); Pause or Cancel stops it.
 - In the large window, hovering a way previews it on the diagram behind the window too. A way you **click** stays previewed: move the mouse to another way to see that one, and out of the list to see the clicked one again. **Add** (or double-click) adds it.
 - **The ways show as they are found**: Choose a Way opens with the first one, and the others join the list while the search goes on. A colored line under the title says where it is: *Looking for more ways…* (blue, with a spinner), *Completed* (green), *Paused* (amber) or a failure (red).
 - **Pause / Resume** (one button): Pause stops the search where it is; Resume goes on from there (what was checked isn't checked again). **Load More** shows the next 10 ways; it is on only when there are more (the search looks one way further than it shows), else greyed out. **Cancel** on the "Looking for the ways…" card stops the search at once.
@@ -517,7 +531,7 @@ The toolbar belongs to the selected tab and sits above the tabs.
 
 *Images and settings*
 
-- **Copy PNG** copies the diagram as an image; **Copy Sequence PNG** copies its calls as a numbered sequence diagram image (participants, calls and returns). They paste into documents, chats and image editors, always at full size whatever the zoom. Each is a split button: click it for the default background, or its **▾** for **Copy with Light Background** / **Copy with Dark Background**.
+- **Copy PNG** copies the diagram as an image; **Copy Sequence PNG** copies its calls as a numbered sequence diagram image (participants, calls and returns). They paste into documents, chats and image editors, always at full size whatever the zoom. Each is a split button: click it for the default background, or its **▾** for **Copy with Light Background** / **Copy with Dark Background**. Copy PNG's **▾** has *Other formats* too: **Copy as Mermaid** (Markdown, GitHub, GitLab, wikis), **Copy as PlantUML** (Confluence, design docs) and **Save as SVG…** (shapes and text to edit in draw.io, Inkscape or a browser), with the classes' files and projects, the calls and their notes.
 - **Settings** (the gear at the right end) sets the **default background of the copied images** (light or dark), the **diagram window's background** (same as TraceWeave / the IntelliJ theme, light or dark) and **Dragging Lines** (keep dragged lines off the classes, or let them cross). Its popup opens below the button, lined up with its right edge. Both settings are remembered for all projects.
 
 ![Copy Sequence PNG](src/main/resources/images/traceweave-diagram-sequence.png)

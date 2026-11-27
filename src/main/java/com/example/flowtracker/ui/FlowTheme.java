@@ -146,7 +146,7 @@ public final class FlowTheme {
     // ----- toolbar icons (single grey SVGs, recolored at paint time) -----
     static final Icon ICON_GROUPED = icon("tb_grouped");
     static final Icon ICON_LIST = icon("tb_list");
-    static final Icon ICON_COPY = icon("tb_copy");
+    public static final Icon ICON_COPY = icon("tb_copy");
     public static final Icon ICON_DELETE = icon("tb_delete");
     static final Icon ICON_CLEAR = icon("tb_clear");
     public static final Icon ICON_NOTE = icon("tb_note");
@@ -159,7 +159,7 @@ public final class FlowTheme {
     public static final Icon ICON_UNDO = icon("tb_undo");
     public static final Icon ICON_REDO = icon("tb_redo");
     public static final Icon ICON_FLOWS = icon("tb_flows");
-    static final Icon ICON_EXPORT = icon("tb_export");
+    public static final Icon ICON_EXPORT = icon("tb_export");
     static final Icon ICON_IMPORT = icon("tb_import");
     static final Icon ICON_RECORD = icon("tb_record");
     static final Icon ICON_PREV = icon("tb_prev");

@@ -42,6 +42,131 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
          * one doesn't rename it in the other.
          */
         public java.util.Map<String, String> flowTitles = new java.util.HashMap<>();
+        /** The groups made in Debug Data's list, in their order (a group stays while it is empty). */
+        public List<GroupRef> groups = new ArrayList<>();
+    }
+
+    /** A group of saved values within a flow. Public non-final fields so IntelliJ can save it to XML. */
+    public static class GroupRef {
+        public String flow = "";
+        public String name = "";
+
+        public GroupRef() {}
+
+        GroupRef(String flow, String name) {
+            this.flow = flow;
+            this.name = name;
+        }
+    }
+
+    private List<GroupRef> groupRefs() {
+        if (state.groups == null) state.groups = new ArrayList<>();
+        return state.groups;
+    }
+
+    /** A flow's groups: the ones made (in their order), then any its values are in that wasn't made here (imported). */
+    public List<String> groups(String flow) {
+        List<String> out = new ArrayList<>();
+        for (GroupRef g : groupRefs()) if (g.flow.equals(flow) && !out.contains(g.name)) out.add(g.name);
+        for (FlowSnapshot s : state.snapshots) {
+            if (s.flowName.equals(flow) && s.group != null && !s.group.isEmpty() && !out.contains(s.group)) out.add(s.group);
+        }
+        return out;
+    }
+
+    /** Adds an (empty) group to a flow; false when it has one of that name. */
+    public boolean addGroup(String flow, String name) {
+        String n = name == null ? "" : name.strip();
+        if (n.isEmpty() || groups(flow).contains(n)) return false;
+        groupRefs().add(new GroupRef(flow, n));
+        fire();
+        return true;
+    }
+
+    /** Renames a group; its values (also in the Recycle Bin) go with it. */
+    public void renameGroup(String flow, String old, String now) {
+        String n = now == null ? "" : now.strip();
+        if (n.isEmpty() || n.equals(old)) return;
+        if (groups(flow).contains(n)) { // into a group that exists: the two become one
+            groupRefs().removeIf(g -> g.flow.equals(flow) && g.name.equals(old));
+        } else {
+            boolean found = false;
+            for (GroupRef g : groupRefs()) {
+                if (g.flow.equals(flow) && g.name.equals(old)) {
+                    g.name = n;
+                    found = true;
+                }
+            }
+            if (!found) groupRefs().add(new GroupRef(flow, n));
+        }
+        for (List<FlowSnapshot> list : List.of(state.snapshots, state.deleted)) {
+            for (FlowSnapshot s : list) if (s.flowName.equals(flow) && old.equals(s.group)) s.group = n;
+        }
+        fire();
+    }
+
+    /** Locks values (nothing in them can be changed) or unlocks them. */
+    public void setLocked(List<FlowSnapshot> list, boolean locked) {
+        for (FlowSnapshot s : list) s.locked = locked;
+        fire();
+    }
+
+    /** The flows that have groups made in them. */
+    public java.util.Set<String> groupFlows() {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (GroupRef g : groupRefs()) out.add(g.flow);
+        return out;
+    }
+
+    /**
+     * A flow was deleted (or emptied): its groups, line names and Debug Data name go too, so a new flow that gets the
+     * same name later starts empty.
+     */
+    public void forgetFlow(String flow) {
+        boolean changed = groupRefs().removeIf(g -> g.flow.equals(flow));
+        if (state.lineNames != null) changed |= state.lineNames.keySet().removeIf(k -> k.startsWith(flow + "|"));
+        if (state.flowTitles != null) changed |= state.flowTitles.remove(flow) != null;
+        if (changed) fire();
+    }
+
+    /** Takes a group away; its values stay in the flow, outside any group. */
+    public void deleteGroup(String flow, String name) {
+        groupRefs().removeIf(g -> g.flow.equals(flow) && g.name.equals(name));
+        for (List<FlowSnapshot> list : List.of(state.snapshots, state.deleted)) {
+            for (FlowSnapshot s : list) if (s.flowName.equals(flow) && name.equals(s.group)) s.group = "";
+        }
+        fire();
+    }
+
+    /** Moves a group one place up (-1) or down (1) among its flow's groups. */
+    public void moveGroup(String flow, String name, int by) {
+        List<String> order = groups(flow);
+        int i = order.indexOf(name), j = i + by;
+        if (i < 0 || j < 0 || j >= order.size()) return;
+        order.remove(i);
+        order.add(j, name);
+        groupRefs().removeIf(g -> g.flow.equals(flow));
+        for (String g : order) groupRefs().add(new GroupRef(flow, g));
+        fire();
+    }
+
+    /**
+     * Moves values (dragged in the list, or Move to Group) into a flow and a group ("" = none), before another value
+     * when one is given (else they keep their places).
+     */
+    public void moveTo(List<FlowSnapshot> list, String flow, String group, @Nullable FlowSnapshot before) {
+        String g = group == null ? "" : group.strip();
+        if (!g.isEmpty() && !groups(flow).contains(g)) groupRefs().add(new GroupRef(flow, g));
+        for (FlowSnapshot s : list) {
+            s.flowName = flow;
+            s.group = g;
+        }
+        if (before != null && !list.contains(before) && state.snapshots.contains(before)) {
+            state.snapshots.removeAll(list);
+            int at = state.snapshots.indexOf(before);
+            state.snapshots.addAll(at, list);
+        }
+        fire();
     }
 
     /** The name Debug Data shows for a flow (its own, else the Flow tab's). */
@@ -74,6 +199,38 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
     /** The key of a saved value's line within its flow (for its name). */
     public static String lineKey(FlowSnapshot s) {
         return s.flowName + "|" + s.fileUrl + "|" + s.line;
+    }
+
+    /** The key of a saved value's row: its line and its pass (each time a loop comes back to the line is a row). */
+    public static String passKey(FlowSnapshot s) {
+        return s.pass == null || s.pass.isEmpty() ? lineKey(s) : lineKey(s) + "#" + s.pass;
+    }
+
+    /**
+     * The pass a newly saved value belongs to: the line's latest one, unless that already has this variable (the
+     * debugger came back to the line, e.g. in a loop): then a new one. Other variables saved at the same stop join it.
+     */
+    /** The value saved last at this line in this flow (whatever its group), or null. */
+    public @Nullable FlowSnapshot latestAt(FlowSnapshot s) {
+        String key = lineKey(s);
+        FlowSnapshot newest = null;
+        for (FlowSnapshot x : state.snapshots) {
+            if (x != s && lineKey(x).equals(key) && (newest == null || x.savedAt > newest.savedAt)) newest = x;
+        }
+        return newest;
+    }
+
+    private String passFor(FlowSnapshot s) {
+        String key = lineKey(s);
+        FlowSnapshot last = latestAt(s);
+        if (last == null) return UUID.randomUUID().toString();
+        String latest = last.pass == null ? "" : last.pass;
+        for (FlowSnapshot x : state.snapshots) {
+            if (lineKey(x).equals(key) && latest.equals(x.pass == null ? "" : x.pass) && x.name.equals(s.name)) {
+                return UUID.randomUUID().toString();
+            }
+        }
+        return latest.isEmpty() ? UUID.randomUUID().toString() : latest;
     }
 
     /** The name given to a line ("" when none). */
@@ -109,6 +266,12 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
             });
             changed |= !moved.isEmpty();
             state.lineNames.putAll(moved);
+        }
+        for (GroupRef g : groupRefs()) {
+            if (g.flow.equals(old)) {
+                g.flow = now;
+                changed = true;
+            }
         }
         if (changed) fire();
     }
@@ -168,6 +331,12 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
     public void add(FlowSnapshot s) {
         if (s.id.isEmpty()) s.id = UUID.randomUUID().toString();
         if (s.savedAt == 0) s.savedAt = System.currentTimeMillis();
+        if (s.pass == null || s.pass.isEmpty()) {
+            // the line's latest row in the flow: the new value joins its group, and its pass unless the variable is in it
+            FlowSnapshot latest = latestAt(s);
+            if (latest != null && (s.group == null || s.group.isEmpty())) s.group = latest.group == null ? "" : latest.group;
+            s.pass = passFor(s);
+        }
         state.snapshots.add(0, s);
         fire();
     }
@@ -215,6 +384,7 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
      * @param path child indexes from the root, see {@link #at}
      */
     public void editValue(FlowSnapshot s, String path, String newValue) {
+        if (s.locked) return; // locked: not changed
         FlowValue v = at(s.value, path);
         if (v == null || v.value.equals(newValue)) return;
         keepOriginal(s);
@@ -245,6 +415,7 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
 
     /** Renames a field (a map key, a field name), kept in its history. */
     public void editName(FlowSnapshot s, String path, String newName) {
+        if (s.locked) return; // locked: not changed
         FlowValue v = at(s.value, path);
         if (v == null || v.name.equals(newName) || newName.isBlank()) return;
         keepOriginal(s);
@@ -264,6 +435,7 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
 
     /** Adds a field (with what is in it: a map entry, a list element, an object) under a value; returns its path. */
     public String addField(FlowSnapshot s, String parentPath, FlowValue v) {
+        if (s.locked) return ""; // locked: not changed
         FlowValue parent = at(s.value, parentPath);
         if (parent == null) return "";
         keepOriginal(s);
@@ -279,6 +451,7 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
 
     /** Removes a field (not the saved value itself), kept in the history so Revert can put it back. */
     public void removeField(FlowSnapshot s, String path) {
+        if (s.locked) return; // locked: not changed
         if (path == null || path.isEmpty()) return;
         int dot = path.lastIndexOf('.');
         FlowValue parent = at(s.value, dot < 0 ? "" : path.substring(0, dot));
@@ -305,6 +478,7 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
      * @param how e.g. "edited as JSON" or "reset to the saved data"
      */
     public void replaceValue(FlowSnapshot s, FlowValue value, String how) {
+        if (s.locked) return; // locked: not changed
         if (FlowValueText.toText(value).equals(FlowValueText.toText(s.value))) return;
         keepOriginal(s);
         FlowValueEdit e = new FlowValueEdit("", s.value.name, "(the data before)", how);
@@ -318,6 +492,7 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
 
     /** Reset: back to the data as it was saved (in the history too, so it can be reverted). */
     public void reset(FlowSnapshot s) {
+        if (s.locked) return; // locked: not changed
         if (s.original == null) return;
         replaceValue(s, s.original.copy(), "reset to the saved data");
     }
@@ -329,6 +504,7 @@ public final class FlowDebugStore implements PersistentStateComponent<FlowDebugS
 
     /** Undoes an edit (as a new edit, so the history stays complete): the old value or name, or the field back or gone. */
     public void revert(FlowSnapshot s, FlowValueEdit edit) {
+        if (s.locked) return; // locked: not changed
         switch (edit.kind == null ? "" : edit.kind) {
             case "REPLACE" -> {
                 if (edit.item != null) replaceValue(s, edit.item.copy(), "reverted: " + edit.after);

@@ -748,4 +748,94 @@ public class FlowCallPathTest extends LightJavaCodeInsightFixtureTestCase {
         assertTrue(w.ways().isEmpty());
         assertEquals("Stopped before a way was found.", w.message());
     }
+
+    /**
+     * Work handed to a runner, as in a travel search: process() → searchVacationPackages() → doAllProductsSearch(),
+     * which hands a helper to threadManager.addProcessor(...); the manager calls its runProcess() later (not in the
+     * code we read), which runs the search through a lambda kept in a map.
+     */
+    public void testWorkHandedToARunnerIsFollowed() {
+        myFixture.addClass("""
+                package com.travel.thread;
+                public abstract class BaseProcessor {
+                    public abstract void runProcess();
+                }
+                """);
+        myFixture.addClass("""
+                package com.travel.thread;
+                public class ThreadManager {
+                    private final java.util.List<BaseProcessor> processors = new java.util.ArrayList<>();
+                    public void addProcessor(BaseProcessor p) { processors.add(p); }
+                    public void runProcessors() { /* started by a pool elsewhere */ }
+                }
+                """);
+        PsiClass util = myFixture.addClass("""
+                package com.travel.search;
+                public class PackageSearchUtil {
+                    public static String doAllProductsSearch(String info) {
+                        return "result " + info;
+                    }
+                }
+                """);
+        myFixture.addClass("""
+                package com.travel.search;
+                import com.travel.thread.*;
+                import java.util.*;
+                public class PackageSearchHelper extends BaseProcessor {
+                    String info;
+                    int executionMode;
+                    String result;
+                    public static void doAllProductsSearch(ThreadManager threadManager, String info) {
+                        PackageSearchHelper packageSearchHelper = new PackageSearchHelper();
+                        packageSearchHelper.info = info;
+                        packageSearchHelper.executionMode = 2;
+                        threadManager.addProcessor(packageSearchHelper);
+                        threadManager.runProcessors();
+                    }
+                    @Override
+                    public void runProcess() {
+                        Map<Integer, Runnable> commands = new HashMap<>();
+                        commands.put(1, () -> setPackageInfo());
+                        commands.put(2, () -> setSearchResultForPackageType());
+                        Runnable r = commands.get(executionMode);
+                        if (r != null) r.run();
+                    }
+                    private void setPackageInfo() { }
+                    private void setSearchResultForPackageType() {
+                        result = PackageSearchUtil.doAllProductsSearch(info);
+                    }
+                }
+                """);
+        PsiClass action = myFixture.addClass("""
+                package com.travel.web;
+                import com.travel.search.PackageSearchHelper;
+                import com.travel.thread.ThreadManager;
+                public class VacationAction {
+                    ThreadManager threadManager = new ThreadManager();
+                    String ctvps;
+                    public void process() {
+                        switch (ctvps) {
+                            case "search":
+                                try {
+                                    searchVacationPackages();
+                                } catch (RuntimeException e) { }
+                                break;
+                            default:
+                        }
+                    }
+                    private void searchVacationPackages() {
+                        PackageSearchHelper.doAllProductsSearch(threadManager, ctvps);
+                    }
+                }
+                """);
+        FlowEntry start = line(action, "searchVacationPackages();");
+        FlowEntry end = line(util, "return \"result \" + info;");
+        FlowCallPath.Ways w = FlowCallPath.ways(getProject(), start, end, List.of(start), FlowCallPath.MAX_WAYS, FlowCallPath.Progress.NONE);
+        assertFalse(w.message(), w.ways().isEmpty());
+        FlowCallPath.Way best = w.ways().get(0);
+        assertEquals("VacationAction.process() → VacationAction.searchVacationPackages() → PackageSearchHelper.doAllProductsSearch() → "
+                + "PackageSearchHelper.runProcess() → PackageSearchHelper.setSearchResultForPackageType() → PackageSearchUtil.doAllProductsSearch()",
+                best.chain());
+        assertEquals("handed to ThreadManager.addProcessor(), which runs its runProcess()", best.steps().get(3).via());
+    }
 }

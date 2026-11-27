@@ -247,6 +247,9 @@ final class FlowJsonTree {
         String t = type == null ? "" : type.strip();
         int generic = t.indexOf('<');
         if (generic >= 0) t = t.substring(0, generic);
+        if (t.startsWith("{")) t = t.substring(1);
+        int at = t.indexOf('@'); // "CruiseProduct@60679" (the debugger's object id): the class, the same for every object
+        if (at > 0) t = t.substring(0, at);
         return t.substring(t.lastIndexOf('.') + 1);
     }
 
@@ -283,10 +286,22 @@ final class FlowJsonTree {
         TreeUtil.expand(tree, levels);
     }
 
-    /** Focus the tree: typing searches in it. */
+    /** The tree's search (type to find), opened as Ctrl+F does. */
     void find() {
         tree.requestFocusInWindow();
         if (tree.getSelectionCount() == 0 && tree.getRowCount() > 0) tree.setSelectionRow(0);
+        if (com.intellij.ui.speedSearch.SpeedSearchSupply.getSupply(tree, true) instanceof com.intellij.ui.SpeedSearchBase<?> s) s.showPopup();
+    }
+
+    /** True while the tree's search is open. */
+    boolean isFinding() {
+        com.intellij.ui.speedSearch.SpeedSearchSupply s = com.intellij.ui.speedSearch.SpeedSearchSupply.getSupply(tree);
+        return s != null && s.isPopupActive();
+    }
+
+    /** Closes the tree's search. */
+    void closeFind() {
+        if (com.intellij.ui.speedSearch.SpeedSearchSupply.getSupply(tree) instanceof com.intellij.ui.SpeedSearchBase<?> s) s.hidePopup();
     }
 
     /** The row whose icon the mouse is on (its icon shows as a bookmark to click), -1 for none. */

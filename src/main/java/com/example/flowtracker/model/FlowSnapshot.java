@@ -14,6 +14,15 @@ public class FlowSnapshot {
     public String name = "";
     /** The flow that was active when it was saved. */
     public String flowName = "";
+    /**
+     * Which pass of its line it is (a loop comes back to the line: each pass is a row of its own; a pasted or
+     * duplicated line too). "" for values saved before passes were kept.
+     */
+    public String pass = "";
+    /** Locked: nothing in it can be changed (edits, Reset, Revert, Compare's edits) until it is unlocked. */
+    public boolean locked;
+    /** The group it was put in within its flow (Debug Data's list; "" = none). */
+    public String group = "";
     public String fileUrl = "";
     public String fileName = "";
     public String className = "";

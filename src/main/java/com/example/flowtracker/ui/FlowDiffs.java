@@ -23,6 +23,10 @@ public final class FlowDiffs {
                                             String right, String extension) {
         FileType type = FileTypeManager.getInstance().getFileTypeByExtension(extension);
         DiffContentFactory f = DiffContentFactory.getInstance();
+        if (com.example.flowtracker.model.FlowValueShape.ignoreWhitespace()) { // a line that differs only in spaces is alike
+            left = com.example.flowtracker.model.FlowValueShape.forDiff(left);
+            right = com.example.flowtracker.model.FlowValueShape.forDiff(right);
+        }
         return new SimpleDiffRequest(title, f.create(project, left, type), f.create(project, right, type), leftTitle, rightTitle);
     }
 }

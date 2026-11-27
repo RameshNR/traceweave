@@ -60,6 +60,19 @@ final class FlowLocalWatch extends FlowFieldWatch {
         this.patterns = patterns;
     }
 
+    /** The condition, for "CONDITION" (it may change while the watch runs: read each time). */
+    private Supplier<com.example.flowtracker.model.FlowCondition> condition = () -> null;
+
+    FlowLocalWatch condition(Supplier<com.example.flowtracker.model.FlowCondition> c) {
+        condition = c;
+        return this;
+    }
+
+    private boolean meets(@Nullable Value now) {
+        com.example.flowtracker.model.FlowCondition c = condition.get();
+        return c != null && c.test(fields(now));
+    }
+
     /** Watches a value inside the variable's object: "email", "traveller.name". */
     FlowLocalWatch along(String fields) {
         path = fields == null || fields.isEmpty() ? List.of() : List.of(fields.split("\\."));
@@ -150,6 +163,7 @@ final class FlowLocalWatch extends FlowFieldWatch {
             String change = label + ": " + (first ? "(not set)" : show(before.value())) + " → " + show(now)
                     + (dataChanged ? " (its data changed)" : "");
             List<String> found = switch (when) {
+                case "CONDITION" -> meets(now) ? List.of(change, "matches " + condition.get()) : List.of();
                 case "NULL" -> now == null ? List.of(change) : List.of();
                 case "VALUE" -> {
                     List<Pattern> ps = patterns.get();
@@ -185,6 +199,7 @@ final class FlowLocalWatch extends FlowFieldWatch {
             boolean changed = first || !Objects.equals(before.value(), now) || !before.print().equals(print);
             String change = label() + " " + show(now) + (first ? "" : " (before: " + show(before.value()) + ")");
             List<String> found = switch (when) {
+                case "CONDITION" -> meets(now) ? List.of(change, "matches " + condition.get()) : List.of();
                 case "SET" -> List.of(change);
                 case "CHANGE" -> changed ? List.of(change) : List.of();
                 case "NULL" -> now == null ? List.of(change) : List.of();

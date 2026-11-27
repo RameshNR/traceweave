@@ -55,8 +55,10 @@ final class FlowWatchDialog extends DialogWrapper {
     private final DefaultListModel<FieldRow> fieldModel = new DefaultListModel<>();
     private final JBList<FieldRow> fields = new JBList<>(fieldModel);
     private final JBLabel fieldsTitle = new JBLabel();
-    private final JBRadioButton set, change, toNull, toValue;
+    private final JBRadioButton set, change, toNull, toValue, toCondition;
     private final JBTextField value = new JBTextField();
+    /** A condition on the value, e.g. seats > 2 or status == CANCELLED && total > 10000. */
+    private final JBTextField condition = new JBTextField();
     private final JBCheckBox keep;
     private final JBTextField name = new JBTextField();
     /** Also the object's data: the fields of the object (the field's value, or the class) and of the objects in it. */
@@ -97,12 +99,21 @@ final class FlowWatchDialog extends DialogWrapper {
         change = new JBRadioButton("Only when its value changes", "CHANGE".equals(when) || when.isEmpty());
         toNull = new JBRadioButton("When it is set to null", "NULL".equals(when));
         toValue = new JBRadioButton("When it is set to a value containing:", "VALUE".equals(when));
+        toCondition = new JBRadioButton("When its value matches a condition:", "CONDITION".equals(when));
         ButtonGroup g = new ButtonGroup();
-        for (JBRadioButton r : new JBRadioButton[]{set, change, toNull, toValue}) {
+        for (JBRadioButton r : new JBRadioButton[]{set, change, toNull, toValue, toCondition}) {
             g.add(r);
-            r.addActionListener(e -> value.setEnabled(toValue.isSelected()));
+            r.addActionListener(e -> {
+                value.setEnabled(toValue.isSelected());
+                condition.setEnabled(toCondition.isSelected());
+            });
         }
         if (existing != null && "VALUE".equals(existing.when)) value.setText(String.join(", ", existing.values));
+        if (existing != null && "CONDITION".equals(existing.when) && !existing.values.isEmpty()) condition.setText(existing.values.get(0));
+        condition.getEmptyText().setText("e.g. seats > 2, or status == CANCELLED && total > 10000");
+        condition.setToolTipText("<html>Fields of the value (dots go deeper: traveller.name), or <b>it</b> for the value itself;<br>"
+                + "== != &gt; &lt; &gt;= &lt;= and <b>contains</b>; && (and), || (or), ! (not), brackets; \"text\" in quotes, null</html>");
+        condition.setEnabled(toCondition.isSelected());
         value.getEmptyText().setText("e.g. CANCELLED (several: comma-separated; a /regex/ works too)");
         value.setEnabled(toValue.isSelected());
         keep = new JBCheckBox("Keep watching after a stop: every stop is listed (resume the debugger to go on)",
@@ -352,8 +363,14 @@ final class FlowWatchDialog extends DialogWrapper {
             form.add(r, c);
         }
         c.gridy++;
-        c.insets = JBUI.insets(0, 36, 10, 0);
+        c.insets = JBUI.insets(0, 36, 6, 0);
         form.add(value, c);
+        c.gridy++;
+        c.insets = JBUI.insets(0, 12, 2, 0);
+        form.add(toCondition, c);
+        c.gridy++;
+        c.insets = JBUI.insets(0, 36, 10, 0);
+        form.add(condition, c);
         c.gridy++;
         c.insets = JBUI.insetsBottom(10);
         form.add(keep, c);
@@ -378,6 +395,10 @@ final class FlowWatchDialog extends DialogWrapper {
         if (found == null || !found.text().equals(target.getText())) return new ValidationInfo("Looking it up…", target);
         String resolved = found.resolved();
         if (resolved.startsWith("!")) return new ValidationInfo(resolved.substring(1), target);
+        if (toCondition.isSelected()) {
+            String error = com.example.flowtracker.model.FlowCondition.error(condition.getText());
+            if (error != null) return new ValidationInfo(error, condition);
+        }
         if (toValue.isSelected()) {
             List<String> vals = values();
             if (vals.isEmpty()) return new ValidationInfo("Type the value it should be set to", value);
@@ -397,11 +418,16 @@ final class FlowWatchDialog extends DialogWrapper {
     }
 
     String when() {
-        return set.isSelected() ? "SET" : toNull.isSelected() ? "NULL" : toValue.isSelected() ? "VALUE" : "CHANGE";
+        return set.isSelected() ? "SET" : toNull.isSelected() ? "NULL" : toValue.isSelected() ? "VALUE"
+                : toCondition.isSelected() ? "CONDITION" : "CHANGE";
     }
 
     List<String> values() {
         List<String> out = new ArrayList<>();
+        if (toCondition.isSelected()) {
+            if (!condition.getText().isBlank()) out.add(condition.getText().strip());
+            return out;
+        }
         if (!toValue.isSelected()) return out;
         for (String v : value.getText().split(",")) if (!v.isBlank()) out.add(v.strip());
         return out;

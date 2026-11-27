@@ -106,7 +106,7 @@ public final class FlowValueHunt implements Disposable {
         }
     }
 
-    static final int MAX_STEPS = 3000, DEPTH = 4;
+    static final int MAX_STEPS = 3000, DEPTH = FlowValueReader.DEPTH;
     private static final com.intellij.openapi.diagnostic.Logger LOG = com.intellij.openapi.diagnostic.Logger.getInstance("TraceWeave.StopAtValue");
     /** While any record looks: a look every 2 seconds for debug sessions not listened to yet (a start the events missed). */
     private @Nullable java.util.concurrent.ScheduledFuture<?> scan;
@@ -536,7 +536,19 @@ public final class FlowValueHunt implements Disposable {
             }
             patterns = ps;
             all = hunt.all && ps.size() > 1;
+            com.example.flowtracker.model.FlowCondition c = null;
+            if ("CONDITION".equals(hunt.when) && !hunt.values.isEmpty()) {
+                try {
+                    c = com.example.flowtracker.model.FlowCondition.parse(hunt.values.get(0));
+                } catch (IllegalArgumentException e) {
+                    LOG.info(hunt.name + ": the condition can't be read: " + e.getMessage());
+                }
+            }
+            condition = c;
         }
+
+        /** "CONDITION": what the value must meet. */
+        volatile @Nullable com.example.flowtracker.model.FlowCondition condition;
 
         /** Gets ready (breakpoints, the classes to watch); returns why it can't. */
         @Nullable String prepare(@Nullable XDebugSession current) {
@@ -591,12 +603,12 @@ public final class FlowValueHunt implements Disposable {
             } else if (local != null) {
                 String[] lines = local[3].split("-");
                 ws.add(new FlowLocalWatch(process, local[0], local[1] + "()", local[2], Integer.parseInt(lines[0]), Integer.parseInt(lines[1]),
-                        watchWhen, hunt.target.startsWith("*"), () -> patterns, pending::set, counted).along(local.length >= 5 ? local[4] : ""));
+                        watchWhen, hunt.target.startsWith("*"), () -> patterns, pending::set, counted).along(local.length >= 5 ? local[4] : "").condition(() -> condition));
             } else {
                 boolean whole = deepClasses.contains(watchClass) && watchField == null; // the class's own fields are in the data
-                if (!whole) ws.add(new FlowFieldWatch(process, List.of(watchClass), watchField, FlowFieldWatch.watch(watchWhen, () -> patterns),
+                if (!whole) ws.add(new FlowFieldWatch(process, List.of(watchClass), watchField, FlowFieldWatch.watch(watchWhen, () -> patterns, () -> condition),
                         pending::set, counted));
-                if (!deepClasses.isEmpty()) ws.add(new FlowFieldWatch(process, deepClasses, null, FlowFieldWatch.watch(watchWhen, () -> patterns),
+                if (!deepClasses.isEmpty()) ws.add(new FlowFieldWatch(process, deepClasses, null, FlowFieldWatch.watch(watchWhen, () -> patterns, () -> condition),
                         pending::set, counted));
             }
             for (FlowFieldWatch w : ws) {
@@ -711,7 +723,7 @@ public final class FlowValueHunt implements Disposable {
     }
 
     /** The project's classes (JVM names, nested ones too) in the open projects' (non-test) Java and Kotlin code. */
-    private static List<String> projectClasses() {
+    static List<String> projectClasses() {
         Set<String> out = new LinkedHashSet<>();
         for (Project p : ProjectManager.getInstance().getOpenProjects()) {
             if (p.isDisposed()) continue;

@@ -536,7 +536,71 @@ public final class FlowCallPath {
                     }
                 }
             }
+            out.addAll(handedOver(c, tasks));
             return out;
+        }
+
+        /** A call that hands work over, by its name: threadManager.addProcessor(task), executor.schedule(job)… */
+        private static final java.util.regex.Pattern HAND_OVER = java.util.regex.Pattern.compile(
+                "(?i)^(add|submit|execute|schedule|run|start|register|process|invoke|enqueue|offer|put|queue|dispatch|post|send|fire|"
+                        + "publish|handle|spawn|launch|trigger|perform|apply|accept).*");
+        /** …or by what it is called on: a ThreadManager, an executor, a pool, a scheduler, a queue, a worker… */
+        private static final java.util.regex.Pattern RUNNER = java.util.regex.Pattern.compile(
+                "(?i).*(thread|executor|pool|manager|scheduler|queue|dispatcher|worker|runner|job|task|processor|service|bus|broker).*");
+
+        /**
+         * Work handed to a runner: an object of the project passed to a call that hands work over (threadManager
+         * .addProcessor(helper), scheduler.schedule(job), pool.register(this)…). The runner calls it back later, often in
+         * another thread, through a method it overrides (an interface's or a library / abstract class's: runProcess(),
+         * process(), execute()…): those are the ways on. Getters, setters and Object's own methods are left out.
+         */
+        List<Target> handedOver(PsiCall c, List<PsiClass> passed) {
+            List<Target> out = new ArrayList<>();
+            PsiMethod called = c.resolveMethod();
+            String name = called != null ? called.getName() : c instanceof PsiMethodCallExpression mc ? mc.getMethodExpression().getReferenceName() : "";
+            String receiver = "";
+            if (c instanceof PsiMethodCallExpression mc && mc.getMethodExpression().getQualifierExpression() != null
+                    && mc.getMethodExpression().getQualifierExpression().getType() instanceof PsiClassType rt) {
+                receiver = rt.getClassName();
+            } else if (called != null && called.getContainingClass() != null && called.getContainingClass().getName() != null) {
+                receiver = called.getContainingClass().getName();
+            }
+            if (name == null || !(HAND_OVER.matcher(name).matches() || RUNNER.matcher(receiver).matches())) return out;
+            java.util.Set<PsiMethod> seen = new java.util.HashSet<>();
+            for (PsiClass k : passed) {
+                VirtualFile vf = k.getContainingFile() == null ? null : k.getContainingFile().getVirtualFile();
+                if (vf == null || !index.isInContent(vf)) continue; // only the project's own objects
+                for (PsiMethod m : k.getMethods()) {
+                    if (m.getBody() == null || m.isConstructor() || m.hasModifierProperty(PsiModifier.STATIC)
+                            || m.hasModifierProperty(PsiModifier.PRIVATE) || isAccessor(m) || !seen.add(m)) continue;
+                    if (!callback(m)) continue;
+                    out.add(new Target(m, "handed to " + (receiver.isEmpty() ? "" : receiver + ".") + name + "(), which runs its "
+                            + m.getName() + "()"));
+                }
+            }
+            return out;
+        }
+
+        /** A method something else calls back: it implements or overrides an interface's, an abstract or a library class's method. */
+        private boolean callback(PsiMethod m) {
+            for (PsiMethod sup : m.findSuperMethods()) {
+                PsiClass owner = sup.getContainingClass();
+                if (owner == null) continue;
+                String q = owner.getQualifiedName();
+                if ("java.lang.Object".equals(q)) return false; // equals, hashCode, toString…
+                if (owner.isInterface() || sup.hasModifierProperty(PsiModifier.ABSTRACT)) return true;
+                VirtualFile vf = owner.getContainingFile() == null ? null : owner.getContainingFile().getVirtualFile();
+                if (vf == null || !index.isInContent(vf)) return true; // a library's class (a framework's base processor)
+            }
+            return false;
+        }
+
+        private static boolean isAccessor(PsiMethod m) {
+            String n = m.getName();
+            int params = m.getParameterList().getParametersCount();
+            return params == 0 && (n.startsWith("get") || n.startsWith("is")) && n.length() > 3
+                    || params == 1 && n.startsWith("set") && n.length() > 3
+                    || List.of("compareTo", "equals", "hashCode", "toString", "clone", "finalize").contains(n);
         }
 
         static boolean inherits(PsiClass k, String qualifiedName) {
@@ -751,7 +815,7 @@ public final class FlowCallPath {
                 int n = 0;
                 for (PsiMethod o : OverridingMethodsSearch.search(target, scope, true).findAll()) {
                     out.add(o);
-                    if (++n >= 20) break;
+                    if (++n >= 50) break; // a base processor with many implementations: they are all ways on
                 }
             }
             return out;

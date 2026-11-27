@@ -39,6 +39,8 @@ public final class FlowStore implements PersistentStateComponent<FlowStore.State
         public List<FlowDiagramLook> diagram = new ArrayList<>();
         /** Its color (e.g. "#3574F0"), shown on its Flow Diagram tab; "" = none chosen yet. */
         public String color = "";
+        /** Its calls marked as expected (FlowSync links): a check tells the ones the code doesn't make any more. */
+        public List<String> expectedCalls = new ArrayList<>();
 
         public Flow() {}
 
@@ -133,7 +135,16 @@ public final class FlowStore implements PersistentStateComponent<FlowStore.State
     private final Deque<Change> redoStack = new ArrayDeque<>();
 
     public static FlowStore get(Project project) {
-        return project.getService(FlowStore.class);
+        FlowStore s = project.getService(FlowStore.class);
+        s.projectName = project.getName();
+        return s;
+    }
+
+    /** The IntelliJ project's name (on top of every copy and diagram); "" until it is known. */
+    private volatile String projectName = "";
+
+    public String getProjectName() {
+        return projectName == null ? "" : projectName;
     }
 
     /** The active flow (there is always at least one). */
@@ -280,6 +291,21 @@ public final class FlowStore implements PersistentStateComponent<FlowStore.State
     public List<FlowDiagramLook> getDiagramLooksOf(String name) {
         int i = indexOfFlow(name);
         return i < 0 ? List.of() : new ArrayList<>(state.flows.get(i).diagram);
+    }
+
+    /** A flow's calls marked as expected (empty: none marked). */
+    public List<String> getExpectedCalls(String name) {
+        int i = indexOfFlow(name);
+        List<String> c = i < 0 ? null : state.flows.get(i).expectedCalls;
+        return c == null ? List.of() : new ArrayList<>(c);
+    }
+
+    /** Marks a flow's calls as expected (empty: no check). */
+    public void setExpectedCalls(String name, java.util.Collection<String> links) {
+        int i = indexOfFlow(name);
+        if (i < 0) return;
+        state.flows.get(i).expectedCalls = new ArrayList<>(links);
+        fire();
     }
 
     /** A flow's color ("" when none was chosen). */

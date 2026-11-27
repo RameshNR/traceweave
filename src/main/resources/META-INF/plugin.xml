@@ -8,6 +8,34 @@
     <!-- <description> comes from src/main/plugin-description.html (see build.gradle.kts). -->
 
     <change-notes><![CDATA[
+<h3>1.5.0</h3>
+<ul>
+  <li><b>Compare, redone</b>: a left rail (JSON, Text, Tree, History, Favorites, Settings), All / Differences, Compare or
+      Unified view, As Saved / Original / Formatted, sort, Hide Internals and Ignore Whitespace (JSON laid out alike, blank
+      lines and indentation don't count), OLD / NEW cards to pick a saved value, a file or the clipboard, and a status bar.
+      Compare any two values, lines, groups or flows; one picked: it on the left and "Add Data to Compare" on the right.
+      Pasted JSON, TraceWeave's text (name = value) and Java toString() are read as fields.</li>
+  <li><b>Debug Data</b>: the tree looks like IntelliJ's Variables view; values saved 8 levels deep; fields pinned in
+      the debugger (Pin to Top) become bookmarks; groups with drag and drop; Copy, Paste and Duplicate values, lines,
+      groups and flows; each pass of a loop over a line is a row of its own; Lock a value against changes; View Data
+      (Tree, JSON, Text) in a window of its own, where a value can be changed too; the Edit and Add Field windows show
+      the value as a tree to add, edit, duplicate or remove fields; "edited" means it differs from what was saved.</li>
+  <li>Connect the Flow follows work handed to a thread manager or executor (addProcessor, submit, execute, …) into the
+      method that runs it.</li>
+  <li>Text views are colored (names, text, numbers, types); Ignore Whitespace in every diff; HTML export with a Light /
+      Dark / System switch on the page; Save as PNG; the project's name on top of copies, Markdown, HTML and diagrams.</li>
+  <li>Copy ▾ → Copy Flow Summary: the flow in plain sentences, written on your machine (no AI, nothing sent).
+      Optional AI (Settings → AI Summary): off by default; a local model or your own key; shows exactly what would be
+      sent and where, and sends only on Send.</li>
+  <li>Record ▾ → Record a Request: the methods one request runs, without breakpoints, become a flow.</li>
+  <li>New Flow from Stack Trace; Mark Calls as Expected / Check Calls Against the Code; Export Flow carries the
+      flow's Debug Data values in the same file.</li>
+  <li>Stop at Value: conditions (seats &gt; 2, status == CANCELLED &amp;&amp; total &gt; 10000); opening a stop shows
+      the paused frame.</li>
+  <li>Debug Data: Timeline of This Variable; Compare marks only the characters that differ.</li>
+  <li>Flow Diagram: Mermaid, PlantUML and SVG; each way says why; the search goes on after Choose a Way closes;
+      Layout saved marks kept. A ? button in each window lists its keyboard shortcuts.</li>
+</ul>
 <h3>1.4.1</h3>
 <ul>
   <li>Connect the Flow: Choose a Way opens with the first way found and the others join the list while the search

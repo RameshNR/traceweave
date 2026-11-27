@@ -39,6 +39,9 @@ public final class FlowWaysPanel extends JPanel {
     private static final int SHADOW = 4;
 
     private final FlowWaysList list;
+    private final FlowCallPath.Ways ways;
+    private final String from, to;
+    private final JBLabel title = new JBLabel(), number = new JBLabel();
     private final JPanel open = new JPanel(new BorderLayout(0, JBUI.scale(10)));
     private final JPanel bar = new JPanel(new BorderLayout(JBUI.scale(10), 0));
     private final Runnable onResize;
@@ -65,12 +68,15 @@ public final class FlowWaysPanel extends JPanel {
         super(new BorderLayout());
         this.onResize = onResize;
         setOpaque(false);
+        this.ways = ways;
+        this.from = from;
+        this.to = to;
         int n = ways.ways().size();
         String count = n + (n == 1 ? " way" : " ways");
 
         // ---- open: WAYS · the title and hint · Minimize, Full Screen; the ways
         JBLabel tag = chip("WAYS");
-        JBLabel title = new JBLabel("<html><b>" + esc(count) + "</b> from " + esc(from) + " to " + esc(to) + "</html>");
+        title.setText("<html><b>" + esc(count) + "</b> from " + esc(from) + " to " + esc(to) + "</html>");
         title.setForeground(FlowTheme.FG);
         JBLabel hint = new JBLabel("Hover a way to see it on the diagram · click it to add it");
         hint.setFont(JBUI.Fonts.smallFont());
@@ -106,7 +112,7 @@ public final class FlowWaysPanel extends JPanel {
 
         // ---- minimized: one line with the number of ways and where they go; a click (or Open) opens it
         JBLabel icon = new JBLabel(FlowTheme.ICON_CONNECT);
-        JBLabel number = new JBLabel(count);
+        number.setText(count);
         number.setFont(JBUI.Fonts.label().asBold());
         number.setForeground(FlowTheme.FG);
         JBLabel route = new JBLabel(StringUtil.shortenTextWithEllipsis(from + "  →  " + to, 48, 16));
@@ -221,6 +227,21 @@ public final class FlowWaysPanel extends JPanel {
 
     private static String esc(String s) {
         return StringUtil.escapeXmlEntities(s);
+    }
+
+    /**
+     * The ways list changed (the search goes on after the window closed): the cards and counts again.
+     * @param searching what the search is doing (e.g. "searching…"), or null once it ended
+     */
+    public void refresh(@Nullable String searching) {
+        list.refresh();
+        int n = ways.ways().size();
+        String count = n + (n == 1 ? " way" : " ways");
+        String more = searching == null ? "" : " · <span style='color:" + FlowWaysList.hex(FlowTheme.ACCENT) + "'>" + esc(searching) + "</span>";
+        title.setText("<html><b>" + esc(count) + "</b> from " + esc(from) + " to " + esc(to) + more + "</html>");
+        number.setText("<html><nobr><b>" + esc(count) + "</b>" + more + "</nobr></html>"); // one line, never wrapped
+        revalidate();
+        repaint();
     }
 
     /** How to tell a way that is on the tab already (it is hidden, or shown greyed out). */

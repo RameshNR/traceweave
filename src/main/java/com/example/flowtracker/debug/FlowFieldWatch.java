@@ -88,7 +88,17 @@ class FlowFieldWatch implements ClassPrepareRequestor, LocatableEventRequestor, 
      * value that holds one of the values ("VALUE").
      */
     static Rule watch(String when, Supplier<List<Pattern>> patterns) {
+        return watch(when, patterns, () -> null);
+    }
+
+    /** {@link #watch(String, Supplier)}, and "CONDITION": a value that meets the condition. */
+    static Rule watch(String when, Supplier<List<Pattern>> patterns, Supplier<com.example.flowtracker.model.FlowCondition> condition) {
         return (label, current, toBe) -> {
+            if (when.equals("CONDITION")) {
+                com.example.flowtracker.model.FlowCondition c = condition.get();
+                if (c == null || !c.test(fields(toBe))) return List.of();
+                return List.of(label + ": " + show(current) + " → " + show(toBe), "matches " + c);
+            }
             String was = show(current), now = show(toBe);
             String change = label + ": " + was + " → " + now;
             return switch (when) {
@@ -106,6 +116,28 @@ class FlowFieldWatch implements ClassPrepareRequestor, LocatableEventRequestor, 
                     yield out;
                 }
             };
+        };
+    }
+
+    /**
+     * A value's fields as text for a condition: "it" is the value itself, "a.b" its field a's field b; a string's text
+     * (no quotes), a number, true / false, an enum's name; null when null or there is no such field.
+     */
+    static java.util.function.Function<String, String> fields(@Nullable Value root) {
+        return name -> {
+            Value v = root;
+            if (!name.equals("it")) {
+                for (String part : name.split("\\.")) {
+                    if (!(v instanceof ObjectReference o) || v instanceof StringReference) return null;
+                    Field f = o.referenceType().fieldByName(part);
+                    if (f == null) return null;
+                    v = o.getValue(f);
+                }
+            }
+            if (v == null) return null;
+            if (v instanceof StringReference s) return s.value();
+            String shown = show(v);
+            return shown;
         };
     }
 

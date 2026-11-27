@@ -76,6 +76,7 @@ public final class FlowDebugCapture {
      * offers Compare.
      */
     public static void save(Project project, String name, XValue value) {
+        FlowEvaluatePins.sync(project); // the fields pinned in Evaluate / Variables are bookmarked here too
         FlowSnapshot s = new FlowSnapshot();
         s.name = name == null || name.isBlank() ? "value" : name;
         s.flowName = FlowStore.get(project).getActiveFlowName();

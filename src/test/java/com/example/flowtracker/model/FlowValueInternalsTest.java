@@ -114,4 +114,13 @@ class FlowValueInternalsTest {
         o.children.add(field("currency", "\"EUR\""));
         assertTrue(!FlowValueShape.hasInternals(o));
     }
+
+    @Test
+    void onlyWhitespaceDifferencesAreAlike() {
+        assertTrue(FlowValueShape.sameIgnoringWhitespace("\"BK-1042\"", "\"BK-1042\"  "));
+        assertTrue(FlowValueShape.sameIgnoringWhitespace("a  b\tc", "a b c"));
+        assertTrue(!FlowValueShape.sameIgnoringWhitespace("BK-1042", "BK-1043"));
+        // line by line, the indentation kept
+        assertEquals("  \"a\": 1,\n  \"b\": 2", FlowValueShape.withoutWhitespaceDifferences("  \"a\":   1,   \n  \"b\":\t2"));
+    }
 }

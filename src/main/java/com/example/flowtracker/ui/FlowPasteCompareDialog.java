@@ -163,6 +163,11 @@ public final class FlowPasteCompareDialog {
             if (saved != null) showSaved(savedAsJson);
         });
         leftButtons.add(internals);
+        com.intellij.ui.components.JBCheckBox whitespace = new com.intellij.ui.components.JBCheckBox("Ignore Whitespace",
+                com.example.flowtracker.model.FlowValueShape.ignoreWhitespace());
+        whitespace.setToolTipText("Lines that differ only in spaces, tabs or line ends aren't shown as different");
+        whitespace.addActionListener(e -> com.example.flowtracker.model.FlowValueShape.setIgnoreWhitespace(whitespace.isSelected()));
+        leftButtons.add(whitespace);
         JPanel rightButtons = new JPanel(new FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0));
         rightButtons.add(compare);
         rightButtons.add(close);

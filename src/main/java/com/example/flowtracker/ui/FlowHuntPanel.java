@@ -155,7 +155,7 @@ public final class FlowHuntPanel extends JPanel implements Disposable {
         bar.addGroup(false, 1, startStop, edit, rename, delete);
         binButton.setToolTipText("Records and stops deleted: restore them, or delete them for good");
         binButton.addActionListener(e -> new FlowHuntBinDialog(project).show());
-        bar.addTrailingGroup(1, binButton);
+        bar.addTrailingGroup(1, binButton, FlowShortcuts.button("Stop at Value", FlowShortcuts.STOP_AT_VALUE));
         bar.setBorder(JBUI.Borders.emptyBottom(10));
 
         // ---- the records
@@ -463,7 +463,7 @@ public final class FlowHuntPanel extends JPanel implements Disposable {
         form.add(modes, BorderLayout.CENTER);
         form.add(notes("Start the app in Debug first (every module you want to look in, e.g. the web app and its API). "
                 + "The first two ways need no breakpoints; the last ones need your breakpoints or a paused debugger. "
-                + "Variables are searched 4 levels deep (fields, map entries, list elements)."), BorderLayout.SOUTH);
+                + "Variables are searched 8 levels deep (fields, map entries, list elements)."), BorderLayout.SOUTH);
 
         DialogBuilder b = new DialogBuilder(project);
         b.setTitle(existing == null ? "Add Stop at Value" : "Edit " + existing.name);
@@ -891,6 +891,7 @@ public final class FlowHuntPanel extends JPanel implements Disposable {
 
     private static String whenLabel(FlowHuntStore.Hunt h) {
         return switch (h.when) {
+            case "CONDITION" -> "when " + (h.values.isEmpty() ? "a condition" : h.values.get(0));
             case "SET" -> "whenever it is set";
             case "NULL" -> "when it is set to null";
             case "VALUE" -> "when it is set to " + String.join(" | ", h.active());
@@ -951,7 +952,7 @@ public final class FlowHuntPanel extends JPanel implements Disposable {
         JComponent[] values = {stopWhen, stopWhere, stopMethod, stopThread, stopFound};
         stopWhere.setForeground(FlowTheme.ACCENT);
         stopWhere.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        stopWhere.setToolTipText("Open this line (Enter)");
+        stopWhere.setToolTipText("Open this line (Enter); when the debugger is still paused here, its frame too");
         stopWhere.addMouseListener(new MouseAdapter() {
             @Override public void mouseReleased(MouseEvent e) { openStop(); }
         });
@@ -997,8 +998,20 @@ public final class FlowHuntPanel extends JPanel implements Disposable {
             showStop();
         });
         FlowButton find = new FlowButton("", AllIcons.Actions.Find, FlowButton.Style.OUTLINE);
-        find.setToolTipText("Find in the variables (in the tree: just type)");
-        find.addActionListener(e -> { if (asTree) snapshotTree.find(); else snapshot.find(); });
+        find.setToolTipText("Find in the variables (Ctrl+F); click again to close the search");
+        // Find: the search (as Ctrl+F); a second click closes it
+        find.addActionListener(e -> {
+            boolean open = asTree ? snapshotTree.isFinding() : snapshot.isFinding();
+            if (open) {
+                if (asTree) snapshotTree.closeFind();
+                else snapshot.closeFind();
+            } else if (asTree) {
+                snapshotTree.find();
+            } else {
+                snapshot.find();
+            }
+            find.setSelected(!open);
+        });
         // Tree (like the debugger's variables) or JSON
         FlowButton treeView = new FlowButton("Tree", AllIcons.Actions.ShowAsTree, FlowButton.Style.SEGMENT);
         FlowButton jsonView = new FlowButton("JSON", AllIcons.FileTypes.Json, FlowButton.Style.SEGMENT);
@@ -1105,6 +1118,17 @@ public final class FlowHuntPanel extends JPanel implements Disposable {
         FlowHuntStore.Stop s = h.stops.get(row);
         VirtualFile vf = VirtualFileManager.getInstance().findFileByUrl(s.fileUrl);
         if (vf != null) new OpenFileDescriptor(project, vf, Math.max(0, s.line - 1), 0).navigate(true);
+        // still paused there: the debugger shows that frame too (its variables, its thread)
+        for (com.intellij.xdebugger.XDebugSession session : com.intellij.xdebugger.XDebuggerManager.getInstance(project).getDebugSessions()) {
+            com.intellij.xdebugger.XSourcePosition at = session.isSuspended() ? session.getCurrentPosition() : null;
+            if (at != null && at.getFile().getUrl().equals(s.fileUrl) && at.getLine() == s.line - 1) {
+                session.showExecutionPoint();
+                status.setText("The debugger is paused here: its frame is shown (" + session.getSessionName() + ").");
+                return;
+            }
+        }
+        status.setText("Opened " + s.fileName + ":" + s.line + (com.intellij.xdebugger.XDebuggerManager.getInstance(project)
+                .getDebugSessions().length == 0 ? "." : ". The debugger isn't paused here now."));
     }
 
     private void deleteStops() {

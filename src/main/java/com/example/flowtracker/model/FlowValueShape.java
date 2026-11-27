@@ -41,6 +41,64 @@ public final class FlowValueShape {
         return PLAIN.contains(t);
     }
 
+    private static final String WHITESPACE_KEY = "TraceWeave.ignoreWhitespace";
+
+    /** The setting: differences only in whitespace aren't shown (on by default), in Compare and the diffs. */
+    public static boolean ignoreWhitespace() {
+        return com.intellij.ide.util.PropertiesComponent.getInstance().getBoolean(WHITESPACE_KEY, true);
+    }
+
+    public static void setIgnoreWhitespace(boolean ignore) {
+        com.intellij.ide.util.PropertiesComponent.getInstance().setValue(WHITESPACE_KEY, ignore, true);
+    }
+
+    /**
+     * Text with its whitespace made alike, line by line (the indentation kept): spaces and tabs in a row are one
+     * space, none at a line's end. Two texts that differ only in whitespace are then the same.
+     */
+    public static String withoutWhitespaceDifferences(@Nullable String text) {
+        if (text == null) return "";
+        StringBuilder out = new StringBuilder();
+        for (String line : text.split("\\R", -1)) {
+            int i = 0;
+            while (i < line.length() && (line.charAt(i) == ' ' || line.charAt(i) == '\t')) i++;
+            if (out.length() > 0) out.append('\n');
+            out.append(line, 0, i).append(line.substring(i).replaceAll("[ \\t]+", " ").stripTrailing());
+        }
+        return out.toString();
+    }
+
+    /** True when two values' texts differ only in whitespace (spaces, tabs, line ends, blank lines, indentation). */
+    public static boolean sameIgnoringWhitespace(@Nullable String a, @Nullable String b) {
+        if (a == null || b == null) return a == b;
+        return a.replaceAll("\\s+", "").equals(b.replaceAll("\\s+", ""));
+    }
+
+    private static final com.google.gson.Gson PRETTY = new com.google.gson.GsonBuilder().setPrettyPrinting()
+            .disableHtmlEscaping().serializeNulls().create();
+
+    /**
+     * A text for a diff with Ignore Whitespace on: JSON laid out the same way on both sides (indentation, line breaks,
+     * blank lines don't count); other text without blank lines and with its spaces made alike.
+     */
+    public static String forDiff(@Nullable String text) {
+        String t = text == null ? "" : text.strip();
+        if (t.startsWith("{") || t.startsWith("[")) {
+            try {
+                return PRETTY.toJson(com.google.gson.JsonParser.parseString(t));
+            } catch (RuntimeException notJson) {
+                // as text
+            }
+        }
+        StringBuilder out = new StringBuilder();
+        for (String line : t.split("\\R")) {
+            if (line.isBlank()) continue;
+            if (out.length() > 0) out.append('\n');
+            out.append(withoutWhitespaceDifferences(line));
+        }
+        return out.toString();
+    }
+
     /** The setting: Java internals hidden (on by default), in Debug Data and Compare. */
     public static boolean hideInternals() {
         return com.intellij.ide.util.PropertiesComponent.getInstance().getBoolean(HIDE_KEY, true);

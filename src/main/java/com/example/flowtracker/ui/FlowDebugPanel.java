@@ -44,6 +44,8 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.DefaultListModel;
+import javax.swing.DropMode;
+import javax.swing.TransferHandler;
 import javax.swing.JComponent;
 import javax.swing.JList;
 import javax.swing.JPanel;
@@ -89,13 +91,48 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     private final JBCheckBox searchNow = new JBCheckBox("Also in the current debug session");
     private final Timer searchTimer = new Timer(350, e -> runSearch());
 
-    private final Tree snapshots = new Tree();
+    /** The saved values by flow and line: its indent a little tighter (the flows start near the card's edge). */
+    private final Tree snapshots = new Tree() {
+        @Override public void updateUI() {
+            super.updateUI();
+            if (getUI() instanceof javax.swing.plaf.basic.BasicTreeUI ui) {
+                ui.setLeftChildIndent(JBUI.scale(4));
+                ui.setRightChildIndent(JBUI.scale(10));
+            }
+        }
+    };
     private final DefaultListModel<FlowValueSearch.Match> resultModel = new DefaultListModel<>();
     private final JBList<FlowValueSearch.Match> results = new JBList<>(resultModel);
     private final CardLayout leftCards = new CardLayout();
     private final JPanel left = new JPanel(leftCards);
     private final Tree values = new Tree();
     private final JBLabel valueTitle = new JBLabel();
+    /** The value's header (icon, title, type badge): shown with a value. */
+    private final JPanel valueHeader = new JPanel(new BorderLayout(JBUI.scale(10), 0));
+    /** The shown value's type, as a pill on the right of its header ("BookingDto"). */
+    private final JBLabel typeBadge = new JBLabel() {
+        @Override
+        protected void paintComponent(java.awt.Graphics g) {
+            if (getText() == null || getText().isEmpty()) return;
+            java.awt.Graphics2D g2 = (java.awt.Graphics2D) g.create();
+            g2.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setColor(BADGE_BG);
+            g2.fillRoundRect(0, 0, getWidth() - 1, getHeight() - 1, getHeight(), getHeight());
+            g2.setColor(BADGE_FG);
+            g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, getHeight(), getHeight());
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    };
+    /** The active flow and a line's current pass. */
+    private static final java.awt.Color ACTIVE = new JBColor(0x2E8B3A, 0x6FC27B);
+    private static final java.awt.Color BADGE_BG = new JBColor(0xEEE9FF, 0x2E2A4F), BADGE_FG = new JBColor(0x6B4FD8, 0xB4A5FF);
+    /** Value colors, as the editor shows them: text, numbers, true / false / null. */
+    private static final SimpleTextAttributes STRING_VALUE = new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, new JBColor(0x067D17, 0x6AAB73));
+    private static final SimpleTextAttributes NUMBER_VALUE = new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, new JBColor(0x1750EB, 0x2AACB8));
+    private static final SimpleTextAttributes KEYWORD_VALUE = new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, new JBColor(0x0033B3, 0xCF8E6D));
+    private static final SimpleTextAttributes EDITED_BADGE = new SimpleTextAttributes(new JBColor(0xFFF1D6, 0x4A3A16),
+            new JBColor(0x9A5B00, 0xF2C14E), null, SimpleTextAttributes.STYLE_BOLD);
     private final JBLabel status = new JBLabel();
 
     private static final String EXPRESSION_TIP = "Evaluate an expression where the debugger is paused (e.g. request.getSession() "
@@ -239,10 +276,13 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         // Two toolbars that wrap and shrink with the tool window like the Flow tab's: saved values, and the Recycle Bin.
         FlowToolbar savedBar = new FlowToolbar();
         savedBar.addGroup(false, 1, capture, stopAtValue, addExpression, newValue);
-        savedBar.addGroup(false, 1, compare, history);
+        FlowButton viewList = button("View Data", AllIcons.Actions.Preview,
+                "Look at the picked value, line, group or flow (several: together) as a tree, JSON or text, in a window of its own",
+                this::viewPicked);
+        savedBar.addGroup(false, 1, compare, viewList, history);
         savedBar.addGroup(false, 1, delete, bin);
         savedBar.addGroup(false, 1, importData, exportData);
-        savedBar.addGroup(false, 1, settingsButton);
+        savedBar.addGroup(false, 1, settingsButton, FlowShortcuts.button("Debug Data", FlowShortcuts.DEBUG_DATA));
         FlowToolbar binBar = new FlowToolbar();
         binBar.addGroup(false, 1, back);
         binBar.addGroup(false, 1, restore, purge);
@@ -256,6 +296,29 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
 
         snapshots.setRootVisible(false);
         snapshots.setShowsRootHandles(true);
+        // Ctrl+click to leave a row out: the rows it is in (its line, group, flow) are left out too, since picking them
+        // takes everything inside (Delete would delete what was left out)
+        snapshots.addTreeSelectionListener(e -> {
+            if (narrowing) return;
+            List<TreePath> drop = new ArrayList<>();
+            for (TreePath p : e.getPaths()) {
+                if (e.isAddedPath(p)) return; // a new pick (a click on a row): nothing to narrow
+                for (TreePath up = p.getParentPath(); up != null; up = up.getParentPath()) {
+                    if (snapshots.isPathSelected(up)) drop.add(up);
+                }
+            }
+            if (drop.isEmpty()) return;
+            narrowing = true;
+            try {
+                snapshots.removeSelectionPaths(drop.toArray(new TreePath[0]));
+            } finally {
+                narrowing = false;
+            }
+        });
+        // drag values (or a line, or a group) onto a flow, a group or a value to move them there
+        snapshots.setDragEnabled(true);
+        snapshots.setDropMode(DropMode.ON);
+        snapshots.setTransferHandler(new ValuesDrop());
         snapshots.setCellRenderer(new SnapshotRenderer());
         snapshots.getEmptyText().setText("No saved debug values yet");
         snapshots.getEmptyText().appendSecondaryText("While debugging, right-click a variable in the Variables view → Save to TraceWeave",
@@ -429,7 +492,11 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
                             });
             m.showBelowRight(valueSettings); // it ends where the button ends
         });
-        shape.addTrailingGroup(1, findButton, valueSettings);
+        FlowButton viewDetails = button("", AllIcons.Actions.Preview, "View Data: this value as a tree, JSON or text, in a window of its own",
+                this::viewShown);
+        lockButton.setToolTipText("Lock this value: nothing in it can be changed until it is unlocked");
+        lockButton.addActionListener(e -> toggleLock());
+        shape.addTrailingGroup(1, lockButton, viewDetails, findButton, valueSettings);
         valueFilter.getTextEditor().getEmptyText().setText("Filter the fields (name, value or type)");
         valueFilter.setToolTipText("Only the fields that have this text, with the fields around them (Ctrl+F)");
         valueFilter.addDocumentListener(new DocumentAdapter() {
@@ -446,8 +513,34 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         tools.add(shape, BorderLayout.CENTER);
         tools.add(filterRow, BorderLayout.SOUTH);
         tools.setVisible(false); // shown with a value
-        JPanel head = new JPanel(new BorderLayout());
-        head.add(valueTitle, BorderLayout.CENTER);
+        // the value's header: an icon, "booking at File.java:26 in Class.method()" over when / which flow / edited, its type
+        JBLabel valueIcon = new JBLabel(AllIcons.Nodes.Class) {
+            @Override
+            protected void paintComponent(java.awt.Graphics g) {
+                java.awt.Graphics2D g2 = (java.awt.Graphics2D) g.create();
+                g2.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(JBUI.CurrentTheme.ActionButton.hoverBackground());
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), JBUI.scale(10), JBUI.scale(10));
+                g2.dispose();
+                super.paintComponent(g);
+            }
+        };
+        valueIcon.setPreferredSize(new Dimension(JBUI.scale(34), JBUI.scale(34)));
+        valueIcon.setHorizontalAlignment(JBLabel.CENTER);
+        JPanel iconBox = new JPanel(new java.awt.GridBagLayout());
+        iconBox.setOpaque(false);
+        iconBox.add(valueIcon);
+        valueHeader.setOpaque(false);
+        valueHeader.add(iconBox, BorderLayout.WEST);
+        valueHeader.add(valueTitle, BorderLayout.CENTER);
+        JPanel badgeBox = new JPanel(new java.awt.GridBagLayout());
+        badgeBox.setOpaque(false);
+        badgeBox.add(typeBadge);
+        valueHeader.add(badgeBox, BorderLayout.EAST);
+        valueHeader.setBorder(JBUI.Borders.compound(JBUI.Borders.customLine(FlowTheme.CARD_BORDER, 0, 0, 1, 0), JBUI.Borders.empty(6, 6, 8, 6)));
+        valueHeader.setVisible(false);
+        JPanel head = new JPanel(new BorderLayout(0, JBUI.scale(6)));
+        head.add(valueHeader, BorderLayout.CENTER);
         head.add(tools, BorderLayout.SOUTH);
         JPanel right = new JPanel(new BorderLayout());
         right.add(head, BorderLayout.NORTH);
@@ -546,6 +639,12 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         if (i >= 0 && i != flows.getActiveFlowIndex()) flows.switchFlow(i);
     }
 
+    /** Lock / unlock the value shown (it shows its state). */
+    private final FlowButton lockButton = new FlowButton("", AllIcons.Ide.Readwrite, FlowButton.Style.OUTLINE);
+
+    /** True while rows are left out of the selection because one inside them was. */
+    private boolean narrowing;
+
     /** True while the list is rebuilt (its selection changes then are not the user's). */
     private boolean reloading;
 
@@ -559,29 +658,48 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     }
 
     private void reloadList() {
+        // groups left from flows deleted before their groups went with them
+        for (String f : store.groupFlows()) {
+            if (!flows.getFlowNames().contains(f) && store.getSnapshots().stream().noneMatch(x -> x.flowName.equals(f))) store.forgetFlow(f);
+        }
+        com.example.flowtracker.debug.FlowEvaluatePins.sync(project);
         Group selectedRow = selectedGroup();
         FlowSnapshot selected = selectedSnapshot();
         List<String> expandedGroups = expandedGroupKeys();
         DefaultMutableTreeNode root = new DefaultMutableTreeNode();
-        Map<String, Map<String, List<FlowSnapshot>>> groups = new LinkedHashMap<>();
-        if (!showingBin) for (String f : flows.getFlowNames()) groups.put(f, new LinkedHashMap<>());
+        // flow -> group ("" = none) -> line -> values; a flow's groups first (as made), then the lines outside them
+        Map<String, Map<String, Map<String, List<FlowSnapshot>>>> groups = new LinkedHashMap<>();
+        if (!showingBin) for (String f : flows.getFlowNames()) groups.put(f, groupsOf(f));
         Map<String, FlowSnapshot> firstOfLine = new java.util.HashMap<>();
         for (FlowSnapshot s : showingBin ? store.getDeleted() : store.getSnapshots()) {
-            String key = FlowDebugStore.lineKey(s);
-            firstOfLine.putIfAbsent(key, s);
-            groups.computeIfAbsent(s.flowName.isEmpty() ? "(no flow)" : s.flowName, k -> new LinkedHashMap<>())
-                    .computeIfAbsent(key, k -> new ArrayList<>()).add(s);
+            String key = FlowDebugStore.passKey(s);
+            String flow = s.flowName.isEmpty() ? "(no flow)" : s.flowName;
+            String group = s.group == null ? "" : s.group;
+            firstOfLine.putIfAbsent(group + "|" + key, s);
+            groups.computeIfAbsent(flow, this::groupsOf)
+                    .computeIfAbsent(group, k -> new LinkedHashMap<>()).computeIfAbsent(key, k -> new ArrayList<>()).add(s);
         }
         String active = flows.getActiveFlowName();
-        groups.forEach((flow, lines) -> {
-            DefaultMutableTreeNode f = new DefaultMutableTreeNode(new Group(store.title(flow), true, flow, null, flow.equals(active)));
-            lines.forEach((key, list) -> {
-                FlowSnapshot s = firstOfLine.get(key);
-                String where = s.where() + (s.method().isEmpty() ? "" : "  " + s.method());
-                DefaultMutableTreeNode l = new DefaultMutableTreeNode(new Group(where, false, flow, key, false));
-                for (FlowSnapshot x : list) l.add(new DefaultMutableTreeNode(x));
-                f.add(l);
+        // the row the next save at each line goes to: the newest pass of that line in the active flow
+        current.clear();
+        if (!showingBin) {
+            java.util.Map<String, FlowSnapshot> newest = new java.util.HashMap<>();
+            for (FlowSnapshot s : store.getSnapshots()) {
+                if (!s.flowName.equals(active)) continue;
+                newest.merge(FlowDebugStore.lineKey(s), s, (a, b) -> a.savedAt >= b.savedAt ? a : b);
+            }
+            newest.forEach((line, s) -> current.add((s.group == null ? "" : s.group) + "|" + FlowDebugStore.passKey(s)));
+        }
+        groups.forEach((flow, byGroup) -> {
+            DefaultMutableTreeNode f = new DefaultMutableTreeNode(new Group(store.title(flow), true, flow, null, flow.equals(active), null));
+            byGroup.forEach((group, lines) -> {
+                if (group.isEmpty()) return; // after the groups
+                DefaultMutableTreeNode g = new DefaultMutableTreeNode(new Group(group, false, flow, null, false, group));
+                addLines(g, flow, group, lines, firstOfLine);
+                f.add(g);
             });
+            Map<String, List<FlowSnapshot>> loose = byGroup.get("");
+            if (loose != null) addLines(f, flow, "", loose, firstOfLine);
             root.add(f);
         });
         snapshots.setModel(new DefaultTreeModel(root));
@@ -593,7 +711,8 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         } else if (selectedRow != null) { // the flow (or line) row stays selected
             DefaultMutableTreeNode node = TreeUtil.findNode(root, n -> n.getUserObject() instanceof Group g
                     && g.flow() == selectedRow.flow() && g.flowName().equals(selectedRow.flowName())
-                    && java.util.Objects.equals(g.lineKey(), selectedRow.lineKey()));
+                    && java.util.Objects.equals(g.lineKey(), selectedRow.lineKey())
+                    && java.util.Objects.equals(g.group(), selectedRow.group()));
             if (node != null) TreeUtil.selectNode(snapshots, node);
         }
         if (shownSnapshot != null && selectedSnapshot() == null && results.getSelectedValue() == null) clearValue();
@@ -606,11 +725,47 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         updateButtons();
     }
 
+    /** A flow's groups (empty, in their order: the list shows them even without values). */
+    private Map<String, Map<String, List<FlowSnapshot>>> groupsOf(String flow) {
+        Map<String, Map<String, List<FlowSnapshot>>> byGroup = new LinkedHashMap<>();
+        if (!showingBin) for (String g : store.groups(flow)) byGroup.put(g, new LinkedHashMap<>());
+        return byGroup;
+    }
+
+    /** The rows the next save at their line goes to ("group|passKey"), in the active flow. */
+    private static final java.util.Set<String> current = new java.util.HashSet<>();
+
+    /** A line's rows (the line, its values) under a flow or a group. */
+    private static void addLines(DefaultMutableTreeNode under, String flow, String group, Map<String, List<FlowSnapshot>> lines,
+                                 Map<String, FlowSnapshot> firstOfLine) {
+        // a line with several passes (a loop came back to it, or a pasted copy): "· pass 2", the first one saved is pass 1
+        java.util.Map<String, List<String>> passes = new java.util.HashMap<>();
+        for (String key : lines.keySet()) {
+            passes.computeIfAbsent(FlowDebugStore.lineKey(firstOfLine.get(group + "|" + key)), k -> new ArrayList<>()).add(key);
+        }
+        lines.forEach((key, list) -> {
+            FlowSnapshot s = firstOfLine.get(group + "|" + key);
+            List<String> same = passes.get(FlowDebugStore.lineKey(s));
+            String where = s.where() + (s.method().isEmpty() ? "" : "  " + s.method())
+                    + (same.size() > 1 ? "  · pass " + (same.size() - same.indexOf(key)) : "");
+            boolean latest = same.size() > 1 && current.contains(group + "|" + key);
+            DefaultMutableTreeNode l = new DefaultMutableTreeNode(new Group(where, false, flow, key, latest, group));
+            for (FlowSnapshot x : list) l.add(new DefaultMutableTreeNode(x));
+            under.add(l);
+        });
+    }
+
     /**
-     * A flow, or a line of a flow, in the list.
-     * @param lineKey the line's key (for its name), null for a flow
+     * A flow, a group of a flow, or a line (of a flow or a group) in the list.
+     * @param lineKey the line's key (for its name), null for a flow or a group
+     * @param group   the group (a group's own row, or the group a line is in: "" for none), null for a flow
      */
-    private record Group(String text, boolean flow, String flowName, @Nullable String lineKey, boolean active) {}
+    private record Group(String text, boolean flow, String flowName, @Nullable String lineKey, boolean active, @Nullable String group) {
+        /** True for a group's own row (not a flow, not a line). */
+        boolean isGroup() {
+            return !flow && lineKey == null;
+        }
+    }
 
     /**
      * A line picked in the list (not one of its values): every value saved there, together in one tree (read-only:
@@ -633,9 +788,10 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         }
         showValue(null, all, null);
         lineSnapshots = saved;
-        valueTitle.setText("<html><b>" + saved.size() + (saved.size() == 1 ? " value" : " values") + "</b> at " + first.where()
-                + (first.method().isEmpty() ? "" : " in " + first.method())
-                + " · pick a field to edit it</html>");
+        valueTitle.setText("<html><b>" + saved.size() + (saved.size() == 1 ? " value" : " values") + "</b> at " + esc(first.where())
+                + (first.method().isEmpty() ? "" : " in " + esc(first.method()))
+                + "<br><span style='color:" + gray() + "'>Pick a field to edit it</span></html>");
+        typeBadge.setText("");
         updateButtons();
     }
 
@@ -667,6 +823,8 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         items.add(new FlowMenuPopup.Item("Rename Flow…", AllIcons.Actions.Edit, true, () -> renameFlow(flow)));
         items.add(new FlowMenuPopup.Item("Delete Flow…", FlowTheme.ICON_DELETE, true, () -> deleteFlow(flow)));
         items.add(new FlowMenuPopup.Item("Delete Flows…", FlowTheme.ICON_DELETE, true, this::deleteFlows));
+        items.add(null);
+        items.add(new FlowMenuPopup.Item("New Group…", AllIcons.Nodes.Folder, true, () -> newGroup(flow, false)));
         items.add(null);
         items.add(new FlowMenuPopup.Item("Export the Flow's Values…", FlowTheme.ICON_EXPORT, true, () -> exportFlow(flow)));
         items.add(new FlowMenuPopup.Item("Import Values into the Flow…", FlowTheme.ICON_IMPORT, true, () -> importInto(flow)));
@@ -801,13 +959,163 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         Group g = selectedGroup();
         if (g == null) return;
         if (g.flow()) renameFlow(g.flowName());
+        else if (g.isGroup()) renameGroup(g);
         else nameLine();
+    }
+
+    // ---------- groups (and dragging values) ----------
+
+    /** New Group: an empty group in a flow (with values picked, they go in it). */
+    private void newGroup(String flow, boolean takePicked) {
+        String name = Messages.showInputDialog(project, "Name of the new group in “" + store.title(flow) + "”:", "New Group", null,
+                uniqueGroup(flow), null);
+        if (name == null || name.isBlank()) return;
+        List<FlowSnapshot> picked = takePicked ? draggedValues() : List.of();
+        if (!store.addGroup(flow, name) && !store.groups(flow).contains(name.strip())) return;
+        if (!picked.isEmpty()) store.moveTo(picked, flow, name.strip(), null);
+        status.setText("Added the group “" + name.strip() + "”" + (picked.isEmpty() ? ": drag values onto it." : " with "
+                + picked.size() + (picked.size() == 1 ? " value." : " values.")));
+    }
+
+    private String uniqueGroup(String flow) {
+        List<String> have = store.groups(flow);
+        for (int i = 1; ; i++) if (!have.contains("Group " + i)) return "Group " + i;
+    }
+
+    private void renameGroup(@Nullable Group g) {
+        if (g == null || !g.isGroup()) return;
+        String now = Messages.showInputDialog(project, "New name of the group “" + g.group() + "”:", "Rename Group", null, g.group(), null);
+        if (now == null || now.isBlank()) return;
+        store.renameGroup(g.flowName(), g.group(), now);
+    }
+
+    private void ungroup(@Nullable Group g) {
+        if (g == null || !g.isGroup()) return;
+        store.deleteGroup(g.flowName(), g.group());
+        status.setText("Ungrouped “" + g.group() + "”: its values stay in the flow.");
+    }
+
+    /** Move to Group: a group of the picked values' flow (or a new one, or none). */
+    private void moveToGroup() {
+        List<FlowSnapshot> picked = draggedValues();
+        if (picked.isEmpty()) return;
+        String flow = picked.get(0).flowName;
+        List<String> names = new ArrayList<>(store.groups(flow));
+        String none = "(no group)";
+        names.add(0, none);
+        String chosen = Messages.showEditableChooseDialog("Group for " + picked.size() + (picked.size() == 1 ? " value" : " values")
+                        + " (pick one, or type a new name):", "Move to Group", null, names.toArray(new String[0]),
+                picked.get(0).group == null || picked.get(0).group.isEmpty() ? none : picked.get(0).group, null);
+        if (chosen == null) return;
+        String group = chosen.equals(none) ? "" : chosen.strip();
+        store.moveTo(picked, flow, group, null);
+        status.setText("Moved " + picked.size() + (picked.size() == 1 ? " value" : " values") + (group.isEmpty() ? " out of its group." : " to “" + group + "”."));
+    }
+
+    /** The values picked in the list: values, and every value of a picked line or group (what a drag moves). */
+    private List<FlowSnapshot> draggedValues() {
+        List<FlowSnapshot> out = new ArrayList<>();
+        if (leftShowsResults() || showingBin) return out;
+        TreePath[] paths = snapshots.getSelectionPaths();
+        if (paths == null) return out;
+        for (TreePath p : paths) {
+            DefaultMutableTreeNode n = (DefaultMutableTreeNode) p.getLastPathComponent();
+            if (n.getUserObject() instanceof Group g && g.flow()) continue; // a whole flow isn't dragged
+            java.util.Enumeration<?> all = n.depthFirstEnumeration();
+            while (all.hasMoreElements()) {
+                if (((DefaultMutableTreeNode) all.nextElement()).getUserObject() instanceof FlowSnapshot s && !out.contains(s)) out.add(s);
+            }
+        }
+        return out;
+    }
+
+    /** The group picked to drag, when only a group's row is (it moves as a group into another flow). */
+    private @Nullable Group draggedGroup() {
+        TreePath[] paths = snapshots.getSelectionPaths();
+        if (paths == null || paths.length != 1) return null;
+        return ((DefaultMutableTreeNode) paths[0].getLastPathComponent()).getUserObject() instanceof Group g && g.isGroup() ? g : null;
+    }
+
+    /** Drag values (or lines, or a group) onto a flow, a group, a line or a value: they move there. */
+    private final class ValuesDrop extends TransferHandler {
+        private final java.awt.datatransfer.DataFlavor flavor = new java.awt.datatransfer.DataFlavor(List.class, "TraceWeave values");
+        private List<FlowSnapshot> dragging = List.of();
+        private @Nullable Group draggingGroup;
+
+        @Override
+        public int getSourceActions(JComponent c) {
+            return MOVE;
+        }
+
+        @Override
+        protected java.awt.datatransfer.Transferable createTransferable(JComponent c) {
+            dragging = draggedValues();
+            draggingGroup = draggedGroup();
+            if (dragging.isEmpty() && draggingGroup == null) return null;
+            return new java.awt.datatransfer.Transferable() {
+                @Override public java.awt.datatransfer.DataFlavor[] getTransferDataFlavors() { return new java.awt.datatransfer.DataFlavor[]{flavor}; }
+                @Override public boolean isDataFlavorSupported(java.awt.datatransfer.DataFlavor f) { return flavor.equals(f); }
+                @Override public Object getTransferData(java.awt.datatransfer.DataFlavor f) { return dragging; }
+            };
+        }
+
+        @Override
+        public boolean canImport(TransferSupport support) {
+            if (!support.isDrop() || showingBin || !support.isDataFlavorSupported(flavor)) return false;
+            return target(support) != null;
+        }
+
+        /** Where a drop lands: the flow and the group, and the value it goes before (or null). */
+        private @Nullable Object[] target(TransferSupport support) {
+            JTree.DropLocation at = (JTree.DropLocation) support.getDropLocation();
+            TreePath p = at.getPath();
+            if (p == null) return null;
+            Object o = ((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject();
+            if (o instanceof Group g) {
+                if (g.flow()) return new Object[]{g.flowName(), "", null};
+                return new Object[]{g.flowName(), g.group() == null ? "" : g.group(), null};
+            }
+            if (o instanceof FlowSnapshot s) return new Object[]{s.flowName, s.group == null ? "" : s.group, s};
+            return null;
+        }
+
+        @Override
+        public boolean importData(TransferSupport support) {
+            Object[] t = canImport(support) ? target(support) : null;
+            if (t == null) return false;
+            String flow = (String) t[0], group = (String) t[1];
+            FlowSnapshot before = (FlowSnapshot) t[2];
+            List<FlowSnapshot> moving = new ArrayList<>(dragging);
+            Group g = draggingGroup;
+            // a group dropped on another flow goes there as a group (with its name)
+            if (g != null && group.isEmpty() && before == null && !flow.equals(g.flowName())) {
+                List<FlowSnapshot> its = store.getSnapshots().stream()
+                        .filter(s -> s.flowName.equals(g.flowName()) && g.group().equals(s.group)).toList();
+                store.addGroup(flow, g.group());
+                store.moveTo(its, flow, g.group(), null);
+                store.deleteGroup(g.flowName(), g.group());
+                status.setText("Moved the group “" + g.group() + "” to “" + store.title(flow) + "”.");
+                return true;
+            }
+            if (moving.isEmpty()) return false;
+            store.moveTo(moving, flow, group, before);
+            status.setText("Moved " + moving.size() + (moving.size() == 1 ? " value" : " values") + " to “" + store.title(flow) + "”"
+                    + (group.isEmpty() ? "." : " · " + group + "."));
+            return true;
+        }
+
+        @Override
+        protected void exportDone(JComponent source, java.awt.datatransfer.Transferable data, int action) {
+            dragging = List.of();
+            draggingGroup = null;
+        }
     }
 
     private com.intellij.openapi.actionSystem.ActionGroup listMenu() {
         com.intellij.openapi.actionSystem.DefaultActionGroup g = new com.intellij.openapi.actionSystem.DefaultActionGroup();
         java.util.function.BooleanSupplier flowSel = () -> selectedGroup() != null && selectedGroup().flow() && !showingBin;
-        java.util.function.BooleanSupplier lineSel = () -> selectedGroup() != null && !selectedGroup().flow() && !showingBin;
+        java.util.function.BooleanSupplier lineSel = () -> selectedGroup() != null && selectedGroup().lineKey() != null && !showingBin;
+        java.util.function.BooleanSupplier groupSel = () -> selectedGroup() != null && selectedGroup().isGroup() && !showingBin;
         g.add(menuItem("Rename Flow…", "F2", AllIcons.Actions.Edit, () -> renameFlow(pickedFlow()), flowSel));
         g.add(menuItem("New Values Go Here", null, FlowTheme.ICON_FLOWS, () -> {
             int i = flows.getFlowNames().indexOf(pickedFlow());
@@ -825,9 +1133,32 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             if (s != null && s.lineKey() != null) store.setLineName(s.lineKey(), "");
         }, () -> lineSel.getAsBoolean() && !store.getLineName(selectedGroup().lineKey()).isEmpty()));
         g.addSeparator();
+        g.add(menuItem("New Group…", null, AllIcons.Nodes.Folder, () -> newGroup(pickedFlow(), true), () -> !showingBin));
+        g.add(menuItem("Move to Group…", null, AllIcons.Actions.Forward, this::moveToGroup, () -> !showingBin && !draggedValues().isEmpty()));
+        g.add(menuItem("Rename Group…", "F2", AllIcons.Actions.Edit, () -> renameGroup(selectedGroup()), groupSel));
+        g.add(menuItem("Move Group Up", null, AllIcons.Actions.MoveUp, () -> store.moveGroup(selectedGroup().flowName(), selectedGroup().group(), -1), groupSel));
+        g.add(menuItem("Move Group Down", null, AllIcons.Actions.MoveDown, () -> store.moveGroup(selectedGroup().flowName(), selectedGroup().group(), 1), groupSel));
+        g.add(menuItem("Ungroup (Values Stay)", null, AllIcons.Actions.Unselectall, () -> ungroup(selectedGroup()), groupSel));
+        g.add(menuItem("Delete Group…", "Delete", FlowTheme.ICON_DELETE, () -> deleteGroup(selectedGroup()), groupSel));
+        g.addSeparator();
         g.add(menuItem("New Flow…", null, AllIcons.General.Add, this::newFlow, () -> !showingBin));
-        g.add(menuItem("Copy Values as JSON", "Ctrl+C", AllIcons.Actions.Copy, this::copySnapshots, () -> !selectedSnapshots().isEmpty()));
+        g.add(menuItem("Copy", "Ctrl+C", AllIcons.Actions.Copy, this::copyItems,
+                () -> !showingBin && (!draggedValues().isEmpty() || !selectedFlows().isEmpty() || draggedGroup() != null)));
+        g.add(menuItem("Paste", "Ctrl+V", AllIcons.Actions.MenuPaste, this::pasteItems, () -> !showingBin));
+        g.add(menuItem("Duplicate", "Ctrl+Shift+D", AllIcons.Actions.Copy, this::duplicateItems,
+                () -> !showingBin && (!draggedValues().isEmpty() || selectedFlows().size() == 1 || draggedGroup() != null)));
+        g.add(menuItem("View Data…", null, AllIcons.Actions.Preview, this::viewPicked, () -> !pickedItems().isEmpty()));
+        g.add(menuItem("Lock / Unlock", null, AllIcons.Ide.Readonly, this::toggleLock,
+                () -> !showingBin && (!draggedValues().isEmpty() || !selectedFlows().isEmpty())));
+        g.add(menuItem("Compare the Two Picked", "Ctrl+D", AllIcons.Actions.Diff, this::compareSelected,
+                () -> !showingBin && pickedItems().size() == 2));
+        g.add(menuItem("Copy Values as JSON", null, AllIcons.Actions.Copy, this::copySnapshots, () -> !selectedSnapshots().isEmpty()));
         g.add(menuItem("Along the Flow…", null, FlowTheme.ICON_FLOWS, this::alongTheFlow, () -> selectedSnapshot() != null && !showingBin));
+        // the variable's saves at its line, over time, with what changed each time
+        g.add(menuItem("Timeline of This Variable…", null, AllIcons.Vcs.History, () -> {
+            FlowSnapshot s = selectedSnapshot();
+            if (s != null) new FlowTimelineDialog(project, s).show();
+        }, () -> selectedSnapshot() != null && !showingBin && !store.sameVariable(selectedSnapshot()).isEmpty()));
         return g;
     }
 
@@ -872,7 +1203,7 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
      * A field of the value tree: its value, its path (indexes as saved: edits use it), and its bookmark key
      * ("Type.field", as in Stop at Value's tree: a bookmark is the same in both).
      */
-    private record Field(FlowValue value, String path, String key, boolean pinned) {}
+    private record Field(FlowValue value, String path, String key, boolean pinned, boolean edited) {}
 
     /** The row whose icon the mouse is on (it shows as a bookmark to click), -1 for none. */
     private int valueHover = -1;
@@ -895,7 +1226,11 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         shownRoot = root;
         valueTools.setVisible(true);
         lineSnapshots = null; // a line's values set it again after this
-        DefaultMutableTreeNode top = node(null, shown(root), "", com.example.flowtracker.model.FlowHuntStore.get(project).pinned());
+        // edited: what differs from the data as first saved, field by field by name (an index moving after a removal, or
+        // a Revert, isn't an edit)
+        FlowValue first = s != null && s.original != null ? shown(s.original) : null;
+        DefaultMutableTreeNode top = node(null, shown(root), "", com.example.flowtracker.model.FlowHuntStore.get(project).pinned(),
+                first, first != null);
         values.setModel(new DefaultTreeModel(top));
         values.expandPath(new TreePath(top.getPath()));
         if (!valueFilter.getText().isBlank()) TreeUtil.expandAll(values); // the matches show
@@ -915,9 +1250,17 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             values.scrollRectToVisible(seen);
         }
         refreshText();
-        valueTitle.setText(s == null ? "Current debug session (not saved)"
-                : "<html><b>" + s.name + "</b> at " + s.where() + (s.method().isEmpty() ? "" : " in " + s.method())
-                + " · saved " + time(s.savedAt) + " in " + s.flowName + (s.edits.isEmpty() ? "" : " · edited") + "</html>");
+        String bar = " &nbsp;<span style='color:" + gray() + "'>|</span>&nbsp; ";
+        valueTitle.setText(s == null ? "<html><b>Current debug session</b><br><span style='color:" + gray() + "'>Not saved</span></html>"
+                : "<html><b>" + esc(s.name) + "</b> at " + esc(s.where()) + (s.method().isEmpty() ? "" : " in " + esc(s.method()))
+                + "<br><span style='color:" + gray() + "'>Saved " + fullTime(s.savedAt) + bar + esc(store.title(s.flowName))
+                + (!FlowDebugStore.isChanged(s) ? "" : bar + "Edited ✎") + (s.locked ? bar + "🔒 Locked" : "") + "</span></html>");
+        String type = FlowJsonTree.simpleType(FlowJsonTree.typeOf(root));
+        typeBadge.setText(type.isEmpty() || s == null && lineSnapshots != null ? "" : type);
+        typeBadge.setBorder(JBUI.Borders.empty(3, 12));
+        typeBadge.setForeground(BADGE_FG);
+        typeBadge.setFont(JBUI.Fonts.label().asBold());
+        valueHeader.setVisible(true);
         if (reveal != null) {
             DefaultMutableTreeNode n = top;
             if (!reveal.isEmpty()) {
@@ -940,13 +1283,21 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     }
 
     /** A field and its children; bookmarked children first (each keeps its saved path). */
-    private static DefaultMutableTreeNode node(@Nullable FlowValue parent, FlowValue v, String path, java.util.Set<String> pinned) {
+    private static DefaultMutableTreeNode node(@Nullable FlowValue parent, FlowValue v, String path, java.util.Set<String> pinned,
+                                               @Nullable FlowValue was, boolean compare) {
         String key = FlowJsonTree.pinKey(parent, v.name);
-        DefaultMutableTreeNode n = new DefaultMutableTreeNode(new Field(v, path, key, parent != null && pinned.contains(key)));
+        boolean edited = compare && (was == null // added
+                || v.children.isEmpty() != was.children.isEmpty()
+                || v.children.isEmpty() && !java.util.Objects.equals(v.value, was.value));
+        DefaultMutableTreeNode n = new DefaultMutableTreeNode(new Field(v, path, key, parent != null && pinned.contains(key), edited));
         List<Integer> order = new ArrayList<>();
         for (int i = 0; i < v.children.size(); i++) if (pinned.contains(FlowJsonTree.pinKey(v, v.children.get(i).name))) order.add(i);
         for (int i = 0; i < v.children.size(); i++) if (!order.contains(i)) order.add(i);
-        for (int i : order) n.add(node(v, v.children.get(i), path.isEmpty() ? String.valueOf(i) : path + "." + i, pinned));
+        for (int i : order) {
+            FlowValue c = v.children.get(i), before = null;
+            if (was != null) for (FlowValue w : was.children) if (w.name.equals(c.name)) before = w;
+            n.add(node(v, c, path.isEmpty() ? String.valueOf(i) : path + "." + i, pinned, before, compare));
+        }
         return n;
     }
 
@@ -955,7 +1306,9 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         java.awt.Rectangle r = values.getRowBounds(row);
         if (r == null || p.x < r.x || p.x > r.x + JBUI.scale(20) || p.y < r.y || p.y >= r.y + r.height) return false;
         TreePath path = values.getPathForRow(row);
-        return path != null && path.getPathCount() > 2 && ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject() instanceof Field;
+        // every field (the object's own fields too); only the value's top row has no bookmark
+        return path != null && ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject() instanceof Field f
+                && !f.path().isEmpty();
     }
 
     private void valueHover(int row) {
@@ -966,6 +1319,13 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             java.awt.Rectangle b = r < 0 ? null : values.getRowBounds(r);
             if (b != null) values.repaint(b);
         }
+    }
+
+    /** The field selected in the value tree (not its top row), or null. */
+    private @Nullable Field selectedField() {
+        TreePath p = values.getSelectionPath();
+        if (p == null || p.getPathCount() <= 1) return null;
+        return ((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject() instanceof Field f && !f.path().isEmpty() ? f : null;
     }
 
     /** Bookmarks a field (first in its parent, here and in Stop at Value), or takes the bookmark off. */
@@ -984,6 +1344,8 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         asText.setEditable(false);
         values.setModel(new DefaultTreeModel(new DefaultMutableTreeNode()));
         valueTitle.setText("");
+        typeBadge.setText("");
+        valueHeader.setVisible(false);
         valueTools.setVisible(false); // nothing selected: no buttons, just the hint
     }
 
@@ -1095,8 +1457,10 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         }
     }
 
+    /** Compare with nothing picked: the Compare window with both sides to be given (pasted, opened or picked). */
     private void comparePastedData() {
-        FlowPasteCompareDialog.open(project);
+        FlowCompareDialog.show(project, "Compare", null, new FlowValue("value"), FlowCompareDialog.AWAITING, null, new FlowValue("value"),
+                FlowCompareDialog.AWAITING);
     }
 
     // ---------- Capture Data ----------
@@ -1158,7 +1522,11 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_DELETE, 0), "removeField", this::removeSelectedField, values);
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_INSERT, 0), "addField", this::addFieldToSelected, values);
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_C, menu), "copyField", () -> copyField(CopyAs.VALUE), values);
-        key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_C, menu), "copyValues", this::copySnapshots, snapshots, results);
+        key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_C, menu), "copyValues", this::copyItems, snapshots);
+        key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_C, menu), "copyResults", this::copySnapshots, results);
+        key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_V, menu), "pasteValues", this::pasteItems, snapshots);
+        key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_D, menu | java.awt.event.InputEvent.SHIFT_DOWN_MASK),
+                "duplicateValues", this::duplicateItems, snapshots);
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_F2, 0), "renameGroup", this::renameSelectedGroup, snapshots);
         com.intellij.ui.PopupHandler.installPopupMenu(snapshots, listMenu(), "TraceWeave.DebugList");
         key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_V, menu), "pasteField", this::pasteIntoSelected, values);
@@ -1348,7 +1716,13 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
                 || inLine != null && fieldPath != null && fieldPath.contains("."));
         newValue.setEnabled(!showingBin);
         history.setEnabled(saved && !s.edits.isEmpty());
-        delete.setEnabled(!showingBin && (!selectedSnapshots().isEmpty() || !selectedFlows().isEmpty()));
+        boolean locked = shownSnapshot != null && shownSnapshot.locked;
+        lockButton.setIcon(locked ? AllIcons.Ide.Readonly : AllIcons.Ide.Readwrite);
+        lockButton.setSelected(locked);
+        lockButton.setToolTipText(locked ? "Locked: nothing in it can be changed. Click to unlock"
+                : "Lock this value: nothing in it can be changed until it is unlocked");
+        lockButton.setEnabled(shownSnapshot != null && !showingBin);
+        delete.setEnabled(!showingBin && (!selectedSnapshots().isEmpty() || !selectedFlows().isEmpty() || !pickedGroups().isEmpty()));
         String fieldPath2 = selectedValuePath();
         delete.setToolTipText(valuesFocusedLast && fieldPath2 != null && !fieldPath2.isEmpty() && canEdit()
                 ? "Remove the selected field (Delete; History → Revert puts it back)"
@@ -1372,21 +1746,104 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
      * nothing selected, both sides are pasted). The ▾ compares with the value now or an earlier save.
      */
     private void compareSelected() {
-        List<FlowSnapshot> two = selectedSnapshots();
-        if (two.size() == 2 && !showingBin) {
-            // Two saved values selected (Ctrl+click): compare them with each other, the older one on the left.
-            FlowSnapshot a = two.get(0), b = two.get(1);
-            if (a.savedAt > b.savedAt) { FlowSnapshot t = a; a = b; b = t; }
-            FlowCompareDialog.show(project, "Compare " + (a.name.equals(b.name) ? a.name : a.name + " and " + b.name),
-                    a, label(a), b, label(b));
+        if (showingBin) return;
+        List<Item> items = pickedItems();
+        if (items.isEmpty()) { // the search's results: the values picked there
+            for (FlowSnapshot x : selectedSnapshots()) items.add(new Item(label(x), x.value, x));
+        }
+        if (items.size() == 2) {
+            Item a = items.get(0), b = items.get(1);
+            if (a.single() != null && b.single() != null) {
+                // two saved values: each other, the older one on the left (edits made there are saved to them)
+                FlowSnapshot x = a.single(), y = b.single();
+                if (x.savedAt > y.savedAt) { FlowSnapshot t = x; x = y; y = t; }
+                FlowCompareDialog.show(project, "Compare " + (x.name.equals(y.name) ? x.name : x.name + " and " + y.name),
+                        x, label(x), y, label(y));
+            } else {
+                // two lines, groups or flows (or one and a value): all their values, matched by name and line
+                FlowCompareDialog.show(project, "Compare " + a.label() + " and " + b.label(), null, a.value(), a.label(), null, b.value(), b.label());
+            }
             return;
         }
-        FlowSnapshot s = selectedSnapshot();
-        if (s == null || showingBin) {
+        if (items.isEmpty()) {
             comparePastedData();
             return;
         }
-        FlowPasteCompareDialog.open(project, s.name + " · " + s.where() + " · " + time(s.savedAt), s.value);
+        // one thing (a value, or a line's, group's or flow's values together) or several together on the Old side;
+        // the New side is pasted, opened from a file or picked
+        Item one = items.size() == 1 ? items.get(0) : null;
+        FlowValue left;
+        String title;
+        if (one != null) {
+            left = one.value();
+            title = one.label();
+        } else {
+            left = new FlowValue(items.size() + " items");
+            for (Item it : items) {
+                FlowValue v = it.value().copy();
+                v.name = it.label();
+                left.children.add(v);
+            }
+            title = items.size() + " items";
+        }
+        FlowSnapshot saved = one != null ? one.single() : null;
+        FlowCompareDialog.show(project, "Compare " + (saved != null ? saved.name : title), saved, left, title, null,
+                new FlowValue(left.name), FlowCompareDialog.AWAITING);
+    }
+
+    /** Something picked in the list, as one value to compare: a value, or a line's, group's or flow's values. */
+    private record Item(String label, FlowValue value, @Nullable FlowSnapshot single) {}
+
+    /** The picked rows as things to compare (a value inside a picked line, group or flow is part of it). */
+    private List<Item> pickedItems() {
+        List<Item> out = new ArrayList<>();
+        TreePath[] paths = leftShowsResults() ? null : snapshots.getSelectionPaths();
+        if (paths == null) return out;
+        java.util.Arrays.sort(paths, java.util.Comparator.comparingInt(snapshots::getRowForPath));
+        List<DefaultMutableTreeNode> picked = new ArrayList<>();
+        for (TreePath p : paths) picked.add((DefaultMutableTreeNode) p.getLastPathComponent());
+        for (DefaultMutableTreeNode n : picked) {
+            boolean inside = false;
+            for (DefaultMutableTreeNode other : picked) if (other != n && n.isNodeAncestor(other)) inside = true;
+            if (inside) continue;
+            Object o = n.getUserObject();
+            if (o instanceof FlowSnapshot x) {
+                out.add(new Item(label(x), x.value, x));
+            } else if (o instanceof Group g) {
+                String what = g.flow() ? store.title(g.flowName()) : g.isGroup() ? g.group() + " (" + store.title(g.flowName()) + ")" : g.text();
+                out.add(new Item(what, combined(what, n), null));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * A flow's, group's or line's values as one value: each value by its name and line (a second save of the same
+     * one numbered), a flow's groups as objects of their own, so two flows or groups are matched value by value.
+     */
+    private static FlowValue combined(String name, DefaultMutableTreeNode n) {
+        FlowValue all = new FlowValue(name);
+        java.util.Map<String, Integer> seen = new java.util.HashMap<>();
+        for (int i = 0; i < n.getChildCount(); i++) {
+            DefaultMutableTreeNode c = (DefaultMutableTreeNode) n.getChildAt(i);
+            if (c.getUserObject() instanceof Group g && g.isGroup()) {
+                all.children.add(combined(g.group(), c));
+            } else if (c.getUserObject() instanceof Group) {
+                for (int j = 0; j < c.getChildCount(); j++) addValue(all, (DefaultMutableTreeNode) c.getChildAt(j), seen);
+            } else {
+                addValue(all, c, seen);
+            }
+        }
+        return all;
+    }
+
+    private static void addValue(FlowValue all, DefaultMutableTreeNode n, java.util.Map<String, Integer> seen) {
+        if (!(n.getUserObject() instanceof FlowSnapshot x)) return;
+        FlowValue v = x.value.copy();
+        String key = x.name + " (" + x.where() + ")";
+        int k = seen.merge(key, 1, Integer::sum);
+        v.name = k == 1 ? key : key + " #" + k;
+        all.children.add(v);
     }
 
     private static String label(FlowSnapshot s) {
@@ -1562,23 +2019,543 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     private @Nullable String[] fieldDialog(String title, String nameLabel, String name, String value, boolean nameEditable) {
         com.intellij.ui.components.JBTextField nameField = new com.intellij.ui.components.JBTextField(name, 30);
         nameField.setEditable(nameEditable);
-        JBTextArea valueArea = new JBTextArea(value, 6, 40);
-        valueArea.setFont(JBUI.Fonts.create(java.awt.Font.MONOSPACED, JBUI.Fonts.label().getSize()));
-        JPanel form = new JPanel(new BorderLayout(0, JBUI.scale(6)));
-        JPanel top = new JPanel(new BorderLayout(JBUI.scale(8), 0));
-        top.add(new JBLabel(nameLabel), BorderLayout.WEST);
-        top.add(nameField, BorderLayout.CENTER);
-        form.add(top, BorderLayout.NORTH);
-        JPanel mid = new JPanel(new BorderLayout(0, JBUI.scale(4)));
-        mid.add(new JBLabel("Value (text, or JSON for an object or a list):"), BorderLayout.NORTH);
-        mid.add(FlowScroll.wheel(new JBScrollPane(valueArea)), BorderLayout.CENTER);
-        form.add(mid, BorderLayout.CENTER);
-        com.intellij.openapi.ui.DialogBuilder b = new com.intellij.openapi.ui.DialogBuilder(project);
-        b.setTitle(title);
-        b.setCenterPanel(form);
-        b.setPreferredFocusComponent(nameEditable && name.isEmpty() ? nameField : valueArea);
-        if (b.show() != DialogWrapper.OK_EXIT_CODE) return null;
-        return new String[]{nameField.getText().strip(), valueArea.getText()};
+        com.intellij.openapi.Disposable editing = com.intellij.openapi.util.Disposer.newDisposable("TraceWeave field editor");
+        FlowCodeView valueArea = new FlowCodeView(project, editing);
+        boolean json = looksLikeJson(value);
+        valueArea.setText(json ? pretty(value) : value, json);
+        valueArea.setEditable(true);
+        JPanel nameRow = new JPanel(new BorderLayout(JBUI.scale(8), 0));
+        JBLabel nameText = new JBLabel(nameLabel);
+        nameText.setFont(JBUI.Fonts.label().asBold());
+        nameRow.add(nameText, BorderLayout.WEST);
+        nameRow.add(nameField, BorderLayout.CENTER);
+        JPanel form = valueEditor(title, nameRow, valueArea, () -> nameField.getText().isBlank() ? "value" : nameField.getText().strip(), true,
+                editing, null);
+        try {
+            if (!runWindow(title, form, nameEditable && name.isEmpty() ? nameField : valueArea.getContentComponent(), "Save", () -> null)) return null;
+            return new String[]{nameField.getText().strip(), valueArea.getText()};
+        } finally {
+            com.intellij.openapi.util.Disposer.dispose(editing);
+        }
+    }
+
+    private static String pretty(String json) {
+        try {
+            return new com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().serializeNulls().create()
+                    .toJson(com.google.gson.JsonParser.parseString(json));
+        } catch (RuntimeException notJson) {
+            return json;
+        }
+    }
+
+    /**
+     * The Edit and Add Field windows' body, in the Compare window's look: a header card (with Maximize), a left rail
+     * (JSON to type, Tree to look at and change with its right-click menu), what goes above the value (the name, a
+     * field list) and a status line.
+     */
+    /**
+     * Shows a form in a window of its own (the system's Minimize, Maximize and Close) and waits until it is closed.
+     *
+     * @param check before closing with OK: null when fine, else what is wrong (shown, the window stays)
+     * @return true when closed with OK
+     */
+    private boolean runWindow(String title, JComponent form, @Nullable JComponent focus, String okLabel,
+                              java.util.function.Supplier<String> check) {
+        boolean[] ok = {false};
+        FlowButton okButton = new FlowButton(okLabel, null, FlowButton.Style.PRIMARY);
+        FlowButton cancel = new FlowButton("Cancel", null, FlowButton.Style.OUTLINE);
+        JPanel buttons = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, JBUI.scale(8), 0));
+        buttons.add(okButton);
+        buttons.add(cancel);
+        JPanel root = new JPanel(new BorderLayout(0, JBUI.scale(10)));
+        root.add(form, BorderLayout.CENTER);
+        root.add(buttons, BorderLayout.SOUTH);
+        root.setBorder(JBUI.Borders.empty(10, 12));
+        FlowWindow window = new FlowWindow(project, "TraceWeave.FieldEditor", title, root, null);
+        java.awt.SecondaryLoop loop = java.awt.Toolkit.getDefaultToolkit().getSystemEventQueue().createSecondaryLoop();
+        Runnable accept = () -> {
+            String problem = check.get();
+            if (problem != null) {
+                Messages.showErrorDialog(root, problem, title);
+                return;
+            }
+            ok[0] = true;
+            window.close();
+        };
+        okButton.addActionListener(e -> accept.run());
+        cancel.addActionListener(e -> window.close());
+        root.registerKeyboardAction(e -> window.close(), javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ESCAPE, 0),
+                JComponent.WHEN_IN_FOCUSED_WINDOW);
+        root.registerKeyboardAction(e -> accept.run(), javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER,
+                java.awt.Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()), JComponent.WHEN_IN_FOCUSED_WINDOW);
+        window.whenClosed(loop::exit);
+        window.show();
+        if (focus != null) javax.swing.SwingUtilities.invokeLater(focus::requestFocusInWindow);
+        loop.enter(); // until the window is closed (the IDE keeps working meanwhile)
+        return ok[0];
+    }
+
+    private JPanel valueEditor(String title, JComponent above, FlowCodeView valueArea, java.util.function.Supplier<String> rootName,
+                               boolean withViews, com.intellij.openapi.Disposable editing, @Nullable JComponent splitTop) {
+        FlowCodeView asTextView = new FlowCodeView(project, editing);
+        asTextView.setEditable(false);
+        JBLabel icon = new JBLabel(AllIcons.Nodes.Variable);
+        icon.setHorizontalAlignment(JBLabel.CENTER);
+        icon.setPreferredSize(new Dimension(JBUI.scale(34), JBUI.scale(34)));
+        JBLabel heading = new JBLabel("<html><b>" + esc(title) + "</b><br><span style='color:" + gray() + "'>"
+                + (shownSnapshot != null ? esc(shownSnapshot.name) + " at " + esc(shownSnapshot.where())
+                + (shownSnapshot.method().isEmpty() ? "" : " in " + esc(shownSnapshot.method())) : "A new value")
+                + "</span></html>");
+        JPanel header = new JPanel(new BorderLayout(JBUI.scale(10), 0));
+        header.add(icon, BorderLayout.WEST);
+        header.add(heading, BorderLayout.CENTER);
+        header.setBorder(JBUI.Borders.compound(JBUI.Borders.customLine(FlowTheme.CARD_BORDER, 0, 0, 1, 0), JBUI.Borders.empty(2, 2, 10, 2)));
+
+        com.intellij.ui.treeStructure.Tree tree = new com.intellij.ui.treeStructure.Tree(new DefaultTreeModel(new DefaultMutableTreeNode()));
+        tree.setCellRenderer(new EvaluateRenderer());
+        tree.setShowsRootHandles(true);
+        tree.getEmptyText().setText("Not JSON: only an object or a list shows as a tree");
+        tree.getEmptyText().appendSecondaryText("Right-click the value to add a field", SimpleTextAttributes.GRAYED_ATTRIBUTES, null);
+        JPanel views = new JPanel(new CardLayout());
+        views.add(valueArea.getComponent(), "JSON");
+        views.add(FlowScroll.wheel(new JBScrollPane(tree)), "TREE");
+        views.add(asTextView.getComponent(), "TEXT");
+        views.setPreferredSize(new Dimension(JBUI.scale(680), JBUI.scale(400)));
+        views.setBorder(JBUI.Borders.customLine(FlowTheme.CARD_BORDER, 1));
+
+        JBLabel state = new JBLabel();
+        state.setBorder(JBUI.Borders.emptyTop(8));
+        Runnable check = () -> {
+            String t = valueArea.getText().strip();
+            if (t.isEmpty()) {
+                state.setIcon(AllIcons.General.Information);
+                state.setText("Empty: type text, or JSON for an object or a list (Tree: right-click to add fields)");
+                return;
+            }
+            if (!looksLikeJson(t)) {
+                state.setIcon(AllIcons.General.Information);
+                state.setText("Text value · " + t.length() + " characters");
+                return;
+            }
+            try {
+                com.google.gson.JsonElement e = com.google.gson.JsonParser.parseString(t);
+                int[] n = {0};
+                count(e, n);
+                state.setIcon(AllIcons.General.InspectionsOK);
+                state.setText("<html><b>Valid JSON</b> &nbsp;<span style='color:" + gray() + "'>|</span>&nbsp; " + n[0]
+                        + (n[0] == 1 ? " field" : " fields") + " &nbsp;<span style='color:" + gray() + "'>|</span>&nbsp; ~ "
+                        + String.format("%.1f KB", t.getBytes(java.nio.charset.StandardCharsets.UTF_8).length / 1024.0) + "</html>");
+            } catch (RuntimeException bad) {
+                state.setIcon(AllIcons.General.Error);
+                state.setText("Not valid JSON yet: " + String.valueOf(bad.getMessage()).replaceAll("^.*?: ", ""));
+            }
+        };
+        valueArea.onUserEdit(check);
+        check.run();
+
+        // the tree's value: changed with the right-click menu, written back to the JSON at once
+        FlowValue[] root = {null};
+        Runnable showTree = () -> {
+            java.util.Set<String> open = new java.util.HashSet<>();
+            for (int r = 0; r < tree.getRowCount(); r++) if (tree.isExpanded(r)) open.add(namePath(tree.getPathForRow(r)));
+            boolean first = root[0] == null || open.isEmpty();
+            String text = valueArea.getText().strip();
+            root[0] = text.isEmpty() ? new FlowValue(rootName.get()) : FlowValueText.fromJson(rootName.get(), text);
+            if (root[0] != null && text.isEmpty()) root[0].type = "Object";
+            tree.setModel(new DefaultTreeModel(root[0] == null ? new DefaultMutableTreeNode() : evaluateNode(root[0], true)));
+            tree.setRootVisible(root[0] != null);
+            if (root[0] == null) return;
+            if (first) {
+                tree.expandRow(0);
+                for (int r = 1; r < Math.min(tree.getRowCount(), 40); r++) if (tree.getPathForRow(r).getPathCount() <= 2) tree.expandRow(r);
+            } else {
+                for (int r = 0; r < tree.getRowCount(); r++) if (open.contains(namePath(tree.getPathForRow(r)))) tree.expandRow(r);
+            }
+        };
+        Runnable written = () -> {
+            valueArea.setText(pretty(FlowValueText.valueJson(root[0], false)), true);
+            check.run();
+            showTree.run();
+        };
+        com.intellij.ui.PopupHandler.installPopupMenu(tree, treeEditMenu(tree, root, written), "TraceWeave.EditTree");
+        key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_DELETE, 0), "editTreeRemove",
+                () -> treeRemove(tree, root, written), tree);
+        key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_F2, 0), "editTreeEdit",
+                () -> treeEdit(tree, root, written), tree);
+
+        FlowCompareDialog.RailItem[] rail = new FlowCompareDialog.RailItem[3];
+        java.util.function.IntConsumer pick = i -> {
+            ((CardLayout) views.getLayout()).show(views, new String[]{"JSON", "TEXT", "TREE"}[i]);
+            for (int k = 0; k < rail.length; k++) rail[k].setSelected(k == i);
+        };
+        rail[0] = new FlowCompareDialog.RailItem("JSON", AllIcons.FileTypes.Json, () -> pick.accept(0));
+        rail[0].setToolTipText("Type the value: JSON for an object or a list, else text");
+        FlowCompareDialog.RailItem textItem = new FlowCompareDialog.RailItem("Text", AllIcons.FileTypes.Text, () -> {
+            String t = valueArea.getText();
+            FlowValue v = FlowValueText.fromJson(rootName.get(), t);
+            asTextView.setText(v == null ? t : FlowValueText.toText(v), false);
+            pick.accept(1);
+        });
+        textItem.setToolTipText("The value as indented text (only to look at; type it in JSON)");
+        rail[2] = new FlowCompareDialog.RailItem("Tree", AllIcons.Actions.ShowAsTree, () -> {
+            showTree.run();
+            pick.accept(2);
+        });
+        FlowCompareDialog.RailItem treeItem = rail[2];
+        rail[1] = textItem;
+        treeItem.setToolTipText("The value as the debugger shows it; right-click to add, edit, duplicate or remove a field");
+        JPanel railPanel = new JPanel();
+        railPanel.setLayout(new javax.swing.BoxLayout(railPanel, javax.swing.BoxLayout.Y_AXIS));
+        railPanel.setBorder(JBUI.Borders.compound(JBUI.Borders.customLine(FlowTheme.CARD_BORDER, 0, 0, 0, 1), JBUI.Borders.emptyRight(8)));
+        for (FlowCompareDialog.RailItem r : rail) {
+            r.setAlignmentX(0.5f);
+            railPanel.add(r);
+            railPanel.add(javax.swing.Box.createVerticalStrut(JBUI.scale(4)));
+        }
+        railPanel.add(javax.swing.Box.createVerticalGlue());
+        rail[0].setSelected(true);
+
+        above.setBorder(JBUI.Borders.empty(10, 0, 8, 0));
+        JPanel valuePart = new JPanel(new BorderLayout());
+        valuePart.add(above, BorderLayout.NORTH);
+        valuePart.add(views, BorderLayout.CENTER);
+        valuePart.add(state, BorderLayout.SOUTH);
+        JComponent body = valuePart;
+        if (splitTop != null) { // e.g. Add Field's list of the class's fields: the divider between them can be moved
+            com.intellij.ui.JBSplitter split = new com.intellij.ui.JBSplitter(true, "TraceWeave.addField.split", 0.4f);
+            split.setFirstComponent(splitTop);
+            split.setSecondComponent(valuePart);
+            body = split;
+        }
+        body.setBorder(JBUI.Borders.emptyLeft(withViews ? 10 : 0));
+        JPanel form = new JPanel(new BorderLayout(0, JBUI.scale(8)));
+        form.add(header, BorderLayout.NORTH);
+        JPanel center = new JPanel(new BorderLayout());
+        if (withViews) center.add(railPanel, BorderLayout.WEST); // Add Field: just the value (no JSON / Text / Tree)
+        center.add(body, BorderLayout.CENTER);
+        form.add(center, BorderLayout.CENTER);
+        return form;
+    }
+
+    /** View Data from the list: the picked values, lines, groups or flows (several: together under one top). */
+    private void viewPicked() {
+        List<Item> items = pickedItems();
+        if (items.isEmpty()) {
+            status.setText("Pick a value, a line, a group or a flow, then View Data.");
+            return;
+        }
+        if (items.size() == 1) {
+            Item it = items.get(0);
+            viewData(it.label(), it.single() != null ? "Saved " + fullTime(it.single().savedAt) + " · " + store.title(it.single().flowName) : "",
+                    it.value(), it.single());
+            return;
+        }
+        FlowValue all = new FlowValue(items.size() + " items");
+        for (Item it : items) {
+            FlowValue v = it.value().copy();
+            v.name = it.label();
+            all.children.add(v);
+        }
+        viewData(items.size() + " items", "", all, null);
+    }
+
+    /** View Data from the details: the value shown on the right (or a line's values). */
+    private void viewShown() {
+        if (shownRoot == null) return;
+        FlowSnapshot s = shownSnapshot;
+        viewData(s != null ? s.name + " at " + s.where() : shownRoot.name,
+                s != null ? "Saved " + fullTime(s.savedAt) + " · " + store.title(s.flowName) : "", shownRoot, s);
+    }
+
+    /** A window to look at data (in the Compare window's look): JSON, Text or Tree on the left rail; it can be maximized. */
+    private void viewData(String title, String subtitle, FlowValue value, @Nullable FlowSnapshot saved) {
+        FlowValue v = (com.example.flowtracker.model.FlowValueShape.hideInternals()
+                ? com.example.flowtracker.model.FlowValueShape.withoutInternals(value) : value).copy();
+        com.intellij.openapi.Disposable viewing = com.intellij.openapi.util.Disposer.newDisposable("TraceWeave view data");
+        FlowCodeView json = new FlowCodeView(project, viewing), text = new FlowCodeView(project, viewing);
+        json.setText(pretty(FlowValueText.valueJson(v, false)), true);
+        json.setEditable(false);
+        text.setText(FlowValueText.toText(v), false);
+        text.setEditable(false);
+        com.intellij.ui.treeStructure.Tree tree = new com.intellij.ui.treeStructure.Tree(new DefaultTreeModel(evaluateNode(v, true)));
+        tree.setCellRenderer(new EvaluateRenderer());
+        tree.setShowsRootHandles(true);
+        tree.expandRow(0);
+        for (int r = 1; r < Math.min(tree.getRowCount(), 40); r++) if (tree.getPathForRow(r).getPathCount() <= 2) tree.expandRow(r);
+        // a saved value (not locked) can be changed here: right-click in the Tree, then Save
+        boolean editable = saved != null && !saved.locked && !showingBin;
+        FlowValue[] root = {v};
+        FlowButton saveButton = new FlowButton("Save", AllIcons.Actions.MenuSaveall, FlowButton.Style.PRIMARY);
+        saveButton.setEnabled(false);
+        saveButton.setVisible(editable);
+        Runnable written = () -> {
+            java.util.Set<String> open = new java.util.HashSet<>();
+            for (int r = 0; r < tree.getRowCount(); r++) if (tree.isExpanded(r)) open.add(namePath(tree.getPathForRow(r)));
+            tree.setModel(new DefaultTreeModel(evaluateNode(root[0], true)));
+            for (int r = 0; r < tree.getRowCount(); r++) if (open.contains(namePath(tree.getPathForRow(r)))) tree.expandRow(r);
+            json.setText(pretty(FlowValueText.valueJson(root[0], false)), true);
+            text.setText(FlowValueText.toText(root[0]), false);
+            saveButton.setEnabled(true);
+        };
+        if (editable) {
+            com.intellij.ui.PopupHandler.installPopupMenu(tree, treeEditMenu(tree, root, written), "TraceWeave.ViewDataTree");
+            key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_DELETE, 0), "viewTreeRemove", () -> treeRemove(tree, root, written), tree);
+            key(javax.swing.KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_F2, 0), "viewTreeEdit", () -> treeEdit(tree, root, written), tree);
+            saveButton.addActionListener(e -> {
+                if (saved.locked) {
+                    Messages.showInfoMessage(tree, saved.name + " is locked: unlock it to change it.", "View Data");
+                    return;
+                }
+                FlowValue now = root[0].copy();
+                now.name = saved.value.name;
+                store.replaceValue(saved, now, "changed in View Data");
+                saveButton.setEnabled(false);
+                status.setText("Saved the changes to " + saved.name + " (History → Revert undoes them).");
+            });
+        }
+        JPanel views = new JPanel(new CardLayout());
+        views.add(FlowScroll.wheel(new JBScrollPane(tree)), "TREE");
+        views.add(json.getComponent(), "JSON");
+        views.add(text.getComponent(), "TEXT");
+        views.setBorder(JBUI.Borders.customLine(FlowTheme.CARD_BORDER, 1));
+
+        JBLabel icon = new JBLabel(AllIcons.Nodes.Variable);
+        icon.setPreferredSize(new Dimension(JBUI.scale(34), JBUI.scale(34)));
+        icon.setHorizontalAlignment(JBLabel.CENTER);
+        JBLabel heading = new JBLabel("<html><b>" + esc(title) + "</b>" + (subtitle.isEmpty() ? "" : "<br><span style='color:" + gray() + "'>"
+                + esc(subtitle) + "</span>") + "</html>");
+        JPanel header = new JPanel(new BorderLayout(JBUI.scale(10), 0));
+        header.add(icon, BorderLayout.WEST);
+        header.add(heading, BorderLayout.CENTER);
+        String type = FlowJsonTree.simpleType(FlowJsonTree.typeOf(v));
+        if (!type.isEmpty() && !type.equals("Object")) {
+            JBLabel badge = new JBLabel(type);
+            badge.setForeground(BADGE_FG);
+            badge.setFont(JBUI.Fonts.label().asBold());
+            header.add(badge, BorderLayout.EAST);
+        }
+        header.setBorder(JBUI.Borders.compound(JBUI.Borders.customLine(FlowTheme.CARD_BORDER, 0, 0, 1, 0), JBUI.Borders.empty(2, 2, 10, 2)));
+
+        int[] n = {0};
+        java.util.ArrayDeque<FlowValue> all = new java.util.ArrayDeque<>(v.children);
+        while (!all.isEmpty()) {
+            FlowValue c = all.pop();
+            n[0]++;
+            all.addAll(c.children);
+        }
+        String jsonText = json.getText();
+        JBLabel state = new JBLabel("<html><b>" + n[0] + (n[0] == 1 ? " field" : " fields") + "</b> &nbsp;<span style='color:" + gray()
+                + "'>|</span>&nbsp; ~ " + String.format("%.1f KB", jsonText.getBytes(java.nio.charset.StandardCharsets.UTF_8).length / 1024.0)
+                + (com.example.flowtracker.model.FlowValueShape.hideInternals() ? " &nbsp;<span style='color:" + gray() + "'>|</span>&nbsp; internals hidden" : "")
+                + "</html>", AllIcons.General.InspectionsOK, JBLabel.LEFT);
+        state.setBorder(JBUI.Borders.emptyTop(8));
+
+        FlowCompareDialog.RailItem[] rail = new FlowCompareDialog.RailItem[3];
+        String[] cards = {"TREE", "JSON", "TEXT"};
+        java.util.function.IntConsumer pick = i -> {
+            ((CardLayout) views.getLayout()).show(views, cards[i]);
+            for (int k = 0; k < rail.length; k++) rail[k].setSelected(k == i);
+        };
+        rail[0] = new FlowCompareDialog.RailItem("Tree", AllIcons.Actions.ShowAsTree, () -> pick.accept(0));
+        rail[1] = new FlowCompareDialog.RailItem("JSON", AllIcons.FileTypes.Json, () -> pick.accept(1));
+        rail[2] = new FlowCompareDialog.RailItem("Text", AllIcons.FileTypes.Text, () -> pick.accept(2));
+        JPanel railPanel = new JPanel();
+        railPanel.setLayout(new javax.swing.BoxLayout(railPanel, javax.swing.BoxLayout.Y_AXIS));
+        railPanel.setBorder(JBUI.Borders.compound(JBUI.Borders.customLine(FlowTheme.CARD_BORDER, 0, 0, 0, 1), JBUI.Borders.emptyRight(8)));
+        for (FlowCompareDialog.RailItem r : rail) {
+            r.setAlignmentX(0.5f);
+            railPanel.add(r);
+            railPanel.add(javax.swing.Box.createVerticalStrut(JBUI.scale(4)));
+        }
+        railPanel.add(javax.swing.Box.createVerticalGlue());
+        pick.accept(0);
+
+        JPanel bottom = new JPanel(new BorderLayout());
+        bottom.add(state, BorderLayout.CENTER);
+        if (editable) {
+            JBLabel hint = new JBLabel("Tree: right-click to add, edit, duplicate or remove ");
+            hint.setForeground(UIUtil.getContextHelpForeground());
+            JPanel right = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, JBUI.scale(8), 0));
+            right.add(hint);
+            right.add(saveButton);
+            bottom.add(right, BorderLayout.EAST);
+        } else if (saved != null && saved.locked) {
+            JBLabel locked = new JBLabel("🔒 Locked: unlock it to change it");
+            locked.setForeground(UIUtil.getContextHelpForeground());
+            bottom.add(locked, BorderLayout.EAST);
+        }
+        JPanel body = new JPanel(new BorderLayout());
+        body.add(views, BorderLayout.CENTER);
+        body.add(bottom, BorderLayout.SOUTH);
+        body.setBorder(JBUI.Borders.emptyLeft(10));
+        JPanel center = new JPanel(new BorderLayout());
+        center.add(railPanel, BorderLayout.WEST);
+        center.add(body, BorderLayout.CENTER);
+        JPanel page = new JPanel(new BorderLayout(0, JBUI.scale(8)));
+        page.add(header, BorderLayout.NORTH);
+        page.add(center, BorderLayout.CENTER);
+        page.setBorder(JBUI.Borders.empty(10, 8, 10, 12));
+        page.setPreferredSize(new Dimension(JBUI.scale(820), JBUI.scale(620)));
+        // a window of its own (the system's Minimize, Maximize and Close)
+        FlowWindow window = new FlowWindow(project, "TraceWeave.ViewData", "View Data · " + title, page, null);
+        window.whenClosed(() -> com.intellij.openapi.util.Disposer.dispose(viewing));
+        window.show();
+    }
+
+    /** "booking/priceLines/0": a row's place by names (to open the same rows again after a change). */
+    private static String namePath(TreePath p) {
+        StringBuilder sb = new StringBuilder();
+        for (Object o : p.getPath()) {
+            if (((DefaultMutableTreeNode) o).getUserObject() instanceof Object[] row) sb.append('/').append(((FlowValue) row[0]).name);
+        }
+        return sb.toString();
+    }
+
+    /** The value of a tree row and the value it is in (null for the top). */
+    private static @Nullable FlowValue[] rowOf(JTree tree) {
+        TreePath p = tree.getSelectionPath();
+        if (p == null || !(((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject() instanceof Object[] row)) return null;
+        FlowValue parent = null;
+        TreePath up = p.getParentPath();
+        if (up != null && ((DefaultMutableTreeNode) up.getLastPathComponent()).getUserObject() instanceof Object[] pr) parent = (FlowValue) pr[0];
+        return new FlowValue[]{(FlowValue) row[0], parent};
+    }
+
+    private com.intellij.openapi.actionSystem.ActionGroup treeEditMenu(JTree tree, FlowValue[] root, Runnable written) {
+        com.intellij.openapi.actionSystem.DefaultActionGroup g = new com.intellij.openapi.actionSystem.DefaultActionGroup();
+        java.util.function.BooleanSupplier any = () -> root[0] != null && rowOf(tree) != null;
+        java.util.function.BooleanSupplier inner = () -> any.getAsBoolean() && rowOf(tree)[1] != null;
+        g.add(menuItem("Add Field…", null, AllIcons.General.Add, () -> treeAdd(tree, root, written), () -> root[0] != null));
+        g.add(menuItem("Edit…", "F2", AllIcons.Actions.Edit, () -> treeEdit(tree, root, written), inner));
+        g.add(menuItem("Duplicate", null, AllIcons.Actions.Copy, () -> treeDuplicate(tree, root, written), inner));
+        g.add(menuItem("Remove", "Delete", AllIcons.General.Remove, () -> treeRemove(tree, root, written), inner));
+        g.addSeparator();
+        g.add(menuItem("Expand All", null, AllIcons.Actions.Expandall, () -> TreeUtil.expandAll(tree), () -> true));
+        g.add(menuItem("Collapse All", null, AllIcons.Actions.Collapseall, () -> TreeUtil.collapseAll(tree, 1), () -> true));
+        return g;
+    }
+
+    /** A value typed in: JSON (an object, a list, a number, true / false / null, "text") as it is, other text as text. */
+    private static FlowValue typed(String name, String text) {
+        FlowValue v = FlowValueText.fromJson(name, text);
+        if (v != null) return v;
+        v = new FlowValue(name);
+        String t = text.strip();
+        boolean literal = t.matches("-?\\d+(\\.\\d+)?([eE][-+]?\\d+)?") || t.equals("true") || t.equals("false") || t.equals("null")
+                || t.length() > 1 && t.startsWith("\"") && t.endsWith("\"");
+        v.value = literal ? t : new com.google.gson.Gson().toJson(t);
+        v.type = FlowValueText.guessType(t);
+        return v;
+    }
+
+    /** A value as text to edit: JSON for an object or a list, else its text. */
+    private static String editText(FlowValue v) {
+        return v.children.isEmpty() ? (v.value == null ? "" : v.value) : FlowValueText.valueJson(v, false);
+    }
+
+    /** A list's elements named 0, 1, 2… again (or [0], [1]…) after one was added or taken away. */
+    private static void renumber(FlowValue list) {
+        boolean brackets = !list.children.isEmpty() && list.children.get(0).name.startsWith("[");
+        for (int i = 0; i < list.children.size(); i++) list.children.get(i).name = brackets ? "[" + i + "]" : String.valueOf(i);
+    }
+
+    /** Add Field: into the picked object or list (a picked simple value: next to it), in this same window's look. */
+    private void treeAdd(JTree tree, FlowValue[] root, Runnable written) {
+        FlowValue[] r = rowOf(tree);
+        FlowValue target = r == null ? root[0] : r[0].children.isEmpty() && r[1] != null && !FlowValueText.isList(r[0])
+                && !"Object".equals(r[0].type) ? r[1] : r[0];
+        boolean list = FlowValueText.isList(target);
+        String[] f = list ? fieldDialog("Add Element to " + target.name, "Index:", nextIndex(target), "", false)
+                : fieldDialog("Add Field to " + target.name, "Name:", "", "", true);
+        if (f == null || !list && f[0].isEmpty()) return;
+        if (!list) for (FlowValue c : target.children) {
+            if (c.name.equals(f[0])) {
+                Messages.showErrorDialog(tree, "“" + f[0] + "” is already in " + target.name + ": edit it instead (F2).", "Add Field");
+                return;
+            }
+        }
+        target.children.add(typed(list ? nextIndex(target) : f[0], f[1]));
+        if (list) renumber(target);
+        if (target.value != null && target.value.startsWith("size = ")) target.value = "size = " + target.children.size();
+        written.run();
+    }
+
+    private void treeEdit(JTree tree, FlowValue[] root, Runnable written) {
+        FlowValue[] r = rowOf(tree);
+        if (r == null || r[1] == null) return;
+        boolean inList = FlowValueText.isList(r[1]);
+        String[] f = fieldDialog("Edit " + r[0].name, inList ? "Index:" : "Name:", r[0].name, editText(r[0]), !inList);
+        if (f == null) return;
+        FlowValue now = typed(inList || f[0].isEmpty() ? r[0].name : f[0], f[1]);
+        int at = r[1].children.indexOf(r[0]);
+        if (at >= 0) r[1].children.set(at, now);
+        written.run();
+    }
+
+    private void treeDuplicate(JTree tree, FlowValue[] root, Runnable written) {
+        FlowValue[] r = rowOf(tree);
+        if (r == null || r[1] == null) return;
+        FlowValue copy = r[0].copy();
+        if (!FlowValueText.isList(r[1])) {
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (FlowValue c : r[1].children) names.add(c.name);
+            String name = r[0].name + "Copy";
+            for (int i = 2; names.contains(name); i++) name = r[0].name + "Copy" + i;
+            copy.name = name;
+        }
+        r[1].children.add(r[1].children.indexOf(r[0]) + 1, copy);
+        if (FlowValueText.isList(r[1])) renumber(r[1]);
+        if (r[1].value != null && r[1].value.startsWith("size = ")) r[1].value = "size = " + r[1].children.size();
+        written.run();
+    }
+
+    private void treeRemove(JTree tree, FlowValue[] root, Runnable written) {
+        FlowValue[] r = rowOf(tree);
+        if (r == null || r[1] == null) return;
+        boolean list = FlowValueText.isList(r[1]);
+        r[1].children.remove(r[0]);
+        if (list) renumber(r[1]);
+        if (r[1].value != null && r[1].value.startsWith("size = ")) r[1].value = "size = " + r[1].children.size();
+        written.run();
+    }
+
+    /** How many fields and elements a JSON value has (for the Edit window's status). */
+    private static void count(com.google.gson.JsonElement e, int[] n) {
+        if (e.isJsonObject()) {
+            for (java.util.Map.Entry<String, com.google.gson.JsonElement> x : e.getAsJsonObject().entrySet()) {
+                n[0]++;
+                count(x.getValue(), n);
+            }
+        } else if (e.isJsonArray()) {
+            for (com.google.gson.JsonElement x : e.getAsJsonArray()) {
+                n[0]++;
+                count(x, n);
+            }
+        }
+    }
+
+    /** A value's tree for the Edit window (the top row is the value itself). */
+    private static DefaultMutableTreeNode evaluateNode(FlowValue v, boolean top) {
+        DefaultMutableTreeNode n = new DefaultMutableTreeNode(new Object[]{v, top});
+        for (FlowValue c : v.children) n.add(evaluateNode(c, false));
+        return n;
+    }
+
+    /** Rows as the debugger's Variables / Evaluate show them: (f) name = {Type} value, in the editor's colors. */
+    private static final class EvaluateRenderer extends ColoredTreeCellRenderer {
+        @Override
+        public void customizeCellRenderer(@NotNull JTree tree, Object value, boolean selected, boolean expanded, boolean leaf, int row, boolean focus) {
+            if (!(((DefaultMutableTreeNode) value).getUserObject() instanceof Object[] o)) return;
+            FlowValue v = (FlowValue) o[0];
+            boolean top = (Boolean) o[1];
+            boolean element = v.name.matches("\\[?\\d+]?");
+            setIcon(FlowVariablesLook.icon(top));
+            append(element ? v.name.replaceAll("[\\[\\]]", "") : v.name, SimpleTextAttributes.REGULAR_ATTRIBUTES);
+            append(" = ", SimpleTextAttributes.REGULAR_ATTRIBUTES);
+            String text = FlowVariablesLook.text(v.value, v.type), type = FlowVariablesLook.type(v.type);
+            if (!v.children.isEmpty() && !type.isEmpty()) append(type + (text.isEmpty() ? "" : " "), SimpleTextAttributes.GRAYED_ATTRIBUTES);
+            append(text, valueColor(text));
+        }
     }
 
     private void addFieldToSelected() {
@@ -1656,20 +2633,27 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         java.util.Set<String> there = new java.util.HashSet<>();
         for (FlowValue c : target.children) there.add(c.name);
         com.intellij.ui.components.JBTextField nameField = new com.intellij.ui.components.JBTextField(30);
-        JBTextArea valueArea = new JBTextArea("", 5, 40);
-        valueArea.setFont(JBUI.Fonts.create(java.awt.Font.MONOSPACED, JBUI.Fonts.label().getSize()));
+        com.intellij.openapi.Disposable editing = com.intellij.openapi.util.Disposer.newDisposable("TraceWeave add field");
+        FlowCodeView valueArea = new FlowCodeView(project, editing);
+        valueArea.setText("", true);
+        valueArea.setEditable(true);
         JBLabel typeLabel = new JBLabel(" ");
         typeLabel.setForeground(UIUtil.getContextHelpForeground());
         String[] chosenType = {""};
-        JBList<com.example.flowtracker.code.FlowClassFields.Field> list = new JBList<>(fields);
+        List<com.example.flowtracker.code.FlowClassFields.Field> ordered = new ArrayList<>();
+        for (com.example.flowtracker.code.FlowClassFields.Field fl : fields) if (!there.contains(fl.name())) ordered.add(fl);
+        int firstSaved = ordered.size();
+        for (com.example.flowtracker.code.FlowClassFields.Field fl : fields) if (there.contains(fl.name())) ordered.add(fl);
+        JBList<com.example.flowtracker.code.FlowClassFields.Field> list = new JBList<>(ordered);
         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        list.setCellRenderer(new ColoredListCellRenderer<>() {
+        ColoredListCellRenderer<com.example.flowtracker.code.FlowClassFields.Field> row = new ColoredListCellRenderer<>() {
             @Override
             protected void customizeCellRenderer(@NotNull JList<? extends com.example.flowtracker.code.FlowClassFields.Field> l,
                                                  com.example.flowtracker.code.FlowClassFields.Field fl, int index, boolean selected, boolean focus) {
                 setIcon(fl.inherited() ? AllIcons.Hierarchy.Supertypes : AllIcons.Nodes.Field);
                 boolean saved = there.contains(fl.name());
-                append(fl.name(), saved ? SimpleTextAttributes.GRAYED_ATTRIBUTES : SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+                // not saved yet: green (they can be added); saved ones: gray, after a gap
+                append(fl.name(), saved ? SimpleTextAttributes.GRAYED_ATTRIBUTES : new SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, ACTIVE));
                 append("  " + fl.type(), SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 if (fl.isStatic()) append("  static", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
                 append(fl.inherited() ? "   inherited from " + fl.owner() : "   own (" + fl.owner() + ")",
@@ -1677,6 +2661,18 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
                                 : new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, EDITED));
                 if (saved) append("   already saved", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
             }
+        };
+        list.setCellRenderer((l, fl, index, selected, focus) -> {
+            java.awt.Component c = row.getListCellRendererComponent(l, fl, index, selected, focus);
+            if (index != 0 && index != firstSaved) return c;
+            JPanel p = new JPanel(new BorderLayout());
+            p.setOpaque(false);
+            com.intellij.ui.TitledSeparator title2 = new com.intellij.ui.TitledSeparator(index == 0 && firstSaved > 0
+                    ? "Not saved yet (" + firstSaved + ")" : "Already saved (" + (ordered.size() - firstSaved) + ")");
+            if (index != 0) title2.setBorder(JBUI.Borders.emptyTop(10)); // a gap before the saved ones
+            p.add(title2, BorderLayout.NORTH);
+            p.add(c, BorderLayout.CENTER);
+            return p;
         });
         list.addListSelectionListener(e -> {
             com.example.flowtracker.code.FlowClassFields.Field fl = list.getSelectedValue();
@@ -1688,7 +2684,7 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             nameField.setText(fl.name());
             chosenType[0] = fl.type();
             typeLabel.setText("Type: " + fl.type() + (fl.inherited() ? " (inherited from " + fl.owner() + ")" : ""));
-            valueArea.requestFocusInWindow();
+            valueArea.requestFocus();
         });
         nameField.getDocument().addDocumentListener(new DocumentAdapter() {
             @Override protected void textChanged(@NotNull DocumentEvent e) {
@@ -1701,46 +2697,35 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             }
         });
 
-        JPanel form = new JPanel(new BorderLayout(0, JBUI.scale(8)));
+        JPanel pick = null;
         if (!fields.isEmpty()) {
-            JPanel pick = new JPanel(new BorderLayout(0, JBUI.scale(4)));
-            pick.add(new JBLabel("Fields of " + type + " in the code (own first, then inherited); pick one or type any name:"),
-                    BorderLayout.NORTH);
-            JBScrollPane scroll = FlowScroll.wheel(new JBScrollPane(list));
-            scroll.setPreferredSize(new Dimension(JBUI.scale(520), JBUI.scale(170)));
-            pick.add(scroll, BorderLayout.CENTER);
-            form.add(pick, BorderLayout.NORTH);
+            pick = new JPanel(new BorderLayout(0, JBUI.scale(4)));
+            pick.add(new JBLabel("Fields of " + type + " in the code (not saved yet first); pick one or type any name:"), BorderLayout.NORTH);
+            pick.add(FlowScroll.wheel(new JBScrollPane(list)), BorderLayout.CENTER);
+            pick.setBorder(JBUI.Borders.emptyTop(10));
         }
-        JPanel fieldsPanel = new JPanel(new BorderLayout(0, JBUI.scale(6)));
         JPanel nameRow = new JPanel(new BorderLayout(JBUI.scale(8), 0));
-        nameRow.add(new JBLabel("Name:"), BorderLayout.WEST);
+        JBLabel nameText = new JBLabel("Name:");
+        nameText.setFont(JBUI.Fonts.label().asBold());
+        nameRow.add(nameText, BorderLayout.WEST);
         nameRow.add(nameField, BorderLayout.CENTER);
         nameRow.add(typeLabel, BorderLayout.SOUTH);
-        fieldsPanel.add(nameRow, BorderLayout.NORTH);
-        JPanel valueRow = new JPanel(new BorderLayout(0, JBUI.scale(4)));
-        valueRow.add(new JBLabel("Value (text, or JSON for an object or a list, e.g. {\"city\": \"Goa\"}):"), BorderLayout.NORTH);
-        valueRow.add(FlowScroll.wheel(new JBScrollPane(valueArea)), BorderLayout.CENTER);
-        fieldsPanel.add(valueRow, BorderLayout.CENTER);
-        form.add(fieldsPanel, BorderLayout.CENTER);
-        com.intellij.openapi.ui.DialogBuilder b = new com.intellij.openapi.ui.DialogBuilder(project);
-        b.setTitle(title);
-        b.setCenterPanel(form);
-        b.setPreferredFocusComponent(fields.isEmpty() ? nameField : list);
+        JPanel form = valueEditor(title, nameRow, valueArea, () -> nameField.getText().isBlank() ? "value" : nameField.getText().strip(), false,
+                editing, pick);
         // a field that is already there can't be added again (edit it instead)
-        b.setOkOperation(() -> {
-            String name = nameField.getText().strip();
-            if (name.isEmpty()) {
-                Messages.showErrorDialog(form, "Give the field a name (or pick one from the list).", title);
-            } else if (there.contains(name)) {
-                Messages.showErrorDialog(form, "“" + name + "” is already in " + target.name + ". Edit it instead (F2).", title);
-            } else {
-                b.getDialogWrapper().close(DialogWrapper.OK_EXIT_CODE);
+        try {
+            if (!runWindow(title, form, fields.isEmpty() ? nameField : list, "Add", () -> {
+                String name = nameField.getText().strip();
+                if (name.isEmpty()) return "Give the field a name (or pick one from the list).";
+                if (there.contains(name)) return "“" + name + "” is already in " + target.name + ". Edit it instead (F2).";
+                return null;
+            })) {
+                return null;
             }
-        });
-        b.addOkAction();
-        b.addCancelAction();
-        if (b.show() != DialogWrapper.OK_EXIT_CODE) return null;
-        return new String[]{nameField.getText().strip(), valueArea.getText(), chosenType[0]};
+            return new String[]{nameField.getText().strip(), valueArea.getText(), chosenType[0]};
+        } finally {
+            com.intellij.openapi.util.Disposer.dispose(editing);
+        }
     }
 
     private static String nextIndex(FlowValue list) {
@@ -1796,12 +2781,35 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     private enum CopyAs { VALUE, LINE, JSON, CHILDREN }
 
     /** Copies the selected field: its value, "name = value", or the field (with what is in it) as JSON. */
+    /** A value without what a language puts inside it (when Hide Internals is on), also inside text that holds JSON. */
+    private static FlowValue clean(FlowValue v) {
+        if (!com.example.flowtracker.model.FlowValueShape.hideInternals()) return v;
+        FlowValue c = com.example.flowtracker.model.FlowValueShape.withoutInternals(v);
+        if (c.children.isEmpty() && c.value != null && c.value.strip().startsWith("{")) {
+            c = c.copy();
+            c.value = cleanText(c.value);
+        }
+        return c;
+    }
+
+    /** Text that holds a value's internals as JSON ({"coder": 0, "value": [83, 65…]}): what it stands for ("SA…"). */
+    private static String cleanText(String text) {
+        String t = text.strip();
+        FlowValue parsed = FlowValueText.fromJson("v", t);
+        if (parsed == null || !com.example.flowtracker.model.FlowValueShape.hasInternals(parsed)) return text;
+        FlowValue c = com.example.flowtracker.model.FlowValueShape.withoutInternals(parsed);
+        return c.children.isEmpty() ? c.value : FlowValueText.valueJson(c, false).strip();
+    }
+
     private void copyField(CopyAs as) {
         if (shownRoot == null) return;
+        // what the tree shows (with Hide Internals: a String's text, not its bytes, coder and hash)
         List<FlowValue> picked = new ArrayList<>();
-        for (String p : selectedValuePaths()) {
-            FlowValue v = FlowDebugStore.at(shownRoot, p);
-            if (v != null) picked.add(v);
+        TreePath[] rows = values.getSelectionPaths();
+        if (rows != null) {
+            for (TreePath p : rows) {
+                if (((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject() instanceof Field f) picked.add(clean(f.value()));
+            }
         }
         if (picked.isEmpty()) return;
         StringBuilder text = new StringBuilder();
@@ -1906,6 +2914,189 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     }
 
     /** Ctrl+C on the list: the selected saved values (several with Ctrl+click) as JSON, each under its name. */
+    /** What Copy took: the values, whether their groups go with them (a whole group or flow), and what was copied. */
+    private record Clip(List<FlowSnapshot> values, boolean keepGroups, List<String> emptyGroups, String what, String text,
+                        Kind kind, List<String> flows, @Nullable Group group) {}
+
+    /** What was copied: values (they go back into their line), lines (new rows), a group (a new group), flows (new flows). */
+    private enum Kind { VALUES, LINES, GROUP, FLOWS }
+
+    /** True when a line's row is picked (not only values). */
+    private boolean linePicked() {
+        TreePath[] paths = snapshots.getSelectionPaths();
+        if (paths == null) return false;
+        for (TreePath p : paths) {
+            if (((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject() instanceof Group g && g.lineKey() != null) return true;
+        }
+        return false;
+    }
+
+    /** The last Copy here (Paste uses it while the clipboard still holds what it put there). */
+    private @Nullable Clip clip;
+
+    /** Copy: the picked values, lines, groups or flows (and, as JSON, to the clipboard). */
+    private void copyItems() {
+        List<FlowSnapshot> values = draggedValues();
+        List<String> flowsPicked = selectedFlows();
+        List<String> empty = new ArrayList<>();
+        boolean keep = !flowsPicked.isEmpty() || draggedGroup() != null;
+        for (String f : flowsPicked) {
+            for (FlowSnapshot x : store.getSnapshots()) if (x.flowName.equals(f) && !values.contains(x)) values.add(x);
+            for (String g : store.groups(f)) empty.add(g);
+        }
+        Group g = draggedGroup();
+        if (g != null) empty.add(g.group());
+        if (values.isEmpty() && empty.isEmpty()) return;
+        String what = !flowsPicked.isEmpty() ? (flowsPicked.size() == 1 ? "the flow “" + store.title(flowsPicked.get(0)) + "”" : flowsPicked.size() + " flows")
+                : g != null ? "the group “" + g.group() + "”" : values.size() == 1 ? values.get(0).name : values.size() + " values";
+        String text = values.size() == 1 ? FlowValueText.toJson(values.get(0).value, true) : jsonOf(values);
+        FlowCopy.toClipboard(text);
+        Kind kind = !flowsPicked.isEmpty() ? Kind.FLOWS : g != null ? Kind.GROUP : linePicked() ? Kind.LINES : Kind.VALUES;
+        clip = new Clip(new ArrayList<>(values), keep, empty, what, text, kind, flowsPicked, g);
+        status.setText("Copied " + what + ". Paste (Ctrl+V) on a flow or a group puts a copy there; elsewhere it is JSON.");
+    }
+
+    private static String jsonOf(List<FlowSnapshot> list) {
+        FlowValue all = new FlowValue("values");
+        for (FlowSnapshot s : list) {
+            FlowValue v = s.value.copy();
+            v.name = s.name + " @ " + s.where();
+            all.children.add(v);
+        }
+        return FlowValueText.valueJson(all, false);
+    }
+
+    /** Where Paste and Duplicate put copies: the picked flow (and group), else the active flow. */
+    private String[] pasteTarget() {
+        Group g = selectedGroup();
+        if (g != null) return new String[]{g.flowName(), g.flow() ? null : g.group()};
+        FlowSnapshot s = selectedSnapshot();
+        if (s != null) return new String[]{s.flowName, s.group == null ? "" : s.group};
+        return new String[]{flows.getActiveFlowName(), null};
+    }
+
+    /** Paste: copies of what was copied here, or values from a Debug Data export on the clipboard, into the picked flow / group. */
+    private void pasteItems() {
+        if (showingBin) return;
+        String board = com.intellij.openapi.ide.CopyPasteManager.getInstance().getContents(java.awt.datatransfer.DataFlavor.stringFlavor);
+        List<FlowSnapshot> from;
+        boolean keep;
+        List<String> empty;
+        String what;
+        if (clip != null && board != null && board.equals(clip.text())) {
+            Clip c = clip;
+            if (c.kind() == Kind.FLOWS) { // each flow as a new flow ("Flow 1 copy")
+                for (String f : c.flows()) duplicateFlow(f);
+                return;
+            }
+            String[] t = pasteTarget();
+            if (c.kind() == Kind.GROUP && c.group() != null) { // a new group ("Group 1 copy") with copies of its values
+                String name = copyName(t[0], c.group().group());
+                store.addGroup(t[0], name);
+                paste(c.values(), t[0], name, false, List.of(), true);
+                status.setText("Pasted the group as “" + name + "” in “" + store.title(t[0]) + "”.");
+                return;
+            }
+            boolean lines = c.kind() == Kind.LINES;
+            paste(c.values(), t[0], t[1], false, List.of(), lines);
+            status.setText("Pasted " + c.what() + (lines ? " as new rows" : "") + " into “" + store.title(t[0]) + "”"
+                    + (t[1] == null || t[1].isEmpty() ? "." : " · " + t[1] + "."));
+            return;
+        }
+        { // not copied here: a Debug Data export's JSON on the clipboard
+            try {
+                from = board == null ? List.of() : com.example.flowtracker.model.FlowDebugTransfer.fromJson(board, List.of());
+            } catch (java.io.IOException notOurs) {
+                status.setText("Nothing to paste: copy values, a group or a flow here first (or a Debug Data export's JSON).");
+                return;
+            }
+            keep = true;
+            empty = List.of();
+            what = from.size() + (from.size() == 1 ? " value" : " values");
+        }
+        String[] t = pasteTarget();
+        paste(from, t[0], t[1], keep, empty, true);
+        status.setText("Pasted a copy of " + what + " into “" + store.title(t[0]) + "”" + (t[1] == null || t[1].isEmpty() ? "." : " · " + t[1] + "."));
+    }
+
+    /**
+     * Copies of values into a flow: into {@code group} when given, else each in its own group ({@code keepGroups}) or none;
+     * {@code renamed} maps a group's name to the copy's (Duplicate's "Group 1 copy").
+     */
+    private List<FlowSnapshot> paste(List<FlowSnapshot> from, String flow, @Nullable String group, boolean keepGroups, List<String> emptyGroups,
+                                     boolean newRows) {
+        java.util.Map<String, String> renamed = null;
+        List<FlowSnapshot> copies;
+        try {
+            copies = com.example.flowtracker.model.FlowDebugTransfer.fromJson(
+                    com.example.flowtracker.model.FlowDebugTransfer.toJson(from), store.getSnapshots());
+        } catch (java.io.IOException e) {
+            return List.of();
+        }
+        // each copied line is a row of its own (a new pass), not more values in the original's row
+        java.util.Map<String, String> newPass = new java.util.HashMap<>();
+        for (FlowSnapshot c : copies) {
+            // a copied value goes back into its line's row; a copied line (group, flow) is a new row with all its values
+            if (newRows) c.pass = newPass.computeIfAbsent(FlowDebugStore.passKey(c), k -> java.util.UUID.randomUUID().toString());
+            String g = group != null ? group : keepGroups && c.group != null ? c.group : "";
+            if (renamed != null && renamed.containsKey(g)) g = renamed.get(g);
+            c.flowName = flow;
+            c.group = g;
+            c.id = java.util.UUID.randomUUID().toString();
+        }
+        if (group == null && keepGroups) {
+            for (String g : emptyGroups) store.addGroup(flow, renamed != null && renamed.containsKey(g) ? renamed.get(g) : g);
+        }
+        store.addAll(copies);
+        return copies;
+    }
+
+    /** Duplicate: a copy next to the original (a value or line in its group, a group as "… copy", a flow as a new flow). */
+    private void duplicateItems() {
+        if (showingBin) return;
+        List<String> flowsPicked = selectedFlows();
+        if (!flowsPicked.isEmpty()) {
+            for (String f : flowsPicked) duplicateFlow(f);
+            return;
+        }
+        Group g = draggedGroup();
+        if (g != null) {
+            String name = copyName(g.flowName(), g.group());
+            store.addGroup(g.flowName(), name);
+            List<FlowSnapshot> values = store.getSnapshots().stream()
+                    .filter(x -> x.flowName.equals(g.flowName()) && g.group().equals(x.group)).toList();
+            paste(values, g.flowName(), name, false, List.of(), true);
+            status.setText("Duplicated the group as “" + name + "”.");
+            return;
+        }
+        List<FlowSnapshot> values = draggedValues();
+        if (values.isEmpty()) return;
+        boolean lines = linePicked();
+        // a value next to itself in its line's row; a line as a new row with all its values
+        paste(values, values.get(0).flowName, null, true, List.of(), lines);
+        status.setText("Duplicated " + (values.size() == 1 ? values.get(0).name : values.size() + " values") + (lines ? " as new rows." : "."));
+    }
+
+    /** A flow's copy: a new flow ("Flow 1 copy") with its Flow-tab lines, its groups and its values; it becomes the active flow. */
+    private void duplicateFlow(String flow) {
+        List<com.example.flowtracker.model.FlowEntry> lines = new ArrayList<>();
+        for (com.example.flowtracker.model.FlowEntry e : flows.getEntriesOf(flow)) lines.add(e.copy());
+        flows.newFlow(store.title(flow) + " copy", lines);
+        String now = flows.getActiveFlowName();
+        store.forgetFlow(now); // nothing left from a deleted flow of that name
+        List<FlowSnapshot> values = store.getSnapshots().stream().filter(x -> x.flowName.equals(flow)).toList();
+        paste(values, now, null, true, store.groups(flow), true);
+        status.setText("Copied the flow as “" + now + "” (its lines, groups and " + values.size() + (values.size() == 1 ? " value)." : " values)."));
+    }
+
+    /** "Group 1 copy" (or "… copy 2") not taken yet in the flow. */
+    private String copyName(String flow, String group) {
+        List<String> have = store.groups(flow);
+        String name = group + " copy";
+        for (int i = 2; have.contains(name); i++) name = group + " copy " + i;
+        return name;
+    }
+
     private void copySnapshots() {
         List<FlowSnapshot> list = selectedSnapshots();
         if (list.isEmpty()) return;
@@ -1921,6 +3112,27 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
 
     private com.intellij.openapi.actionSystem.ActionGroup valueMenu() {
         com.intellij.openapi.actionSystem.DefaultActionGroup g = new com.intellij.openapi.actionSystem.DefaultActionGroup();
+        // the field's bookmark: first in its object (in every saved value of that type, and in Stop at Value)
+        g.add(new com.intellij.openapi.project.DumbAwareAction() {
+            @Override public void actionPerformed(@NotNull com.intellij.openapi.actionSystem.AnActionEvent e) {
+                Field f = selectedField();
+                if (f != null) toggleBookmark(f);
+            }
+
+            @Override public void update(@NotNull com.intellij.openapi.actionSystem.AnActionEvent e) {
+                Field f = selectedField();
+                e.getPresentation().setEnabledAndVisible(f != null);
+                if (f == null) return;
+                e.getPresentation().setText(f.pinned() ? "Remove Bookmark" : "Bookmark: to the Top");
+                e.getPresentation().setDescription(f.pinned() ? "It goes back to its place" : "First in its object, in every saved value of that type");
+                e.getPresentation().setIcon(new FlowJsonTree.BookmarkIcon(f.pinned()));
+            }
+
+            @Override public @NotNull com.intellij.openapi.actionSystem.ActionUpdateThread getActionUpdateThread() {
+                return com.intellij.openapi.actionSystem.ActionUpdateThread.EDT;
+            }
+        });
+        g.addSeparator();
         g.add(menuItem("Copy Value", "Ctrl+C", AllIcons.Actions.Copy, () -> copyField(CopyAs.VALUE), () -> selectedValuePath() != null));
         g.add(menuItem("Copy “name = value”", null, null, () -> copyField(CopyAs.LINE), () -> selectedValuePath() != null));
         g.add(menuItem("Copy as JSON", null, null, () -> copyField(CopyAs.JSON), () -> selectedValuePath() != null));
@@ -1937,7 +3149,20 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
     }
 
     private boolean canEdit() {
-        return shownSnapshot != null && !showingBin && !shaping();
+        return shownSnapshot != null && !showingBin && !shaping() && !shownSnapshot.locked;
+    }
+
+    /** Lock or unlock: the picked values (also every value of a picked line, group or flow), or the one shown. */
+    private void toggleLock() {
+        List<FlowSnapshot> list = draggedValues();
+        for (String f : selectedFlows()) for (FlowSnapshot x : store.getSnapshots()) if (x.flowName.equals(f) && !list.contains(x)) list.add(x);
+        if (list.isEmpty() && shownSnapshot != null) list.add(shownSnapshot);
+        if (list.isEmpty()) return;
+        boolean lock = list.stream().anyMatch(x -> !x.locked);
+        store.setLocked(list, lock);
+        status.setText((lock ? "Locked " : "Unlocked ") + (list.size() == 1 ? list.get(0).name : list.size() + " values")
+                + (lock ? ": they can't be changed until unlocked." : "."));
+        updateButtons();
     }
 
     // ---------- sort, filter, expand and collapse the value (only how it is shown) ----------
@@ -2191,20 +3416,56 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             return;
         }
         List<String> flowsPicked = selectedFlows();
+        // what else is picked, outside the picked flows (they take everything in them)
+        List<Group> groupsPicked = new ArrayList<>(pickedGroups());
+        groupsPicked.removeIf(g -> flowsPicked.contains(g.flowName()));
+        List<FlowSnapshot> list = new ArrayList<>(selectedSnapshots());
+        list.removeIf(s -> flowsPicked.contains(s.flowName));
         if (!flowsPicked.isEmpty()) { // flows selected: the flows go (an empty one without asking)
             deleteFlowsNow(flowsPicked);
-            return;
+            if (list.isEmpty() && groupsPicked.isEmpty()) return;
         }
-        List<FlowSnapshot> list = selectedSnapshots();
-        if (list.isEmpty()) return;
+        if (list.isEmpty() && groupsPicked.isEmpty()) return;
         String group = selectedGroupName();
-        if (group != null && Messages.showYesNoDialog(project, "Delete all " + list.size() + (list.size() == 1 ? " value" : " values")
-                + " of “" + group + "”? They go to the Recycle Bin.", "Delete", "Delete All", "Cancel", Messages.getQuestionIcon())
-                != Messages.YES) {
+        if (group != null && !list.isEmpty() && Messages.showYesNoDialog(project, "Delete " + list.size() + (list.size() == 1 ? " value" : " values")
+                + (groupsPicked.isEmpty() ? " of “" + group + "”" : " and " + (groupsPicked.size() == 1 ? "the group “" + groupsPicked.get(0).group() + "”"
+                : groupsPicked.size() + " groups")) + "? The values go to the Recycle Bin.", "Delete", "Delete", "Cancel",
+                Messages.getQuestionIcon()) != Messages.YES) {
             return;
         }
-        store.delete(list);
-        status.setText("Moved " + list.size() + (list.size() == 1 ? " value" : " values") + " to the Recycle Bin.");
+        if (!list.isEmpty()) store.delete(list);
+        for (Group g : groupsPicked) store.deleteGroup(g.flowName(), g.group());
+        status.setText("Moved " + list.size() + (list.size() == 1 ? " value" : " values") + " to the Recycle Bin"
+                + (groupsPicked.isEmpty() ? "." : groupsPicked.size() == 1 ? " and deleted the group “" + groupsPicked.get(0).group() + "”."
+                : " and deleted " + groupsPicked.size() + " groups."));
+    }
+
+    /** The groups' own rows picked in the list. */
+    private List<Group> pickedGroups() {
+        List<Group> out = new ArrayList<>();
+        TreePath[] paths = leftShowsResults() ? null : snapshots.getSelectionPaths();
+        if (paths != null) {
+            for (TreePath p : paths) {
+                if (((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject() instanceof Group g && g.isGroup()) out.add(g);
+            }
+        }
+        return out;
+    }
+
+    /** Delete Group: an empty group goes at once; one with values asks, then its values go to the Recycle Bin. */
+    private void deleteGroup(@Nullable Group g) {
+        if (g == null || !g.isGroup()) return;
+        List<FlowSnapshot> its = store.getSnapshots().stream()
+                .filter(x -> x.flowName.equals(g.flowName()) && g.group().equals(x.group)).toList();
+        if (!its.isEmpty() && Messages.showYesNoDialog(project, "Delete the group “" + g.group() + "” and its " + its.size()
+                        + (its.size() == 1 ? " value" : " values") + "? The values go to the Recycle Bin.", "Delete Group",
+                "Delete", "Cancel", Messages.getQuestionIcon()) != Messages.YES) {
+            return;
+        }
+        store.delete(its);
+        store.deleteGroup(g.flowName(), g.group());
+        status.setText("Deleted the group “" + g.group() + "”" + (its.isEmpty() ? "." : " (" + its.size() + (its.size() == 1 ? " value" : " values")
+                + " to the Recycle Bin)."));
     }
 
     /** The line or flow selected on the left (its values are all deleted together), or null when values are selected. */
@@ -2330,9 +3591,22 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
         @Override
         public void customizeCellRenderer(@NotNull JTree tree, Object value, boolean selected, boolean expanded, boolean leaf, int row, boolean focus) {
             Object o = ((DefaultMutableTreeNode) value).getUserObject();
+            if (o instanceof Group g && g.isGroup()) {
+                setIcon(AllIcons.Nodes.Folder);
+                append(g.text(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+                int n = 0;
+                java.util.Enumeration<?> all = ((DefaultMutableTreeNode) value).depthFirstEnumeration();
+                while (all.hasMoreElements()) if (((DefaultMutableTreeNode) all.nextElement()).getUserObject() instanceof FlowSnapshot) n++;
+                append("   " + (n == 0 ? "empty · drag values here" : n + (n == 1 ? " value" : " values")), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
+                return;
+            }
             if (o instanceof Group g) {
                 setIcon(g.flow() ? FlowTheme.ICON_FLOWS : AllIcons.Debugger.Db_set_breakpoint);
-                append(g.text(), g.flow() ? SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES : SimpleTextAttributes.REGULAR_ATTRIBUTES);
+                // the active flow (new values go there) and a line's current pass (the next save there joins it) in green
+                boolean on = g.active() && !showingBin;
+                append(g.text(), g.flow() ? (on ? new SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, ACTIVE) : SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
+                        : on ? new SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, ACTIVE) : SimpleTextAttributes.REGULAR_ATTRIBUTES);
+                if (on && !g.flow()) append("   ● current pass", new SimpleTextAttributes(SimpleTextAttributes.STYLE_SMALLER, ACTIVE));
                 if (g.flow()) {
                     if (((DefaultMutableTreeNode) value).getChildCount() == 0) append("   no values yet", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
                     if (g.active() && !showingBin) append("   ● new values go here", new SimpleTextAttributes(SimpleTextAttributes.STYLE_SMALLER, EDITED));
@@ -2341,13 +3615,37 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
                     if (!name.isEmpty()) append("  —  " + name, new SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, EDITED));
                 }
             } else if (o instanceof FlowSnapshot s) {
-                setIcon(AllIcons.Nodes.Variable);
+                setIcon(AllIcons.Debugger.Watch);
                 append(s.name, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
                 if (!s.value.type.isEmpty()) append("  " + s.value.type, SimpleTextAttributes.GRAYED_ATTRIBUTES);
-                append("  " + time(showingBin ? s.deletedAt : s.savedAt), SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
-                if (!s.edits.isEmpty()) append("  edited", new SimpleTextAttributes(SimpleTextAttributes.STYLE_ITALIC, EDITED));
+                append("    " + time(showingBin ? s.deletedAt : s.savedAt), SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                if (FlowDebugStore.isChanged(s)) append("  edited", new SimpleTextAttributes(SimpleTextAttributes.STYLE_ITALIC, EDITED));
+                if (s.locked) append("  🔒 locked", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
             }
         }
+    }
+
+    private static String gray() {
+        java.awt.Color c = UIUtil.getContextHelpForeground();
+        return String.format("#%06X", c.getRGB() & 0xFFFFFF);
+    }
+
+    private static String esc(String t) {
+        return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /** "04 Nov 15:47:20". */
+    private static String fullTime(long millis) {
+        return new java.text.SimpleDateFormat("dd MMM HH:mm:ss").format(new java.util.Date(millis));
+    }
+
+    /** A value's text in the editor's colors: "text" green, 12 blue, true / false / null as keywords. */
+    private static SimpleTextAttributes valueColor(String text) {
+        String t = text.strip();
+        if (t.startsWith("\"") || t.startsWith("'")) return STRING_VALUE;
+        if (t.equals("true") || t.equals("false") || t.equals("null")) return KEYWORD_VALUE;
+        if (t.matches("-?\\d[\\d_]*(\\.\\d+)?([eE][-+]?\\d+)?[lLfFdD]?")) return NUMBER_VALUE;
+        return SimpleTextAttributes.REGULAR_ATTRIBUTES;
     }
 
     private final class ValueRenderer extends ColoredTreeCellRenderer {
@@ -2357,17 +3655,26 @@ public final class FlowDebugPanel extends JPanel implements Disposable {
             if (!(o instanceof Field f)) return;
             String q = search.getText();
             FlowValue v = f.value();
-            // bookmarked: a blue bookmark; the mouse on the icon: a bookmark to click
+            // As the debugger's Variables / Evaluate show it: "cities = {ArrayList@63648} size = 1", "cityName = null".
+            // Bookmarked: a blue bookmark; the mouse on the icon: a bookmark to click.
+            boolean top = f.path().isEmpty();
+            boolean element = v.name.matches("\\[?\\d+]?");
             setIcon(f.pinned() ? new FlowJsonTree.BookmarkIcon(true) : row == valueHover ? new FlowJsonTree.BookmarkIcon(false)
-                    : v.children.isEmpty() ? AllIcons.Debugger.Value : AllIcons.Nodes.Variable);
-            append(v.name, FlowValueSearch.contains(v.name, q) ? MATCH : SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
-            append(" = ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
-            boolean edited = false;
-            if (shownSnapshot != null) for (FlowValueEdit e : shownSnapshot.edits) edited |= e.path.equals(f.path());
-            append(v.value, FlowValueSearch.contains(v.value, q) ? MATCH
-                    : edited ? new SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, EDITED) : SimpleTextAttributes.REGULAR_ATTRIBUTES);
-            if (edited) append("  ✎ edited", new SimpleTextAttributes(SimpleTextAttributes.STYLE_ITALIC, EDITED));
-            if (!v.type.isEmpty()) append("  {" + v.type + "}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES);
+                    : FlowVariablesLook.icon(top));
+            append(element ? v.name.replaceAll("[\\[\\]]", "") : v.name, FlowValueSearch.contains(v.name, q) ? MATCH
+                    : SimpleTextAttributes.REGULAR_ATTRIBUTES);
+            append(" = ", SimpleTextAttributes.REGULAR_ATTRIBUTES);
+            boolean edited = f.edited();
+            String text = FlowVariablesLook.text(v.value, v.type);
+            if (v.children.isEmpty() && text.startsWith("{") && com.example.flowtracker.model.FlowValueShape.hideInternals()) text = cleanText(text);
+            if (!v.children.isEmpty()) { // {Type} only before what has fields, as IntelliJ shows it
+                String type = FlowVariablesLook.type(v.type);
+                if (!type.isEmpty()) append(type + (text.isEmpty() ? "" : " "), FlowValueSearch.contains(v.type, q) ? MATCH
+                        : SimpleTextAttributes.GRAYED_ATTRIBUTES);
+            }
+            append(text, FlowValueSearch.contains(text, q) ? MATCH
+                    : edited ? new SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, EDITED) : valueColor(text));
+            if (edited && !top) append("  ✎ edited", new SimpleTextAttributes(SimpleTextAttributes.STYLE_ITALIC, EDITED));
         }
     }
 
