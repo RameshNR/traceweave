@@ -685,7 +685,7 @@ The plugin passes the IntelliJ Platform Gradle plugin's checks for Marketplace (
 
 1. Sign in at [plugins.jetbrains.com](https://plugins.jetbrains.com) with your JetBrains account and open **Upload plugin** ([plugins.jetbrains.com/plugin/add](https://plugins.jetbrains.com/plugin/add)).
 2. Build the zip (`.\gradlew.bat clean buildPlugin`) and upload `build\distributions\traceweave-code-flow-tracker-<version>.zip`.
-3. Fill in the form: vendor **RameshNR** (the same name as `<vendor>` in `plugin.xml`), license **MIT** with the URL `https://github.com/RameshNR/traceweave/blob/main/LICENSE`, source code `https://github.com/RameshNR/traceweave`, category / tags (e.g. *Code tools*, *Navigation*).
+3. Fill in the form: vendor **RameshNR** (the same name as `<vendor>` in `plugin.xml`), license **Proprietary / All rights reserved** with the URL `https://github.com/RameshNR/traceweave/blob/main/LICENSE`, source code `https://github.com/RameshNR/traceweave`, category / tags (e.g. *Code tools*, *Navigation*).
 4. Submit. JetBrains reviews new plugins before they appear (usually a couple of working days); you get an e-mail.
 5. On the plugin's page, **Edit → Media**: upload the screenshots from `src/main/resources/images` for the carousel in **Settings → Plugins**.
 
@@ -769,7 +769,7 @@ The report is written to `build\reports\tests\test\index.html`.
 ## License
 
 
-[MIT](LICENSE) © 2026 RameshNR.
+© 2026 RameshNR. **All rights reserved.** You may install the plugin from the JetBrains Marketplace and use it; copying, changing or redistributing any part of it needs written permission from RameshNR. See [LICENSE](LICENSE).
 
 
 ## Troubleshooting

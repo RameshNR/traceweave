@@ -10,6 +10,8 @@
     <change-notes><![CDATA[
 <h3>1.5.0</h3>
 <ul>
+  <li>License: all rights reserved (no longer MIT). Installing and using the plugin is allowed; copying, changing or
+      redistributing it needs the author's written permission.</li>
   <li><b>Compare, redone</b>: a left rail (JSON, Text, Tree, History, Favorites, Settings), All / Differences, Compare or
       Unified view, As Saved / Original / Formatted, sort, Hide Internals and Ignore Whitespace (JSON laid out alike, blank
       lines and indentation don't count), OLD / NEW cards to pick a saved value, a file or the clipboard, and a status bar.
